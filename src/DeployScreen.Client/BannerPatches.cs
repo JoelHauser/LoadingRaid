@@ -33,6 +33,9 @@ namespace DeployScreen.Client
         {
             internal List<BannerImage> Images;
             internal int Next;
+
+            /// <summary>File-name captions reached the locale table, so banners can carry keys.</summary>
+            internal bool CaptionKeys;
         }
 
         private static readonly Dictionary<object, Progress> InFlight =
@@ -104,7 +107,12 @@ namespace DeployScreen.Client
                     images = BannerArt.For(locationId);
                     if (images != null)
                     {
-                        InFlight[__instance] = new Progress { Images = images, Next = 0 };
+                        InFlight[__instance] = new Progress
+                        {
+                            Images = images,
+                            Next = 0,
+                            CaptionKeys = PublishFileCaptions(images)
+                        };
                     }
                 }
 
@@ -131,7 +139,8 @@ namespace DeployScreen.Client
                 if (!InFlight.TryGetValue(__instance, out progress)) return true;
 
                 // Fewer pictures than the map has banners: cycle, so every slot is filled.
-                var image = progress.Images[progress.Next % progress.Images.Count];
+                var index = progress.Next % progress.Images.Count;
+                var image = progress.Images[index];
                 progress.Next++;
 
                 BannerFit fit;
@@ -140,7 +149,7 @@ namespace DeployScreen.Client
                 var sprite = image.Sprite(fit, measured);
                 if (sprite == null) return true;
 
-                CreateBanner(__instance, image, sprite);
+                CreateBanner(__instance, image, sprite, index, progress.CaptionKeys);
 
                 // The caller awaits this; a completed task keeps its loop moving.
                 __result = Task.CompletedTask;
@@ -153,15 +162,51 @@ namespace DeployScreen.Client
             }
         }
 
-        private static void CreateBanner(object panel, BannerImage image, Sprite sprite)
+        private static void CreateBanner(object panel, BannerImage image, Sprite sprite, int index, bool captionKeys)
         {
-            var captions = DeployScreenPlugin.BannerCaptions.Value;
-
             // Intel captions are applied later, by the driver, once the banner exists.
-            var name = captions == CaptionSource.FileName ? image.Name : string.Empty;
-            var description = captions == CaptionSource.FileName ? image.Description : string.Empty;
+            var name = string.Empty;
+            var description = string.Empty;
+
+            if (DeployScreenPlugin.BannerCaptions.Value == CaptionSource.FileName)
+            {
+                // The key is what makes a description appear at all -- raw text localizes to
+                // itself and SelectBanner hides it. Without the locale table the heading is
+                // still right as raw text, and the description stays empty rather than
+                // showing a key nobody can read.
+                name = captionKeys && !string.IsNullOrEmpty(image.Name)
+                    ? FileCaptionKeys.Header(index)
+                    : image.Name ?? string.Empty;
+
+                description = captionKeys && !string.IsNullOrEmpty(image.Description)
+                    ? FileCaptionKeys.Body(index)
+                    : string.Empty;
+            }
 
             GameTypes.BannersPanel_CreateBanner.Invoke(panel, new object[] { name, description, sprite });
+        }
+
+        /// <summary>
+        /// Registers the pictures' own captions under this mod's locale keys, so a banner can
+        /// carry a key instead of raw text -- see Localization.cs for why raw text is hidden.
+        ///
+        /// Returns false when there is nothing to register or the locale table cannot be
+        /// reached, which leaves headings raw and descriptions empty: no worse than before,
+        /// and never a visible key.
+        /// </summary>
+        private static bool PublishFileCaptions(List<BannerImage> images)
+        {
+            if (DeployScreenPlugin.BannerCaptions.Value != CaptionSource.FileName) return false;
+
+            var entries = new Dictionary<string, string>(images.Count * 2);
+
+            for (var i = 0; i < images.Count; i++)
+            {
+                if (!string.IsNullOrEmpty(images[i].Name)) entries[FileCaptionKeys.Header(i)] = images[i].Name;
+                if (!string.IsNullOrEmpty(images[i].Description)) entries[FileCaptionKeys.Body(i)] = images[i].Description;
+            }
+
+            return entries.Count > 0 && Localization.Publish(entries);
         }
 
         // ----------------------------------------------------------------- driver

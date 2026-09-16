@@ -24,7 +24,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.3.0.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.3.1.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -45,7 +45,7 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 | Performance | Record loading | On | Save a JSON loading report under the plugin's `diagnostics` folder. |
 | Performance | Test label | Empty | Group comparable runs, for example `first` or `repeat`. |
 | Banners | Enabled | On | Use your own images from the `banners` folder. Does nothing until you add some. |
-| Banners | Captions | Map intel | **Map intel**: a briefing for the map. See [Map intel](#map-intel).<br>**From file name**: captions taken from your image file names.<br>**Keep vanilla**: the game's own captions. |
+| Banners | Captions | Map intel | **Map intel**: a briefing for the map. See [Map intel](#map-intel).<br>**From file name**: captions taken from your image file names.<br>**Keep vanilla**: the game's own captions — but see the note below. |
 | Motion | Enabled | On | Slowly zoom and drift each banner. |
 | Motion | Zoom | 1.06 | How far the zoom goes, from 1.0 to 1.3. |
 | Motion | Seconds per cycle | 18 | How long one zoom in and back out takes, from 4 to 60. |
@@ -116,6 +116,14 @@ Set **Captions** to **From file name** to caption each banner with its file name
 ```
 Dorms; Three storeys, two keys.png
 ```
+
+### "Keep vanilla" captions with your own art
+
+**Known limitation.** With **Captions** set to **Keep vanilla**, banners that use your own
+images show no caption at all rather than the game's lore text. The game's captions belong to
+the pictures this mod replaces, and recovering them needs a part of the game this mod cannot
+currently read. Use **Map intel** or **From file name** if you want captions on custom art;
+**Keep vanilla** still works normally on maps you haven't put images in.
 
 ### Map folder names
 

@@ -270,4 +270,22 @@ namespace DeployScreen.Client
             return Localization.KeyPrefix + "intel/" + index + "/d";
         }
     }
+
+    /// <summary>
+    /// The same idea for captions taken from a picture's file name. They are registered rather
+    /// than written straight onto the banner for the reason in Localization.cs: SelectBanner
+    /// hides a description that localizes to itself, which is what raw text does.
+    /// </summary>
+    internal static class FileCaptionKeys
+    {
+        internal static string Header(int index)
+        {
+            return Localization.KeyPrefix + "file/" + index + "/h";
+        }
+
+        internal static string Body(int index)
+        {
+            return Localization.KeyPrefix + "file/" + index + "/d";
+        }
+    }
 }

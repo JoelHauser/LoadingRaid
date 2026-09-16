@@ -22,6 +22,7 @@ namespace DeployScreen.Client
         private LoadTrace _trace;
         private readonly Stopwatch _clock = new Stopwatch();
         private bool _active, _started, _warned;
+        private bool _previewSkipped, _bannersSkipped;
         private double _closedAt = -1, _nextMemorySample;
         private long _managedStart, _managedPeak, _workingStart, _workingPeak;
         private int _gc0, _gc1, _gc2;
@@ -88,7 +89,7 @@ namespace DeployScreen.Client
                 {
                     _instance._minimal = new MinimalScreen();
                     _instance._minimal.Begin(__instance as Component, _instance._banners,
-                        _playerHook, _bannerHook);
+                        _instance._previewSkipped, _instance._bannersSkipped);
                     _instance._presentation = _instance._minimal.Metadata;
                     _instance.Mark("minimal: " + _instance._minimal.Description);
                 }
@@ -112,6 +113,7 @@ namespace DeployScreen.Client
         {
             if (_instance == null || !_instance._active || _instance._mode != LoadingScreenMode.Minimal
                 || !ReferenceEquals(_instance._screen, __instance)) return true;
+            _instance._previewSkipped = true;
             __result = Task.CompletedTask;
             return false;
         }
@@ -120,6 +122,7 @@ namespace DeployScreen.Client
         {
             if (_instance == null || !_instance._active || _instance._mode != LoadingScreenMode.Minimal
                 || !ReferenceEquals(_instance._banners, __instance)) return true;
+            _instance._bannersSkipped = true;
             __result = Task.CompletedTask;
             return false;
         }
@@ -154,7 +157,14 @@ namespace DeployScreen.Client
             _banners = GameTypes.Loading_Banners == null ? null : GameTypes.Loading_Banners.GetValue(screen);
             _started = false;
             _closedAt = -1;
-            _presentation = new MinimalScreen().Metadata;
+            _previewSkipped = false;
+            _bannersSkipped = false;
+            _presentation = null;
+
+            // Every raid gets its own warning budget. Kept for the session, the first failure
+            // silences every later one, and reports that stop appearing leave no log line at all.
+            _warned = false;
+
             _active = true;
             enabled = true;
             _clock.Restart();
@@ -195,6 +205,24 @@ namespace DeployScreen.Client
 
         private static string Bool(bool value) { return value ? "true" : "false"; }
         private void Mark(string name) { _trace?.Event(_clock.Elapsed.TotalSeconds, name); }
+
+        /// <summary>
+        /// What minimal mode actually applied, for the report.
+        ///
+        /// The skip prefixes run inside Show; MinimalScreen is built in the postfix. So a Show
+        /// that throws, or a screen that is not a Component, leaves no MinimalScreen even though
+        /// the preview and banners were skipped. Reporting the installed hooks instead would let
+        /// such a capture group with a complete one in compare-loading.ps1, which groups on
+        /// exactly these fields.
+        /// </summary>
+        private string Presentation
+        {
+            get
+            {
+                if (_minimal != null) return _minimal.Metadata;
+                return _presentation ?? MinimalScreen.MetadataFor(_previewSkipped, _bannersSkipped, false, 0);
+            }
+        }
 
         private void Update()
         {
@@ -241,7 +269,7 @@ namespace DeployScreen.Client
                 {
                     if (finalFrame) trace.Frame(_clock.Elapsed.TotalSeconds, Application.isFocused);
                     SampleMemory();
-                    var metadata = _metadata + (_minimal == null ? _presentation : _minimal.Metadata)
+                    var metadata = _metadata + Presentation
                         + ",\"outcome\":" + LoadTrace.Quote(outcome)
                         + ",\"managedStartBytes\":" + _managedStart + ",\"managedSampledPeakBytes\":" + _managedPeak
                         + ",\"workingSetStartBytes\":" + _workingStart + ",\"workingSetSampledPeakBytes\":" + _workingPeak

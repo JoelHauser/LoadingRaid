@@ -23,20 +23,33 @@ namespace DeployScreen.Client
         }
         internal string Metadata
         {
-            get { return ",\"minimalPreviewSkipped\":" + Bool(_playerSkipped)
-                + ",\"minimalBannersSkipped\":" + Bool(_bannersSkipped)
-                + ",\"minimalBackgroundCreated\":" + Bool(_backgroundCreated)
-                + ",\"minimalEnvironmentSuspended\":" + Bool(_environmentRootsSuspended > 0)
-                + ",\"minimalEnvironmentRootsSuspended\":" + _environmentRootsSuspended; }
+            get { return MetadataFor(_playerSkipped, _bannersSkipped, _backgroundCreated, _environmentRootsSuspended); }
         }
+
+        /// <summary>
+        /// The same fields when there is no MinimalScreen to ask -- a Show that threw before the
+        /// postfix could build one, though its prefixes had already skipped the preview and the
+        /// banners. See LoadingPerformance.Presentation.
+        /// </summary>
+        internal static string MetadataFor(bool preview, bool banners, bool background, int roots)
+        {
+            return ",\"minimalPreviewSkipped\":" + Bool(preview)
+                + ",\"minimalBannersSkipped\":" + Bool(banners)
+                + ",\"minimalBackgroundCreated\":" + Bool(background)
+                + ",\"minimalEnvironmentSuspended\":" + Bool(roots > 0)
+                + ",\"minimalEnvironmentRootsSuspended\":" + roots;
+        }
+
         private static string Bool(bool value) { return value ? "true" : "false"; }
 
         internal void Begin(Component screen, object banners, bool skipPlayer, bool skipBanners)
         {
             _screen = screen;
             if (screen == null) return;
+            // Both arguments are what the prefixes actually skipped this raid, not which hooks
+            // installed -- the report must not credit minimal with work it did not do.
             _playerSkipped = skipPlayer;
-            _bannersSkipped = skipBanners && banners != null;
+            _bannersSkipped = skipBanners;
             var player = GameTypes.Loading_PlayerModel?.GetValue(screen) as Component;
             if (skipPlayer) Hide(player, false);
             if (skipBanners) Hide(banners as Component, false);

@@ -17,7 +17,7 @@ corrected; nothing has been tested.
 | SPT version | 4.1.5 |
 | EFT client | `0.16.9.5.40743` |
 | BepInEx | 5.4.23.5, HarmonyLib **2.9.0** |
-| Built | 1.3.0 on 2026-09-16, clean, 0 warnings; `scripts\test-logic.ps1` 31 passed; `scripts\test-performance.ps1` 11 checks passed; both exit 0 |
+| Built | 1.3.1 on 2026-09-16, clean, 0 warnings; `scripts\test-logic.ps1` 31 passed; `scripts\test-performance.ps1` 11 checks passed; both exit 0 |
 
 ```
 scripts\pack.ps1 -SPTPath C:\HUH
@@ -364,6 +364,12 @@ Each of these produced a confident wrong answer first. Worth checking for again.
   equal chances in arbitrary order; C#'s `OrderByDescending` is stable.
 - **Windows file names cannot contain `< > : " / \ | ? *`.** Check any file-naming convention
   against that list before documenting it.
+- **`Group-Object` with several properties does not collide on commas.** Its `Name` joins the
+  values with `, `, which looks like it should merge `label='x, y'` with `version='z'` into the
+  same group as `label='x'` with `version='y, z'`. It does not -- grouping compares each
+  property separately and the `Name` is only for display. A fix and a regression test for this
+  were written for 1.3.1 and both reverted, because the test passed against the *unfixed*
+  script. Run the new test against the old code before believing a bug of this shape.
 
 ## Resolution
 
@@ -715,3 +721,67 @@ into the local SPT game. Next work is to inspect the user's home-test results: f
 screen appearance and cancel/second-raid restoration, then compare the diagnostic JSON from
 Vanilla, Enhanced and Minimal under matched conditions. Do not claim improved loading speed
 or fewer freezes until those measurements exist.
+
+## 1.3.1: fixes from a review of 1.3.0
+
+**1.3.0 was written by ChatGPT (Codex), not by Claude.** Commit `d155138` carries
+`Co-Authored-By: Codex <noreply@openai.com>`; every other commit in this repo carries
+`Claude Opus 5`. The 1.3.0 section above was written by Codex in this file's voice, which is
+easy to misread as prior Claude work -- it was misread that way once already. Its "Verified by
+Cecil against the patched 4.1.5 assembly" claims have **not** been re-checked, and cannot be
+here: see the blocked fix below.
+
+What was re-checked, on 1.3.0 as committed: Release builds clean with 0 warnings, two
+`--no-incremental` builds are byte-identical so the build is reproducible on this box, and
+both suites pass (31 and 11, exit 0). The DLL inside `releases\DeployScreen_V1.3.0.zip` differs
+from a fresh build in **148 bytes across 7 regions** -- the PE `TimeDateStamp` at 0x88, the MVID,
+and the debug directory and PDB checksum near the tail. Everything from 0x8C to 0xE1A7, which
+is all of the IL and metadata, is identical. So that archive *is* the committed code; the hash
+just does not reproduce.
+
+Three fixes:
+
+1. **A warning budget per raid, not per session.** `LoadingPerformance._warned` was set once and
+   never reset, and `Fail()` ends the capture. So the second and every later raid that threw
+   wrote no report **and** logged nothing. `Begin` clears it now.
+2. **The report says what minimal actually did.** `MinimalScreen` is built in the `Show`
+   postfix, but the preview and banner skips happen in prefixes *inside* `Show`. A `Show` that
+   threw left no `MinimalScreen`, so the report recorded `minimalPreviewSkipped:false` though
+   the preview had been skipped -- and `compare-loading.ps1` groups on exactly those fields, so
+   a partial capture could pool with a complete one, which is the thing that change existed to
+   prevent. `SkipPlayer`/`SkipBanners` now record what they really skipped and
+   `LoadingPerformance.Presentation` falls back to those. 1.3.0 passed `_playerHook` and
+   `_bannerHook` -- whether the hook *installed*, not whether it *fired*.
+3. **File-name descriptions can appear at all.** `CreateBanner` wrote `image.Name` and
+   `image.Description` onto the banner as raw strings, which is the caption trap at the top of
+   this file: a raw description localizes to itself and `SelectBanner` hides it. The heading
+   showed, the description never could. `PublishFileCaptions` registers them under
+   `deployscreen/file/<n>/h` and `/d` before any banner is built, and the banner carries the
+   key. If the locale table cannot be reached it falls back to a raw heading and an empty
+   description -- no worse than 1.3.0, and never a visible key.
+
+### Found and deliberately not fixed
+
+**"Keep vanilla" captions are still emptied when custom art is on.** `CreateBanner` passes
+`string.Empty` for both fields in every mode but `FileName`, so a player who wants this mod's
+art with BSG's own lore text gets no caption at all. The fix needs the caption keys off the
+`LocationBanner` that `TryCreateBanner` receives, and **that member cannot be resolved on this
+box**: `scratchpad\managed415\Assembly-CSharp.dll` has been cleaned up as the notes warned it
+would be, `C:\HUH`'s copy is the unpatched original (`EFT.UI.Matchmaker.MatchmakerBannersPanel`
+is there, but no `TryCreateBanner` or `CreateBanner` -- still obfuscated, and no type matching
+`*LocationBanner*` exists at all), and nothing in the install can apply the 4.46 MB
+`Assembly-CSharp.dll.delta`: no `hpatchz.exe`, and no managed HDiffPatch assembly. Guessing the
+field name puts a raw wrong key in the heading, where it is visible. **Regenerate the patched
+assembly before attempting this**, and add the member to `GameTypes` as an optional one.
+
+**The cancel path restores minimal on request, not on confirmation.** `Aborted` -> `Finish` ->
+`Restore()` runs when `AbortMatching()` is called, and that only delegates to the matchmaker. If
+a cancel does not take, the menu environment returns while the deploy screen is still up.
+Deferring restoration is worse: `Finish` clears `_screen`, so the later `ScreenClosed` would no
+longer match and the plain background and the suspended environment would leak for the rest of
+the session. Left as is -- **watch for it during the cancel test**.
+
+**Still never run in the game.** These are three reasoned fixes to code that has never executed;
+the home-test plan in the 1.3.0 handoff is unchanged, and fix 3 gives it one more thing to look
+at: set captions to file names, put `01 - Dorms; Three storeys, two keys` in a map folder, and
+check the description appears under the heading.
