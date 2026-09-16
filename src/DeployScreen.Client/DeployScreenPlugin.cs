@@ -9,6 +9,8 @@ using HarmonyLib;
 
 namespace DeployScreen.Client
 {
+    public enum LoadingScreenMode { Enhanced, Vanilla, Minimal }
+
     public enum CaptionSource
     {
         [Description("Keep vanilla")]
@@ -44,7 +46,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.2.1";
+        public const string PluginVersion = "1.3.0";
 
         internal static ManualLogSource Log;
 
@@ -56,10 +58,24 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> IntelQuests;
         internal static ConfigEntry<bool> MatchEnvironment;
         internal static ConfigEntry<string> MeasuredSizes;
+        internal static ConfigEntry<LoadingScreenMode> ScreenMode;
+        internal static ConfigEntry<bool> RecordLoading;
+        internal static ConfigEntry<string> TestLabel;
 
         private void Awake()
         {
             Log = Logger;
+
+            ScreenMode = Config.Bind("Performance", "Loading screen", LoadingScreenMode.Enhanced,
+                "Enhanced: this mod's banners and intel. Vanilla: stock presentation with diagnostics only. "
+                + "Minimal: skip loading-screen banners and character preview, and suspend the menu scene "
+                + "behind a plain background when supported. Experimental; compare measured results. Next raid.");
+            RecordLoading = Config.Bind("Performance", "Record loading", true,
+                "Record loading phases, frame gaps of at least 100 ms, focus changes, GC counts and memory. "
+                + "Writes a bounded JSON report after loading, on a background thread. No per-frame disk writes. Next raid.");
+            TestLabel = Config.Bind("Performance", "Test label", "",
+                "Optional label for reports, for example first or repeat. Reuse the same label for "
+                + "comparable runs; keep first loads and repeat loads separate. Next raid.");
 
             BannersEnabled = Config.Bind(
                 "Banners",
@@ -144,6 +160,9 @@ namespace DeployScreen.Client
             }
 
             var harmony = new Harmony(PluginGuid);
+            var performance = gameObject.AddComponent<LoadingPerformance>();
+            performance.Initialize(folder);
+            LoadingPerformance.Install(harmony);
 
             try
             {

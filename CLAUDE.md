@@ -17,12 +17,14 @@ corrected; nothing has been tested.
 | SPT version | 4.1.5 |
 | EFT client | `0.16.9.5.40743` |
 | BepInEx | 5.4.23.5, HarmonyLib **2.9.0** |
-| Built | 1.2.1 on 2026-09-16, clean, 0 warnings; `scripts\test-logic.ps1` 31 passed, exit 0 |
+| Built | 1.3.0 on 2026-09-16, clean, 0 warnings; `scripts\test-logic.ps1` 31 passed; `scripts\test-performance.ps1` 11 checks passed; both exit 0 |
 
 ```
 scripts\pack.ps1 -SPTPath C:\HUH
 scripts\pack.ps1 -SPTPath C:\HUH -Install
 scripts\test-logic.ps1 -SPTPath C:\HUH     # the game-independent logic, against real files
+scripts\test-performance.ps1             # diagnostic accounting and comparison, no engine needed
+scripts\compare-loading.ps1              # summarizes installed plugin's diagnostic reports
 ```
 
 **Run those through PowerShell, not Bash** -- same `C:HUH` mangling trap as CamoPatch,
@@ -606,3 +608,110 @@ can shift sorting.
 
 **Still not installed, and still never run in the game** -- so none of 1.2.1 is measured either.
 It is reasoning about allocation and canvas rebuilds, not a profile.
+
+## 1.3.0: loading-performance experiment
+
+The user authorized instrumentation and a minimal-screen comparison after asking whether this
+could reduce EFT's loading hangs. **There is still no runtime evidence of an improvement over
+stock, and nothing in this change rewrites the game's asset loading.** Default presentation
+remains Enhanced; Record loading defaults on. Minimal is explicitly opt-in.
+
+- `LoadingPerformance.cs`: hooks deployment Show, status changes, abort requests and raid start;
+  a MonoBehaviour on the persistent plugin samples frame intervals after the screen closes too.
+- `LoadTrace.cs`: pure managed monotonic accounting. Detailed phase, gap and event lists cap at
+  128 each, with dropped counts; aggregate frame-gap totals continue beyond the caps.
+- `MinimalScreen.cs`: plain background, preview/banner suppression, environment-root suspension,
+  and restoration. UnityEngine.UI.Image is resolved in GameTypes and added by Type; there is
+  still no compile-time UI or game assembly reference.
+- `scripts/test-performance.ps1` compiles the actual LoadTrace source with
+  `tests/PerformanceChecks.cs`, then tests report comparison with temporary JSON fixtures.
+- `scripts/compare-loading.ps1` groups by map, mode, resolution, label, version, relevant
+  settings and applied minimal features; incomplete/canceled/unfocused reports are excluded.
+
+### Verified by Cecil against the patched 4.1.5 assembly
+
+- `MatchmakerTimeHasCome.Show(IEftSession, RaidSettings, MatchmakerPlayersController)` returns
+  void, invokes banner-panel Show, subscribes to matching progress, and calls ShowPlayerModel.
+- `ShowPlayerModel(PlayerVisualRepresentation)` returns Task. Its state machine waits for
+  preview availability, checks ScreenController.Closed, disposes `_playerModelSubscriber`,
+  registers `_playerModelView` for disposal, then gets profile visual equipment and calls
+  `PlayerModelView.Show`. Minimal skips this outer method only on the active loading screen.
+- `ChangeStatus(string, float?)` receives status BEFORE percentage/timer formatting. A prefix
+  records the supplied string only when it changes; it does not poll TMPro every frame.
+- `AbortMatching()` delegates to the matchmaker. Reports say `cancel-requested`, not that
+  cancellation was confirmed.
+- `GameWorld.OnGameStarted()` invokes `_afterGameStarted`. Its postfix marks that point;
+  the first subsequent plugin Update completes a successful capture. This is a proxy endpoint,
+  **not proof that input is enabled or that every loading hitch has finished**.
+- `EnvironmentUI._currentEnvironment` is an EnvironmentUIRoot Component;
+  `_lastVisibleStateEnvironment` holds the state requested by ShowEnvironment(bool).
+  ShowEnvironment toggles `_commonContainer` and the current environment root GameObjects.
+  **Do not call ShowCameraContainer(false) as a shortcut:** its IL also toggles the game's
+  main camera outside a raid. Minimal disables only the environment root, and declines that
+  operation if the screen is its descendant or the screen's UI camera lives under it.
+
+### Modes and lifecycle
+
+`Performance / Loading screen` is snapshotted in the deployment Show prefix. Enhanced runs the
+existing banner pipeline. Vanilla bypasses this mod's custom banners, driver and backdrop
+changes, while retaining optional diagnostics. Minimal independently skips the banner Show
+Task and preview Task, preserving the rest of the game's Show method, status, input and party
+controls. Hooks fail individually and their availability is logged; the report records actual
+minimal features applied, so partial fallback captures are not pooled with complete ones.
+
+The background is an opaque, non-raycast Image at the screen's first sibling. Environment
+suspension is allowed only after background creation succeeds and a usable UI canvas is found.
+The current root is checked every 0.5 seconds for scenes already loading when deployment began.
+Restoration runs on screen OnDisable, abort request, replacement by a new load, diagnostic error,
+Show failure, capture timeout, raid-start completion, or plugin destruction. Only objects that
+were active when we disabled them are restored; only the current environment root is restored,
+and only if EFT still requests it visible. No scene is unloaded or additional artwork decoded.
+
+Screen closure alone is not success. Without the raid-start callback, capture waits at most
+30 seconds after screen closure and reports `screen-closed-without-confirmed-start`. Overall
+capture timeout is 30 minutes. A Show finalizer observes original exceptions without suppressing
+them. These are optional hooks, installed separately from the existing banner/environment ones.
+
+### Measurement limits and test procedure
+
+Capture starts at the deployment Show prefix, so earlier setup is outside its scope. Stopwatch
+wall time measures gaps between Update callbacks and capture boundaries. Focused gaps >=100 ms
+contribute their FULL interval to the gap total, not just excess above 100 ms. A gap is labeled
+with the previous frame's phase; exact phase changes also have independent timestamps. Focus
+events between frames are latched so switching away and back cannot count as a loading stall.
+This localizes symptoms, not causal functions. A main-thread hang still freezes this recorder;
+its duration is visible when the next frame finally runs.
+
+Memory is sampled at boundaries and every five seconds with GC.GetTotalMemory(false) and process
+working set. Peaks are sampled lower bounds, working set is not VRAM, and GC count changes do
+not prove GC caused a stall. The recorder never forces a collection. Reports contain map/settings,
+test label, timing and memory, not profile contents. A detached completed trace is serialized and
+written using Task.Run to `<plugin folder>/diagnostics/<UTC timestamp>-<id>.json`. No per-frame
+I/O. A crash/force-quit can leave no report; files are retained until manually deleted.
+
+Compare Vanilla/Enhanced/Minimal with the same map, raid settings, other mods, graphics and art.
+Restart between modes; use `first` versus `repeat` labels to separate first session loads from
+warm repeats, at least three comparable captures per mode, and alternate mode order. A restart
+does NOT guarantee a cold OS disk cache. A mod-removed manual run is a useful additional check;
+Vanilla has diagnostic overhead and is only an instrumented baseline. Test cancel, return to
+menu, second raid, PMC/Scav, and resolution/aspect changes before calling minimal mode working.
+
+Existing 31 image/cropping checks and 11 performance checks pass outside the game. Live hook
+execution, background layering, shared-camera fallback, cleanup, overhead and any improvement
+remain untested. Caption issues noted during review (custom-art Vanilla captions emptied and
+file-name descriptions not published to localization) are outside this performance change.
+
+### Handoff for home testing (2026-09-16)
+
+Version 1.3.0 is built and packaged in `releases/DeployScreen_V1.3.0.zip`. The archive has
+the expected four plugin files, and its DLL hash matches the validated Release build. The
+DLL still has no Assembly-CSharp, spt-* or compile-time UnityEngine.UI reference. The build
+has zero warnings/errors; the 31 existing logic checks and 11 performance checks passed.
+README.md contains the installation steps, mode comparison procedure and report definitions.
+
+The user requested committing and pushing this implementation, the archive and these notes
+to `origin/main` at `https://github.com/JoelHauser/LoadingRaid.git`. Nothing has been installed
+into the local SPT game. Next work is to inspect the user's home-test results: first verify
+screen appearance and cancel/second-raid restoration, then compare the diagnostic JSON from
+Vanilla, Enhanced and Minimal under matched conditions. Do not claim improved loading speed
+or fewer freezes until those measurements exist.

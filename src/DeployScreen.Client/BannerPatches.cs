@@ -92,6 +92,7 @@ namespace DeployScreen.Client
             {
                 InFlight.Remove(__instance);
 
+                if (LoadingPerformance.Mode != LoadingScreenMode.Enhanced) return;
                 if (__0 == null) return;
 
                 List<BannerImage> images = null;

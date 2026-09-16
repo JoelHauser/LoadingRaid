@@ -14,6 +14,7 @@ This mod changes that:
 - **Map intel.** The banner captions tell you which bosses can spawn and how likely they are, how many extracts the map has, and which of your tasks are on this map.
 - **Custom banners.** Use your own images, per map.
 - **Backdrop.** The menu scene behind the screen changes to suit the map. Off by default.
+- **Performance comparison.** Record loading phases and frame gaps, compare the stock presentation with an experimental minimal screen, and find out whether removing presentation work helps on your machine.
 
 Motion and map intel work as soon as you install, with nothing to set up. Nothing is saved to your profile, and removing the mod puts everything back the way it was.
 
@@ -23,7 +24,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.2.1.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.3.0.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -40,6 +41,9 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 
 | Section | Setting | Default | What it does |
 | --- | --- | --- | --- |
+| Performance | Loading screen | Enhanced | **Enhanced**: existing banners, motion and intel. **Vanilla**: stock presentation with optional diagnostics. **Minimal**: experimental reduced screen. |
+| Performance | Record loading | On | Save a JSON loading report under the plugin's `diagnostics` folder. |
+| Performance | Test label | Empty | Group comparable runs, for example `first` or `repeat`. |
 | Banners | Enabled | On | Use your own images from the `banners` folder. Does nothing until you add some. |
 | Banners | Captions | Map intel | **Map intel**: a briefing for the map. See [Map intel](#map-intel).<br>**From file name**: captions taken from your image file names.<br>**Keep vanilla**: the game's own captions. |
 | Motion | Enabled | On | Slowly zoom and drift each banner. |
@@ -150,6 +154,48 @@ Shoreline     = Random     # leave the menu alone for this map
 
 ## Performance
 
+**No improvement over stock loading has been measured yet.** The experimental Minimal mode removes presentation work; it does not rewrite EFT's asset loading or guarantee that long freezes disappear.
+
+- **Enhanced** keeps the existing features below.
+- **Vanilla** bypasses this mod's banner, motion, intel, measurement and backdrop changes. Diagnostics can stay on for a baseline. Other installed mods still apply.
+- **Minimal** skips the deploy screen's character-preview task and banner-panel creation when the hooks are available. It adds a plain dark background and suspends the current menu environment root when the UI does not depend on its camera. The map heading, loading status, countdown, party controls and cancel behavior remain the game's. No custom banner images are loaded in this mode.
+
+Minimal is opt-in. Missing hooks leave the affected part stock; the log and report show which reductions were applied. Closing or canceling restores presentation objects, while respecting the game's own request to hide the environment during raid transition. The new rendering and restoration paths still need in-game validation, including canceling and loading a second raid.
+
+### Comparing loading modes
+
+1. In F12, set **Performance > Record loading** on and **Loading screen** to **Vanilla**. Set **Test label** to `first` for the first raid after restarting the game.
+2. Load the same map with the same raid settings, graphics settings, other mods and custom-art files. Stay focused on the game; alt-tabbed captures are excluded from the comparison.
+3. Use `repeat` for subsequent loads in that game session. Collect at least three comparable captures for each mode. A first load after restart is not necessarily a cold disk-cache load.
+4. Repeat with **Enhanced** and **Minimal**, restarting between modes to avoid retained artwork or scene state affecting the comparison. Alternate mode order across sessions.
+5. Also try a run with the plugin removed as a manual sanity check. That run cannot produce this mod's report; Vanilla mode is the instrumented baseline, not a zero-overhead measurement.
+
+Reports appear after loading under:
+
+```
+BepInEx/plugins/DeployScreen/diagnostics/<UTC timestamp>-<id>.json
+```
+
+From this repository, summarize them in PowerShell:
+
+```powershell
+scripts\compare-loading.ps1 -Path 'C:\HUH\BepInEx\plugins\DeployScreen\diagnostics' |
+    Format-Table Map, Mode, Label, Runs, MedianLoadSeconds, MedianLongestGapSeconds, MedianGapSeconds -AutoSize
+```
+
+The comparison keeps maps, modes, labels, resolutions, plugin versions, relevant settings and applied minimal features separate. It excludes canceled, incomplete and unfocused captures. Use `-Verbose` to see exclusions; the complete JSON retains the raw details.
+
+### What the report measures
+
+- **Capture duration:** from the deploy screen's `Show` prefix to the plugin's first `Update` after `GameWorld.OnGameStarted`. This is a raid-start proxy, **not an exact measurement of when player controls unlock**. Work before this screen appears is outside the capture.
+- **Frame gaps:** monotonic wall-clock time between plugin updates, plus capture boundaries. Focused intervals of at least 100 ms contribute their full duration to `focusedGapSeconds`. This is time inside long frame intervals, not a measured amount of CPU blocking. Phase changes inside a gap have their own timestamps; the gap is labeled with the phase at its previous frame.
+- **Loading phases:** the actual strings passed to EFT's `ChangeStatus` callback, with repeated phases deduplicated. These locate stalls but do not identify the responsible function.
+- **Memory and GC:** managed heap and process working set sampled at start, every five seconds and at completion, plus GC collection-count changes. Sampled peaks can miss short spikes, and working set is not VRAM. The recorder never forces a collection.
+
+Each detailed list is capped at 128 entries, with dropped counts and complete aggregate gap totals. Reports are serialized and written on a background thread after capture; there are no per-frame disk writes. Measurement still has some overhead. Closing without a confirmed raid-start marker yields an incomplete report after 30 seconds; a capture also has a 30-minute limit. A force-quit or crash may leave no report. Reports remain until you delete them; switch **Record loading** off when finished testing.
+
+### Enhanced mode costs
+
 - **Motion** and **map intel** only do anything while the loading screen is showing, and motion skips the banners that aren't currently on screen.
 - **Custom banners** are loaded the first time they're needed and kept while they're useful. Big pictures take longer to load and use more video memory: one sized for a 4K screen is about 22 MB. Sizes your screen has no use for are freed when the loading screen closes, so keeping several sizes of a picture costs you nothing but disk space.
 - **Measuring** the banners happens once per raid and isn't something you'd notice. What it measures is saved, so later sessions at the same resolution get the right size from the first raid.
@@ -209,6 +255,7 @@ To check the parts that don't need the game (reading image sizes, cropping, choo
 
 ```powershell
 scripts\test-logic.ps1 -SPTPath "C:\path\to\SPT"
+scripts\test-performance.ps1   # diagnostic accounting and comparison, no game required
 ```
 
 Use PowerShell rather than Git Bash: Bash can mangle Windows paths passed to `-SPTPath`.

@@ -92,6 +92,7 @@ namespace DeployScreen.Client
         {
             try
             {
+                if (LoadingPerformance.Mode != LoadingScreenMode.Enhanced) return;
                 if (!DeployScreenPlugin.MatchEnvironment.Value) return;
                 if (__args == null) return;
 

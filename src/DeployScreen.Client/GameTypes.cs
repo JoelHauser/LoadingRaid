@@ -99,6 +99,13 @@ namespace DeployScreen.Client
         internal static Type RaidSettings;
         internal static PropertyInfo RaidSettings_SelectedLocation;
 
+        internal static MethodInfo Loading_Show, Loading_Status, Loading_Abort, World_Started;
+        internal static MethodInfo Loading_ShowPlayer;
+        internal static FieldInfo Loading_PlayerModel, Loading_Banners;
+        internal static FieldInfo Environment_Current, Environment_Visible;
+        internal static Type BackgroundImage;
+        internal static PropertyInfo Background_Color, Background_Raycast;
+
         /// <summary>Custom banner art can be substituted.</summary>
         internal static bool BannersReady { get; private set; }
 
@@ -117,8 +124,43 @@ namespace DeployScreen.Client
             DriverReady = BannersReady && ResolveDriver();
             IntelReady = DriverReady && ResolveIntel();
             EnvironmentReady = ResolveEnvironment();
+            ResolvePerformance();
 
-            return BannersReady || EnvironmentReady;
+            return BannersReady || EnvironmentReady || Loading_Show != null;
+        }
+
+        private static void ResolvePerformance()
+        {
+            var screen = AccessTools.TypeByName("EFT.UI.Matchmaker.MatchmakerTimeHasCome");
+            var settings = AccessTools.TypeByName("EFT.RaidSettings");
+            Loading_Show = settings == null ? null : FindShowTaking(screen, settings);
+            if (screen != null)
+            {
+                Loading_Status = AccessTools.Method(screen, "ChangeStatus", new[] { typeof(string), typeof(float?) });
+                Loading_Abort = AccessTools.Method(screen, "AbortMatching", Type.EmptyTypes);
+                Loading_ShowPlayer = AccessTools.Method(screen, "ShowPlayerModel");
+                if (Loading_ShowPlayer != null && Loading_ShowPlayer.ReturnType != typeof(System.Threading.Tasks.Task))
+                    Loading_ShowPlayer = null;
+                Loading_PlayerModel = AccessTools.Field(screen, "_playerModelView");
+                Loading_Banners = AccessTools.Field(screen, "_bannersPanel");
+            }
+            var world = AccessTools.TypeByName("EFT.GameWorld");
+            if (world != null) World_Started = AccessTools.Method(world, "OnGameStarted", Type.EmptyTypes);
+            if (EnvironmentUI != null)
+            {
+                Environment_Current = AccessTools.Field(EnvironmentUI, "_currentEnvironment");
+                Environment_Visible = AccessTools.Field(EnvironmentUI, "_lastVisibleStateEnvironment");
+            }
+            // The UI assembly stays a runtime dependency, just as it is for the stock banner Image.
+            BackgroundImage = AccessTools.TypeByName("UnityEngine.UI.Image");
+            if (BackgroundImage != null)
+            {
+                Background_Color = AccessTools.Property(BackgroundImage, "color");
+                Background_Raycast = AccessTools.Property(BackgroundImage, "raycastTarget");
+            }
+            if (Loading_Show == null) Missing("loading screen Show (performance modes and diagnostics unavailable)");
+            if (Loading_Status == null) Missing("loading ChangeStatus (phase markers unavailable)");
+            if (World_Started == null) Missing("GameWorld.OnGameStarted (reports cannot confirm raid start)");
         }
 
         private static bool ResolveBanners()
