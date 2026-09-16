@@ -548,7 +548,10 @@ In rough order of risk:
 - Version lives in the csproj `<Version>` and `PluginVersion`; `pack.ps1` refuses to pack if
   they disagree.
 - The zip holds only the four files under `BepInEx/plugins/DeployScreen/`. Release zips are
-  tracked in git, as in the sibling repos.
+  tracked in git, as in the sibling repos. The one exception so far: **1.3.0's zip was deleted
+  in 1.3.1**, on the user's instruction, because it shipped defects and nobody should download
+  it by mistake. Deleting rather than overwriting keeps every zip's name matching the version
+  its DLL reports, which `pack.ps1` relies on; git history still holds the file.
 - `-Install` never clobbers an existing `environments.txt` or anything under `banners\`.
 - **The Forge forbids mods substantially written by AI agents.** The user has acknowledged
   this for their other repos and said "we're all good" -- do not re-raise it unprompted.
@@ -709,7 +712,9 @@ file-name descriptions not published to localization) are outside this performan
 
 ### Handoff for home testing (2026-09-16)
 
-Version 1.3.0 is built and packaged in `releases/DeployScreen_V1.3.0.zip`. The archive has
+Version 1.3.0 is built and packaged in `releases/DeployScreen_V1.3.0.zip` -- **that archive was
+deleted in 1.3.1**, because it ships the three defects fixed there; it is still in git history
+at `d155138` if it is ever needed. The archive has
 the expected four plugin files, and its DLL hash matches the validated Release build. The
 DLL still has no Assembly-CSharp, spt-* or compile-time UnityEngine.UI reference. The build
 has zero warnings/errors; the 31 existing logic checks and 11 performance checks passed.
@@ -733,7 +738,8 @@ here: see the blocked fix below.
 
 What was re-checked, on 1.3.0 as committed: Release builds clean with 0 warnings, two
 `--no-incremental` builds are byte-identical so the build is reproducible on this box, and
-both suites pass (31 and 11, exit 0). The DLL inside `releases\DeployScreen_V1.3.0.zip` differs
+both suites pass (31 and 11, exit 0). The DLL inside the 1.3.0 archive, as it stood at
+`d155138`, differs
 from a fresh build in **148 bytes across 7 regions** -- the PE `TimeDateStamp` at 0x88, the MVID,
 and the debug directory and PDB checksum near the tail. Everything from 0x8C to 0xE1A7, which
 is all of the IL and metadata, is identical. So that archive *is* the committed code; the hash
