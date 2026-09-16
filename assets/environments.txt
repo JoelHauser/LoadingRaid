@@ -12,28 +12,29 @@
 # TheUnheardEdition and Cyber are edition-themed and are not in every install. If one
 # is missing the mod logs it and leaves the backdrop alone rather than loading nothing.
 #
-# Location ids are the folder names under SPT_Data\database\locations:
+# Location ids are matched without regard to case. They are the "Id" field inside each
+# map's base.json -- not the folder name, which is lowercase for every map:
 #
-#   bigmap (Customs)      factory4_day        factory4_night      interchange
-#   laboratory            labyrinth           lighthouse          rezervbase (Reserve)
-#   sandbox (Ground Zero) sandbox_high        shoreline           suburbs
-#   tarkovstreets         terminal            town                woods
+#   bigmap (Customs)      factory4_day        factory4_night      laboratory
+#   Interchange           Labyrinth           Lighthouse          RezervBase (Reserve)
+#   Sandbox (Ground Zero) Sandbox_high        Shoreline           Suburbs
+#   TarkovStreets         Terminal            Town                Woods
 #
 # The defaults, for reference -- uncomment and edit any of them:
 #
 # factory4_day   = Factory
 # factory4_night = Factory
 # bigmap         = Factory
-# interchange    = Factory
-# rezervbase     = Factory
-# tarkovstreets  = Factory
+# Interchange    = Factory
+# RezervBase     = Factory
+# TarkovStreets  = Factory
 # laboratory     = Laboratory
-# labyrinth      = Laboratory
-# woods          = Wood
-# shoreline      = Wood
-# lighthouse     = Wood
-# sandbox        = Wood
-# sandbox_high   = Wood
-# suburbs        = Wood
-# town           = Wood
-# terminal       = Wood
+# Labyrinth      = Laboratory
+# Woods          = Wood
+# Shoreline      = Wood
+# Lighthouse     = Wood
+# Sandbox        = Wood
+# Sandbox_high   = Wood
+# Suburbs        = Wood
+# Town           = Wood
+# Terminal       = Wood

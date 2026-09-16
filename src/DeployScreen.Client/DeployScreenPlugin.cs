@@ -16,6 +16,9 @@ namespace DeployScreen.Client
 
         [Description("From file name")]
         FileName,
+
+        [Description("Map intel")]
+        Intel,
     }
 
     /// <summary>
@@ -27,22 +30,28 @@ namespace DeployScreen.Client
     /// scene still rendering behind it. This mod takes both:
     ///
     ///   Banners      -- your own images per map, from a folder next to this DLL.
+    ///   Motion       -- a slow zoom and drift, because nothing on that screen moves.
+    ///   Intel        -- bosses, extracts and your active tasks for the map you are entering.
     ///   Backdrop     -- the menu environment switched to suit the destination map.
     ///
-    /// Both are off unless you give them something to do: with no images on disk the banner
-    /// half does nothing at all, and backdrop matching starts disabled.
+    /// Motion and intel need nothing on disk and are on by default. Custom art does need
+    /// files, and with none the banner images are left exactly as they were.
     /// </summary>
     [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
     public class DeployScreenPlugin : BaseUnityPlugin
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.1.0";
 
         internal static ManualLogSource Log;
 
         internal static ConfigEntry<bool> BannersEnabled;
         internal static ConfigEntry<CaptionSource> BannerCaptions;
+        internal static ConfigEntry<bool> MotionEnabled;
+        internal static ConfigEntry<float> MotionZoom;
+        internal static ConfigEntry<float> MotionPeriod;
+        internal static ConfigEntry<bool> IntelQuests;
         internal static ConfigEntry<bool> MatchEnvironment;
 
         private void Awake()
@@ -59,11 +68,44 @@ namespace DeployScreen.Client
             BannerCaptions = Config.Bind(
                 "Banners",
                 "Captions",
-                CaptionSource.Vanilla,
-                "Keep vanilla: the game's own banner headings.\n"
+                CaptionSource.Intel,
+                "Map intel: bosses and their chances, extract count, and the tasks you have "
+                + "active on this map.\n"
                 + "From file name: 'Dorms|Three storey, two keys.png' becomes that heading and that "
                 + "line under it. A leading '01 - ' is treated as ordering and dropped.\n"
+                + "Keep vanilla: the game's own banner headings.\n"
                 + "Takes effect on the next raid.");
+
+            MotionEnabled = Config.Bind(
+                "Motion",
+                "Enabled",
+                true,
+                "Slowly zoom and drift each banner. Nothing on the deploy screen moves in vanilla, "
+                + "which is most of why it reads as a still image. Takes effect on the next raid.");
+
+            MotionZoom = Config.Bind(
+                "Motion",
+                "Zoom",
+                1.06f,
+                new ConfigDescription(
+                    "How far in the drift zooms, as a multiplier. Kept small on purpose: if the "
+                    + "banner is not clipped by its frame, a large value will show the edges.",
+                    new AcceptableValueRange<float>(1f, 1.3f)));
+
+            MotionPeriod = Config.Bind(
+                "Motion",
+                "Seconds per cycle",
+                18f,
+                new ConfigDescription(
+                    "How long one in-and-out drift takes. Longer is calmer.",
+                    new AcceptableValueRange<float>(4f, 60f)));
+
+            IntelQuests = Config.Bind(
+                "Intel",
+                "Show your tasks",
+                true,
+                "Include a card listing the quests you have started that are pinned to this map.\n"
+                + "Off leaves the boss, extract and briefing cards alone.");
 
             MatchEnvironment = Config.Bind(
                 "Backdrop",
@@ -104,7 +146,9 @@ namespace DeployScreen.Client
             BannersEnabled.SettingChanged += (sender, e) => BannerArt.Forget();
             BannerCaptions.SettingChanged += (sender, e) => BannerArt.Forget();
 
-            Log.LogInfo("[DeployScreen] loaded -- banners from " + BannerArt.RootFolder);
+            Log.LogInfo(
+                "[DeployScreen] loaded -- banners from " + BannerArt.RootFolder
+                + " (motion=" + GameTypes.DriverReady + " intel=" + GameTypes.IntelReady + ")");
         }
     }
 }

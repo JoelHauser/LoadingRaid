@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 using System.Threading.Tasks;
 using HarmonyLib;
 using UnityEngine;
@@ -8,7 +7,7 @@ using UnityEngine;
 namespace DeployScreen.Client
 {
     /// <summary>
-    /// What replaces the art on the deploy screen.
+    /// What replaces the art on the deploy screen, and what starts the driver that dresses it.
     ///
     /// The panel draws one banner per entry in the map's Banners array, and reaches each one
     /// through TryCreateBanner(LocationBanner, IImageLoader) -- which normally pulls the
@@ -61,31 +60,47 @@ namespace DeployScreen.Client
             }
         }
 
-        /// <summary>Close(): the panel is done with, so let go of it.</summary>
+        /// <summary>Close(): the panel is done with, so let go of it and stop the driver.</summary>
         private static void AfterClose(object __instance)
         {
             InFlight.Remove(__instance);
+
+            var component = __instance as Component;
+            if (component == null) return;
+
+            // Disabling it is what puts every banner transform back where it was found.
+            var driver = component.GetComponent<BannerDriver>();
+            if (driver != null) driver.enabled = false;
         }
 
         /// <summary>
         /// Show(Location, ESideType, ProfileStats, IImageLoader): note which map's art the
-        /// banners about to be created should come from.
+        /// banners about to be created should come from, and start the driver.
+        ///
+        /// The fourth argument is the session -- ClientBackendSession implements IImageLoader --
+        /// which is how the profile, and so the quest list, is reached without hunting for a
+        /// singleton.
         /// </summary>
-        private static void BeforeShow(object __instance, object __0)
+        private static void BeforeShow(object __instance, object __0, object __3)
         {
             try
             {
                 InFlight.Remove(__instance);
 
-                if (!DeployScreenPlugin.BannersEnabled.Value) return;
                 if (__0 == null) return;
 
-                var locationId = GameTypes.Location_Id.GetValue(__0) as string;
+                if (DeployScreenPlugin.BannersEnabled.Value)
+                {
+                    var locationId = GameTypes.Location_Id.GetValue(__0) as string;
 
-                var images = BannerArt.For(locationId);
-                if (images == null) return;
+                    var images = BannerArt.For(locationId);
+                    if (images != null)
+                    {
+                        InFlight[__instance] = new Progress { Images = images, Next = 0 };
+                    }
+                }
 
-                InFlight[__instance] = new Progress { Images = images, Next = 0 };
+                StartDriver(__instance, __0, __3);
             }
             catch (Exception error)
             {
@@ -128,10 +143,57 @@ namespace DeployScreen.Client
         {
             var captions = DeployScreenPlugin.BannerCaptions.Value;
 
+            // Intel captions are applied later, by the driver, once the banner exists.
             var name = captions == CaptionSource.FileName ? image.Name : string.Empty;
             var description = captions == CaptionSource.FileName ? image.Description : string.Empty;
 
             GameTypes.BannersPanel_CreateBanner.Invoke(panel, new object[] { name, description, sprite });
+        }
+
+        // ----------------------------------------------------------------- driver
+
+        private static void StartDriver(object panel, object location, object session)
+        {
+            if (!GameTypes.DriverReady) return;
+
+            var wantsIntel = DeployScreenPlugin.BannerCaptions.Value == CaptionSource.Intel
+                             && GameTypes.IntelReady;
+
+            if (!DeployScreenPlugin.MotionEnabled.Value && !wantsIntel) return;
+
+            var component = panel as Component;
+            if (component == null) return;
+
+            List<IntelCard> cards = null;
+            if (wantsIntel)
+            {
+                cards = Intel.Build(location, session);
+                PublishIntel(cards);
+            }
+
+            var driver = component.GetComponent<BannerDriver>();
+            if (driver == null) driver = component.gameObject.AddComponent<BannerDriver>();
+
+            driver.Begin(panel, cards);
+        }
+
+        /// <summary>
+        /// Registers the cards under this mod's own locale keys. The banner then carries the
+        /// key rather than the text -- see Localization.cs for why raw text would be hidden.
+        /// </summary>
+        private static void PublishIntel(List<IntelCard> cards)
+        {
+            if (cards == null || cards.Count == 0) return;
+
+            var entries = new Dictionary<string, string>(cards.Count * 2);
+
+            for (var i = 0; i < cards.Count; i++)
+            {
+                entries[IntelKeys.Header(i)] = cards[i].Header ?? string.Empty;
+                entries[IntelKeys.Body(i)] = cards[i].Body ?? string.Empty;
+            }
+
+            Localization.Publish(entries);
         }
 
         /// <summary>
