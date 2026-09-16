@@ -29,7 +29,9 @@ namespace DeployScreen.Client
     /// banner panel in front, drawn from the map's own Banners list, and the menu environment
     /// scene still rendering behind it. This mod takes both:
     ///
-    ///   Banners      -- your own images per map, from a folder next to this DLL.
+    ///   Banners      -- your own images per map, from a folder next to this DLL, in as many sizes
+    ///                   as you like. Banners are measured on the screen, the size that suits it
+    ///                   is used, and pictures are cropped to the banner's shape, never stretched.
     ///   Motion       -- a slow zoom and drift, because nothing on that screen moves.
     ///   Intel        -- bosses, extracts and your active tasks for the map you are entering.
     ///   Backdrop     -- the menu environment switched to suit the destination map.
@@ -42,7 +44,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.1.1";
+        public const string PluginVersion = "1.2.0";
 
         internal static ManualLogSource Log;
 

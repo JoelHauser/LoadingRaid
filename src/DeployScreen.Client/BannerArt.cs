@@ -5,23 +5,65 @@ using UnityEngine;
 
 namespace DeployScreen.Client
 {
-    /// <summary>One image on disk, and the captions drawn over it.</summary>
-    internal sealed class BannerImage
+    /// <summary>One file: one size of one picture.</summary>
+    internal sealed class BannerVariant
     {
         internal string Path;
-        internal string Name;
-        internal string Description;
 
-        private Sprite _sprite;
+        /// <summary>Read from the file's header without decoding it. Zero when it could not be read.</summary>
+        internal int Width;
+        internal int Height;
+
+        private Texture2D _texture;
         private bool _failed;
+        private readonly Dictionary<int, Sprite> _sprites = new Dictionary<int, Sprite>();
 
         /// <summary>
-        /// The sprite, decoded on first use and kept. Null if the file will not decode --
-        /// asked again it stays null rather than re-reading a file that already failed.
+        /// The pixels this file covers once cropped to a banner of the given shape. Sizes are
+        /// compared on this, not on the raw file size, so a wide screenshot is not mistaken for
+        /// a sharp one: most of its width is cropped away.
         /// </summary>
-        internal Sprite Sprite()
+        internal void CroppedSize(float aspect, out float width, out float height)
         {
-            if (_sprite != null || _failed) return _sprite;
+            var crop = BannerArt.CoverRect(Width, Height, aspect);
+            width = crop.width;
+            height = crop.height;
+        }
+
+        /// <summary>
+        /// The sprite for a banner of this shape, decoded on first use and kept. Null if the file
+        /// will not decode -- asked again it stays null rather than re-reading a file that already
+        /// failed.
+        /// </summary>
+        internal Sprite SpriteFor(float aspect)
+        {
+            var texture = Texture();
+            if (texture == null) return null;
+
+            // Keyed by shape to two decimals. A new shape is only a new crop of the same texture,
+            // which costs nothing to make.
+            var key = Mathf.RoundToInt(aspect * 100f);
+
+            Sprite sprite;
+            if (_sprites.TryGetValue(key, out sprite) && sprite != null) return sprite;
+
+            // FullRect: a tight mesh would need the texture's pixels on the CPU, and those are
+            // let go of when it is decoded.
+            sprite = Sprite.Create(
+                texture,
+                BannerArt.CoverRect(texture.width, texture.height, aspect),
+                new Vector2(0.5f, 0.5f),
+                100f,
+                0,
+                SpriteMeshType.FullRect);
+
+            _sprites[key] = sprite;
+            return sprite;
+        }
+
+        private Texture2D Texture()
+        {
+            if (_texture != null || _failed) return _texture;
 
             try
             {
@@ -30,7 +72,9 @@ namespace DeployScreen.Client
                 // Size and format are replaced by LoadImage; these are only placeholders.
                 var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
 
-                if (!ImageConversion.LoadImage(texture, bytes))
+                // markNonReadable drops the CPU copy once the image is on the GPU. A banner sized
+                // for a 4K screen is about 22 MB, and keeping both copies would double it.
+                if (!ImageConversion.LoadImage(texture, bytes, true))
                 {
                     UnityEngine.Object.Destroy(texture);
                     _failed = true;
@@ -41,13 +85,8 @@ namespace DeployScreen.Client
                 // Clamp stops the edge pixels bleeding across when the banner is scaled.
                 texture.wrapMode = TextureWrapMode.Clamp;
 
-                _sprite = UnityEngine.Sprite.Create(
-                    texture,
-                    new Rect(0f, 0f, texture.width, texture.height),
-                    new Vector2(0.5f, 0.5f),
-                    100f);
-
-                return _sprite;
+                _texture = texture;
+                return _texture;
             }
             catch (Exception error)
             {
@@ -58,16 +97,74 @@ namespace DeployScreen.Client
         }
     }
 
+    /// <summary>One picture, in however many sizes its folder holds, and the captions drawn over it.</summary>
+    internal sealed class BannerImage
+    {
+        /// <summary>The file name without extension or size tag -- "01 - Dorms".</summary>
+        internal string Label;
+        internal string Name;
+        internal string Description;
+
+        internal readonly List<BannerVariant> Variants = new List<BannerVariant>();
+
+        /// <summary>
+        /// Which size to use. With the banner measured on this screen: the smallest file that is
+        /// still sharp at that size, or the largest if none is. Before any measurement -- the first
+        /// raid at a resolution -- the largest, so it looks sharp rather than soft.
+        /// </summary>
+        internal BannerVariant Choose(BannerFit fit, bool measured)
+        {
+            var aspect = measured ? fit.Aspect : ScreenFit.StockAspect;
+
+            BannerVariant largest = null;
+            BannerVariant smallestSharp = null;
+            var largestArea = -1.0;
+            var smallestSharpArea = double.MaxValue;
+
+            foreach (var variant in Variants)
+            {
+                float width, height;
+                variant.CroppedSize(aspect, out width, out height);
+
+                var area = (double)width * height;
+
+                if (area > largestArea)
+                {
+                    largestArea = area;
+                    largest = variant;
+                }
+
+                if (measured && ScreenFit.IsSharp(width, height, fit) && area < smallestSharpArea)
+                {
+                    smallestSharpArea = area;
+                    smallestSharp = variant;
+                }
+            }
+
+            return smallestSharp ?? largest;
+        }
+
+        internal Sprite Sprite(BannerFit fit, bool measured)
+        {
+            var variant = Choose(fit, measured);
+            return variant == null ? null : variant.SpriteFor(measured ? fit.Aspect : ScreenFit.StockAspect);
+        }
+    }
+
     /// <summary>
     /// The art on disk, found once per folder and cached.
     ///
     /// Layout, under the plugin's own folder:
     ///
-    ///     banners/&lt;locationId&gt;/*.png|jpg     art for one map -- bigmap, woods, factory4_day...
+    ///     banners/&lt;locationId&gt;/*.png|jpg     art for one map -- bigmap, Woods, factory4_day...
     ///     banners/_default/*.png|jpg           used by any map with no folder of its own
     ///
-    /// A map with neither folder is left completely alone, which is what makes an empty
-    /// install behave exactly like vanilla.
+    /// Several sizes of one picture share a name with a size tag after an @:
+    /// "01 - Dorms.png", "01 - Dorms@1440p.png", "01 - Dorms@4k.jpg". The tag is only a label;
+    /// the real size is read from each file.
+    ///
+    /// A map with neither folder is left completely alone, which is what makes an empty install
+    /// behave exactly like vanilla.
     /// </summary>
     internal static class BannerArt
     {
@@ -75,6 +172,8 @@ namespace DeployScreen.Client
 
         private static readonly Dictionary<string, List<BannerImage>> Cache =
             new Dictionary<string, List<BannerImage>>(StringComparer.OrdinalIgnoreCase);
+
+        private static readonly HashSet<string> WarnedSoft = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         internal static string RootFolder;
 
@@ -87,7 +186,7 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
-        /// The images for a map, or null when there are none -- null means "leave vanilla
+        /// The pictures for a map, or null when there are none -- null means "leave vanilla
         /// alone", and every caller treats it that way.
         /// </summary>
         internal static List<BannerImage> For(string locationId)
@@ -111,8 +210,11 @@ namespace DeployScreen.Client
 
             if (found != null)
             {
+                var files = 0;
+                foreach (var image in found) files += image.Variants.Count;
+
                 DeployScreenPlugin.Log.LogInfo(
-                    "[DeployScreen] " + found.Count + " custom banner(s) for '" + key + "'");
+                    "[DeployScreen] " + found.Count + " custom banner(s) in " + files + " file(s) for '" + key + "'");
             }
 
             return found;
@@ -122,34 +224,118 @@ namespace DeployScreen.Client
         {
             if (!Directory.Exists(folder)) return null;
 
+            var byPicture = new Dictionary<string, BannerImage>(StringComparer.OrdinalIgnoreCase);
             var images = new List<BannerImage>();
 
-            var files = Directory.GetFiles(folder);
-
-            // Sorted so the order on the deploy screen is the order in the folder listing,
-            // which is what anyone numbering their files 01..09 expects.
-            Array.Sort(files, StringComparer.OrdinalIgnoreCase);
-
-            foreach (var file in files)
+            foreach (var file in Directory.GetFiles(folder))
             {
                 if (Array.IndexOf(Extensions, Path.GetExtension(file).ToLowerInvariant()) < 0) continue;
 
-                string name, description;
-                CaptionsFrom(Path.GetFileNameWithoutExtension(file), out name, out description);
+                var picture = PictureName(Path.GetFileNameWithoutExtension(file));
 
-                images.Add(new BannerImage { Path = file, Name = name, Description = description });
+                BannerImage image;
+                if (!byPicture.TryGetValue(picture, out image))
+                {
+                    string name, description;
+                    CaptionsFrom(picture, out name, out description);
+
+                    image = new BannerImage { Label = picture, Name = name, Description = description };
+                    byPicture[picture] = image;
+                    images.Add(image);
+                }
+
+                int width, height;
+                ImageHeader.TryReadSize(file, out width, out height);
+
+                image.Variants.Add(new BannerVariant { Path = file, Width = width, Height = height });
             }
 
+            // Sorted by picture, so the order on the deploy screen is the order of the names --
+            // which is what anyone numbering their files 01..09 expects -- whatever size tags or
+            // extensions the files carry.
+            images.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Label, b.Label));
+
             return images.Count > 0 ? images : null;
+        }
+
+        /// <summary>
+        /// "01 - Dorms@4k" and "01 - Dorms@2560x1540" are both the picture "01 - Dorms". Everything
+        /// after the last @ is a size tag and is ignored.
+        /// </summary>
+        internal static string PictureName(string stem)
+        {
+            var at = stem.LastIndexOf('@');
+            return at > 0 ? stem.Substring(0, at).TrimEnd() : stem;
+        }
+
+        /// <summary>
+        /// The largest centred area of an image that has the banner's shape: cropped, never
+        /// stretched. A screenshot from a 21:9 monitor loses its sides; a tall one loses top and
+        /// bottom. Whole pixels, and never outside the image, since Sprite.Create refuses a rect
+        /// that strays past the texture by any amount.
+        /// </summary>
+        internal static Rect CoverRect(int width, int height, float aspect)
+        {
+            if (width <= 0 || height <= 0) return new Rect(0f, 0f, 0f, 0f);
+            if (aspect <= 0f) return new Rect(0f, 0f, width, height);
+
+            // Rounded, then clamped: rounding down would shave a column off an image that is
+            // already the banner's exact shape (765 * 460/460 comes out as 764.9999), and the clamp
+            // plus integer centring keeps the rect inside the image either way.
+            if ((float)width / height > aspect)
+            {
+                var croppedWidth = Math.Min(width, Mathf.RoundToInt(height * aspect));
+                return new Rect((width - croppedWidth) / 2, 0f, croppedWidth, height);
+            }
+
+            var croppedHeight = Math.Min(height, Mathf.RoundToInt(width / aspect));
+            return new Rect(0f, (height - croppedHeight) / 2, width, croppedHeight);
+        }
+
+        /// <summary>
+        /// Once a banner has been measured: a warning for each picture with no size sharp enough
+        /// for this screen, once per file per screen size.
+        /// </summary>
+        internal static void WarnIfSoft(List<BannerImage> images, BannerFit fit)
+        {
+            if (images == null) return;
+
+            foreach (var image in images)
+            {
+                var variant = image.Choose(fit, true);
+                if (variant == null || variant.Width <= 0) continue;
+
+                float width, height;
+                variant.CroppedSize(fit.Aspect, out width, out height);
+                if (ScreenFit.IsSharp(width, height, fit)) continue;
+
+                if (!WarnedSoft.Add(variant.Path + "@" + ScreenFit.ScreenKey)) continue;
+
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] " + Relative(variant.Path) + " is " + variant.Width + "x" + variant.Height
+                    + " but banners show at " + fit.Width + "x" + fit.Height + " on this screen, so it will "
+                    + "look soft. Save a bigger version as \"" + image.Label + "@large"
+                    + Path.GetExtension(variant.Path) + "\" and it will be used instead.");
+            }
+        }
+
+        /// <summary>A file's path from the plugin folder, so logs read "banners\bigmap\01 - Dorms.png".</summary>
+        private static string Relative(string path)
+        {
+            var pluginFolder = Path.GetDirectoryName(RootFolder);
+
+            return !string.IsNullOrEmpty(pluginFolder) && path.StartsWith(pluginFolder, StringComparison.OrdinalIgnoreCase)
+                ? path.Substring(pluginFolder.Length).TrimStart('\\', '/')
+                : path;
         }
 
         /// <summary>
         /// Captions read out of the file name: "Dorms; Three storeys, two keys" splits on the
         /// first semicolon, and a leading "01 - " or "3." is treated as ordering and dropped.
         ///
-        /// 1.1.0 split on a pipe, which Windows does not allow in a file name -- so no file
-        /// could ever have carried a description. A pipe is still accepted, for files named
-        /// somewhere that does allow it.
+        /// 1.1.0 split on a pipe, which Windows does not allow in a file name -- so no file could
+        /// ever have carried a description. A pipe is still accepted, for files named somewhere
+        /// that does allow it.
         /// </summary>
         internal static void CaptionsFrom(string fileName, out string name, out string description)
         {

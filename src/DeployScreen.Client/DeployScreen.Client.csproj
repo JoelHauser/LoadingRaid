@@ -7,7 +7,7 @@
     <AssemblyName>DeployScreen.Client</AssemblyName>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.1.1</Version>
+    <Version>1.2.0</Version>
 
     <SPTPath Condition="'$(SPTPath)' == ''">C:\HUH</SPTPath>
     <GameManaged>$(SPTPath)\EscapeFromTarkov_Data\Managed</GameManaged>
@@ -56,6 +56,12 @@
     <!-- ImageConversion.LoadImage: PNG/JPG bytes into a Texture2D. -->
     <Reference Include="UnityEngine.ImageConversionModule">
       <HintPath>$(GameManaged)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Canvas, RenderMode, RectTransformUtility: measuring a banner in screen pixels. An engine
+         module, not the game's UI library, so the no-game-reference rule still holds. -->
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(GameManaged)\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

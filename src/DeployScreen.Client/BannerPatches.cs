@@ -10,13 +10,13 @@ namespace DeployScreen.Client
     /// What replaces the art on the deploy screen, and what starts the driver that dresses it.
     ///
     /// The panel draws one banner per entry in the map's Banners array, and reaches each one
-    /// through TryCreateBanner(LocationBanner, IImageLoader) -- which normally pulls the
-    /// image off the server by path. Replacing that call with a local sprite changes the art
-    /// and nothing else: the game's own CreateBanner still builds the UI, so the page
-    /// toggles, the fade and the selection all behave as they do in vanilla.
+    /// through TryCreateBanner(LocationBanner, IImageLoader) -- which normally pulls the image off
+    /// the server by path. Replacing that call with a local sprite changes the art and nothing
+    /// else: the game's own CreateBanner still builds the UI, so the page toggles, the fade and
+    /// the selection all behave as they do in vanilla.
     ///
-    /// The count stays vanilla too. A map showing four banners shows four; extra files in its
-    /// folder are not reached, and fewer files than banners are cycled. That is deliberate --
+    /// The count stays vanilla too. A map showing four banners shows four; extra pictures in its
+    /// folder are not reached, and fewer pictures than banners are cycled. That is deliberate --
     /// changing the count means rewriting the Banners array on a live game object, which is
     /// shared state this mod has no business editing.
     ///
@@ -26,8 +26,8 @@ namespace DeployScreen.Client
     internal static class BannerPatches
     {
         /// <summary>
-        /// The art in play for a panel, and how far through it the current Show has got.
-        /// Keyed by panel so a second panel cannot walk the first one's index.
+        /// The art in play for a panel, and how far through it the current Show has got. Keyed by
+        /// panel so a second panel cannot walk the first one's index.
         /// </summary>
         private sealed class Progress
         {
@@ -50,8 +50,8 @@ namespace DeployScreen.Client
                 GameTypes.BannersPanel_TryCreateBanner,
                 prefix: new HarmonyMethod(AccessTools.Method(typeof(BannerPatches), nameof(BeforeTryCreateBanner))));
 
-            // InFlight is keyed by panel, which is a strong reference to a Unity object the
-            // game will destroy. Without this the table pins every panel it ever saw.
+            // InFlight is keyed by panel, which is a strong reference to a Unity object the game
+            // will destroy. Without this the table pins every panel it ever saw.
             if (GameTypes.BannersPanel_Close != null)
             {
                 harmony.Patch(
@@ -74,7 +74,7 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
-        /// Show(Location, ESideType, ProfileStats, IImageLoader): note which map's art the
+        /// Show(Location, ESideType, ProfileStats, IImageLoader): note which map's pictures the
         /// banners about to be created should come from, and start the driver.
         ///
         /// The fourth argument is the session -- ClientBackendSession implements IImageLoader --
@@ -89,18 +89,20 @@ namespace DeployScreen.Client
 
                 if (__0 == null) return;
 
+                List<BannerImage> images = null;
+
                 if (DeployScreenPlugin.BannersEnabled.Value)
                 {
                     var locationId = GameTypes.Location_Id.GetValue(__0) as string;
 
-                    var images = BannerArt.For(locationId);
+                    images = BannerArt.For(locationId);
                     if (images != null)
                     {
                         InFlight[__instance] = new Progress { Images = images, Next = 0 };
                     }
                 }
 
-                StartDriver(__instance, __0, __3);
+                StartDriver(__instance, __0, __3, images);
             }
             catch (Exception error)
             {
@@ -109,8 +111,11 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
-        /// TryCreateBanner(LocationBanner, IImageLoader): build the banner from a file on disk
-        /// and skip the original, which would otherwise fetch the stock image from the server.
+        /// TryCreateBanner(LocationBanner, IImageLoader): build the banner from a file on disk and
+        /// skip the original, which would otherwise fetch the stock image from the server.
+        ///
+        /// The size of the picture is chosen for this screen if a banner has already been measured
+        /// at this resolution, and is the largest available if not.
         /// </summary>
         private static bool BeforeTryCreateBanner(object __instance, ref Task __result)
         {
@@ -119,11 +124,14 @@ namespace DeployScreen.Client
                 Progress progress;
                 if (!InFlight.TryGetValue(__instance, out progress)) return true;
 
-                // Fewer files than the map has banners: cycle, so every slot is filled.
+                // Fewer pictures than the map has banners: cycle, so every slot is filled.
                 var image = progress.Images[progress.Next % progress.Images.Count];
                 progress.Next++;
 
-                var sprite = image.Sprite();
+                BannerFit fit;
+                var measured = ScreenFit.TryCurrent(out fit);
+
+                var sprite = image.Sprite(fit, measured);
                 if (sprite == null) return true;
 
                 CreateBanner(__instance, image, sprite);
@@ -152,20 +160,21 @@ namespace DeployScreen.Client
 
         // ----------------------------------------------------------------- driver
 
-        private static void StartDriver(object panel, object location, object session)
+        /// <summary>
+        /// Started on every Show, even with motion and intel both off: the driver is also what
+        /// measures the banners on screen, which chooses picture sizes and logs the size to make
+        /// custom images.
+        /// </summary>
+        private static void StartDriver(object panel, object location, object session, List<BannerImage> images)
         {
             if (!GameTypes.DriverReady) return;
-
-            var wantsIntel = DeployScreenPlugin.BannerCaptions.Value == CaptionSource.Intel
-                             && GameTypes.IntelReady;
-
-            if (!DeployScreenPlugin.MotionEnabled.Value && !wantsIntel) return;
 
             var component = panel as Component;
             if (component == null) return;
 
             List<IntelCard> cards = null;
-            if (wantsIntel)
+
+            if (DeployScreenPlugin.BannerCaptions.Value == CaptionSource.Intel && GameTypes.IntelReady)
             {
                 cards = Intel.Build(location, session);
                 PublishIntel(cards);
@@ -174,12 +183,12 @@ namespace DeployScreen.Client
             var driver = component.GetComponent<BannerDriver>();
             if (driver == null) driver = component.gameObject.AddComponent<BannerDriver>();
 
-            driver.Begin(panel, cards);
+            driver.Begin(panel, cards, images);
         }
 
         /// <summary>
-        /// Registers the cards under this mod's own locale keys. The banner then carries the
-        /// key rather than the text -- see Localization.cs for why raw text would be hidden.
+        /// Registers the cards under this mod's own locale keys. The banner then carries the key
+        /// rather than the text -- see Localization.cs for why raw text would be hidden.
         /// </summary>
         private static void PublishIntel(List<IntelCard> cards)
         {

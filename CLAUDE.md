@@ -1,7 +1,7 @@
 # SPT-DeployScreen -- working notes for Claude
 
 Replaces what you look at while a raid loads: motion and map intel on the deploy screen's
-banners, custom banner art, and optionally the menu backdrop behind it. Client-only
+banners, custom banner art sized and cropped for the player's screen, and optionally the menu backdrop behind it. Client-only
 BepInEx plugin, **no `spt-*` references and no `Assembly-CSharp` reference at all**.
 
 **Nothing in this repo has ever run in the game.** Everything below was read out of the
@@ -17,11 +17,12 @@ corrected; nothing has been tested.
 | SPT version | 4.1.5 |
 | EFT client | `0.16.9.5.40743` |
 | BepInEx | 5.4.23.5, HarmonyLib **2.9.0** |
-| Built | 1.1.1 on 2026-09-16, clean, 0 warnings |
+| Built | 1.2.0 on 2026-09-16, clean, 0 warnings; `scripts\test-logic.ps1` passes |
 
 ```
 scripts\pack.ps1 -SPTPath C:\HUH
 scripts\pack.ps1 -SPTPath C:\HUH -Install
+scripts\test-logic.ps1 -SPTPath C:\HUH     # the game-independent logic, against real files
 ```
 
 **Run those through PowerShell, not Bash** -- same `C:HUH` mangling trap as CamoPatch,
@@ -52,8 +53,9 @@ type, method and field by its **patched** name at runtime through `AccessTools`
   bad name can be caught, so **new game members must be added there**, never looked up ad
   hoc at the patch site.
 - The DLL references only `mscorlib`, `System`, `System.Core` (for `HashSet<T>`), `BepInEx`,
-  `0Harmony`, `UnityEngine.CoreModule` and `UnityEngine.ImageConversionModule` -- all shipped
-  in `Managed` or `BepInEx\core`. Banner images are read as `Component` rather than
+  `0Harmony`, `UnityEngine.CoreModule`, `UnityEngine.ImageConversionModule` and
+  `UnityEngine.UIModule` (`Canvas`, `RectTransformUtility`, since 1.2.0) -- all shipped in
+  `Managed` or `BepInEx\core`, and none of them the game's own code. Banner images are read as `Component` rather than
   `UnityEngine.UI.Image` specifically to keep `UnityEngine.UI` out.
 
 A patched copy for analysis is at `scratchpad\managed415\Assembly-CSharp.dll` (16,233,472
@@ -240,8 +242,11 @@ BannerDriver.cs         watches _locationBanners; attaches motion, sets intel ca
 KenBurns.cs             the zoom-and-drift MonoBehaviour on one banner image
 Intel.cs                builds the cards from the Location and the profile
 Localization.cs         publishes cards to the locale table; looks up game names
-BannerArt.cs            art discovery on disk, caption parsing, the sprite cache
+BannerArt.cs            pictures and their sizes on disk, cropping, size choice, captions, sprites
+ScreenFit.cs            measuring a banner in screen pixels, per screen size; the ideal-size log
+ImageHeader.cs          pixel size from a PNG or JPEG header, without decoding
 EnvironmentMatch.cs     the map -> backdrop table, environments.txt, the scene request
+scripts/test-logic.ps1  ImageHeader, cropping, size choice and captions, checked against real files
 ```
 
 ### The patches
@@ -319,6 +324,72 @@ Each of these produced a confident wrong answer first. Worth checking for again.
 - **Windows file names cannot contain `< > : " / \ | ? *`.** Check any file-naming convention
   against that list before documenting it.
 
+## Resolution
+
+Requested by the user as three things: pick sharp images, log the ideal size, and be right on
+ultrawide and 16:10. **Not** scaling the motion, which they declined -- `KenBurns` moves in the
+banner's own RectTransform units, which the game's canvas already scales.
+
+### Measured, not calculated
+
+How big a banner is drawn depends on the game's CanvasScaler mode, its reference resolution,
+and whatever `Utils.SetCanvasRestriction` does on wide screens (it sets `uiScaleMode` and
+`scaleFactor`) -- serialized into prefabs, not readable from code. So `ScreenFit.TryMeasure`
+takes the banner image's `GetWorldCorners` through `RectTransformUtility.WorldToScreenPoint`
+(camera `null` for a `ScreenSpaceOverlay` root canvas, its `worldCamera` otherwise) and divides
+out `KenBurns.CurrentZoom`. That holds at any resolution and any screen shape without knowing
+any of the above.
+
+- `BannerDriver` measures the first banner that has a size, retrying each frame for up to 120
+  frames once banners exist. Once per `Show`.
+- Kept per `Screen.width x Screen.height` for the session; a resolution change is measured again.
+- **A measurement only affects the next raid**: the banners on screen were built before it
+  existed. So the first raid at a resolution uses every picture's **largest** size.
+
+### Sizes of one picture
+
+`01 - Dorms.png`, `01 - Dorms@1440p.png` and `01 - Dorms@4k.jpg` are one picture -- the stem up
+to the last `@` (`BannerArt.PictureName`). The tag is only a label. Each file's real size comes
+from its header (`ImageHeader`: a PNG's IHDR at bytes 16 and 20; a JPEG by walking its segments
+to the SOF marker, which can sit behind any amount of metadata).
+
+`BannerImage.Choose` compares sizes **after cropping to the banner's shape**, so a wide
+screenshot is not mistaken for a sharp one: the smallest within 2% of the measured size, else
+the largest; the largest too when nothing has been measured.
+
+### Shape
+
+`BannerArt.CoverRect` takes the largest centred area with the banner's shape -- measured, or
+765:460 before any measurement -- in whole pixels, **rounded** then clamped and integer-centred
+so `Sprite.Create` never gets a rect outside the texture. Rounding matters: 460 * (765/460) is
+764.9999, and flooring shaved a column off a stock-shaped image. Sprites are made per shape (to
+0.01) from one texture, with `SpriteMeshType.FullRect` since the texture is non-readable.
+
+### Log lines
+
+- `ScreenFit.Record`, once per screen size: `banners show at WxH px on this WxH screen (r:1).
+  Custom images at least that size will look sharp; the stock art is 765x460.`
+- `BannerArt.WarnIfSoft`, once per file per screen size: names a picture with no size sharp
+  enough, and suggests saving `<picture>@large.<ext>`.
+
+### Memory
+
+Textures load with `LoadImage(..., markNonReadable: true)`, dropping the CPU copy; a banner sized
+for 4K is ~22 MB of GPU memory. Nothing is destroyed: the first raid at a resolution loads the
+largest sizes, a later raid may load smaller ones as well, and both stay for the session.
+Bounded by what is on disk, but real.
+
+### Tested, and not
+
+`scripts\test-logic.ps1` loads the built DLL by reflection -- Unity's `Rect` and `Mathf` resolve
+from Managed, and their managed parts run fine outside the engine -- and checks, all passing on
+1.2.0: header sizes on all 44 stock banners against System.Drawing; generated PNG and JPEG; a JPEG
+with 130 KB of APP1 metadata ahead of its frame header; a text file named .png; size tags;
+file-name captions; crop rects for stock, 21:9, 16:9, 16:10 and tall images; and six size choices.
+
+**Nothing that needs a screen has run**: `TryMeasure`, which render mode EFT's menu canvas uses,
+whether world corners match what the player sees, the log lines, the driver's timing.
+
 ## The preview
 
 https://claude.ai/artifact/5nfufGxXp3ZbeRz4k9QEEB -- private to the user. A browser
@@ -343,6 +414,9 @@ or the preview silently shows the old rule.
 
 In rough order of risk:
 
+- **Does the logged size match the screen?** Compare `banners show at` against a screenshot. If
+  EFT's UI camera renders to a RenderTexture that is then scaled to the screen, every measurement
+  is off by that scale, and so is every size choice.
 - **Is `_bannerImage` clipped?** Nothing static says whether the banner frame masks its
   image (`Coffee.SoftMaskForUGUI` ships, which is suggestive). If not, zoom shows the edges.
   Default 1.06 is small for that reason.
@@ -418,13 +492,13 @@ with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo w
 2026-09-16: **1.1.0** added motion and map intel, and corrected the location-id casing and the
 "tested" claim in the docs.
 
-**1.1.1** fixes the intel text found broken by the preview -- game names for maps, extracts
-and bosses, a stable most-likely-first boss order, a real "always open" rule -- and switches
-file-name captions from `|` to `;`. Built clean against SPT 4.1.5 / BepInEx 5.4.23.5 and
-packed to `releases\DeployScreen_V1.1.1.zip`.
+**1.1.1** fixed the intel text found broken by the preview -- game names for maps, extracts and
+bosses, a stable most-likely-first boss order, a real "always open" rule -- and switched
+file-name captions from `|` to `;`. Pushed as `e044ac9`.
 
-**Next, requested by the user:** resolution detection -- measure the banner's real on-screen
-size, pick the best-sized version of each custom image, log the ideal image size, and make
-banners right on ultrawide and 16:10 screens. Motion scaling was explicitly not wanted.
+**1.2.0** adds resolution handling: banners measured on screen, several sizes of one picture
+with the smallest sharp one chosen, centre-cropping to the banner's shape, and the ideal size in
+the log. Built clean against SPT 4.1.5 / BepInEx 5.4.23.5, packed to
+`releases\DeployScreen_V1.2.0.zip`, and `scripts\test-logic.ps1` passes.
 
 **Still not installed, and still never run in the game.**

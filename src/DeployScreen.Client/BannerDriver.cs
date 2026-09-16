@@ -6,38 +6,53 @@ using UnityEngine;
 namespace DeployScreen.Client
 {
     /// <summary>
-    /// Watches one banner panel and dresses each banner as it appears.
+    /// Watches one banner panel, dresses each banner as it appears, and measures one of them on
+    /// the screen.
     ///
     /// The panel fills _locationBanners over several frames -- each banner waits on its image
     /// before being added -- so there is no single moment afterwards to do this in. A Harmony
     /// postfix is no help either: Show is async, so it returns its Task long before any banner
     /// exists. Watching the list is simply what fits.
     ///
-    /// _locationBanners holds only the map's banners. The key-binding banners the tutorial
-    /// adds go through a different path and never appear here, which is exactly what we want:
-    /// panning an instructional diagram or captioning it with boss chances would be wrong.
+    /// _locationBanners holds only the map's banners. The key-binding banners the tutorial adds
+    /// go through a different path and never appear here, which is exactly what we want: panning
+    /// an instructional diagram or captioning it with boss chances would be wrong.
     /// </summary>
     internal sealed class BannerDriver : MonoBehaviour
     {
+        /// <summary>
+        /// Frames to keep trying to measure once banners exist. Layout can take a frame or two; a
+        /// banner that has no size after a couple of seconds is not going to get one.
+        /// </summary>
+        private const int MeasureAttempts = 120;
+
         private object _panel;
         private List<IntelCard> _cards;
+        private List<BannerImage> _images;
 
         private readonly HashSet<object> _seen = new HashSet<object>();
         private readonly List<KenBurns> _attached = new List<KenBurns>();
+        private readonly List<RectTransform> _measurable = new List<RectTransform>();
 
         private int _nextCard;
+        private bool _measured;
+        private int _attempts;
         private bool _warnedOnce;
 
         /// <summary>
-        /// Starts a fresh pass. Called on every Show, because the panel is reused between
-        /// raids and the map -- and so the intel -- will usually have changed.
+        /// Starts a fresh pass. Called on every Show, because the panel is reused between raids
+        /// and the map -- and so the intel and the pictures -- will usually have changed.
         /// </summary>
-        internal void Begin(object panel, List<IntelCard> cards)
+        internal void Begin(object panel, List<IntelCard> cards, List<BannerImage> images)
         {
             _panel = panel;
             _cards = cards;
+            _images = images;
             _nextCard = 0;
             _seen.Clear();
+            _measurable.Clear();
+            _measured = false;
+            _attempts = 0;
 
             enabled = true;
         }
@@ -67,6 +82,8 @@ namespace DeployScreen.Client
 
                     Dress(banner);
                 }
+
+                if (!_measured) Measure();
             }
             catch (Exception error)
             {
@@ -77,26 +94,35 @@ namespace DeployScreen.Client
 
         private void Dress(object banner)
         {
-            if (DeployScreenPlugin.MotionEnabled.Value) AddMotion(banner);
+            var rect = ImageRect(banner);
+
+            if (rect != null)
+            {
+                _measurable.Add(rect);
+
+                if (DeployScreenPlugin.MotionEnabled.Value) AddMotion(rect);
+            }
 
             if (DeployScreenPlugin.BannerCaptions.Value == CaptionSource.Intel) AddIntel(banner);
         }
 
-        // ------------------------------------------------------------------ motion
-
-        private void AddMotion(object banner)
+        /// <summary>
+        /// The banner image's RectTransform. Read as Component rather than Image so this assembly
+        /// needs no UnityEngine.UI reference; the transform is all that is used.
+        /// </summary>
+        private static RectTransform ImageRect(object banner)
         {
             var image = GameTypes.Banner_BannerImage == null
                 ? null
                 : GameTypes.Banner_BannerImage.GetValue(banner) as Component;
 
-            if (image == null) return;
+            return image == null ? null : image.transform as RectTransform;
+        }
 
-            // Read as Component rather than Image so this assembly needs no UnityEngine.UI
-            // reference; the RectTransform is all the motion touches.
-            var rect = image.transform as RectTransform;
-            if (rect == null) return;
+        // ------------------------------------------------------------------ motion
 
+        private void AddMotion(RectTransform rect)
+        {
             if (rect.GetComponent<KenBurns>() != null) return;
 
             var motion = rect.gameObject.AddComponent<KenBurns>();
@@ -106,12 +132,49 @@ namespace DeployScreen.Client
             _attached.Add(motion);
         }
 
+        // ------------------------------------------------------------ measurement
+
+        /// <summary>
+        /// Measures the first banner that has a size, records it for this screen, and warns about
+        /// custom pictures too small for it. Every banner is the same size, so one is enough.
+        ///
+        /// The measurement only affects which picture sizes are chosen from the next raid on:
+        /// the banners on screen now were built before it existed.
+        /// </summary>
+        private void Measure()
+        {
+            if (_measurable.Count == 0) return;
+
+            if (++_attempts > MeasureAttempts)
+            {
+                _measured = true;
+                return;
+            }
+
+            foreach (var rect in _measurable)
+            {
+                if (rect == null) continue;
+
+                var motion = rect.GetComponent<KenBurns>();
+                var zoom = motion != null ? motion.CurrentZoom : 1f;
+
+                BannerFit fit;
+                if (!ScreenFit.TryMeasure(rect, zoom, out fit)) continue;
+
+                ScreenFit.Record(fit);
+                BannerArt.WarnIfSoft(_images, fit);
+
+                _measured = true;
+                return;
+            }
+        }
+
         // ------------------------------------------------------------------- intel
 
         /// <summary>
-        /// Points the banner's caption fields at this mod's locale keys. The panel reads them
-        /// when a banner is selected, so setting them as the banner appears is enough -- and if
-        /// the very first selection happens to beat this, the next switch corrects it.
+        /// Points the banner's caption fields at this mod's locale keys. The panel reads them when
+        /// a banner is selected, so setting them as the banner appears is enough -- and if the
+        /// very first selection happens to beat this, the next switch corrects it.
         /// </summary>
         private void AddIntel(object banner)
         {
@@ -128,8 +191,8 @@ namespace DeployScreen.Client
                 return;
             }
 
-            // No locale table: the heading still shows raw text, but a raw description would
-            // be hidden by the panel's own equality check, so do not set one.
+            // No locale table: the heading still shows raw text, but a raw description would be
+            // hidden by the panel's own equality check, so do not set one.
             GameTypes.Banner_BannerName.SetValue(banner, _cards[index].Header);
             GameTypes.Banner_BannerDescription.SetValue(banner, string.Empty);
         }

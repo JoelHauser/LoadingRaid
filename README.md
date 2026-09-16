@@ -23,7 +23,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.1.1.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.2.0.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -78,9 +78,32 @@ banners/_default/anything.png
 
 - PNG, JPG and JPEG all work.
 - `_default` is used for any map that doesn't have its own folder. A map with neither keeps its stock images.
-- The stock banners are **765×460**. Images with a different shape get stretched.
-- Images are used in file name order. A leading number like `01 - ` or `3.` only sets the order and isn't shown in the caption.
-- Each map shows the same number of banners it does without the mod: ten on Customs and Factory, five on Labs, four on most other maps. Extra images aren't used, and if you add fewer, they repeat.
+- Pictures are used in file name order. A leading number like `01 - ` or `3.` only sets the order and isn't shown in the caption.
+- Each map shows the same number of banners it does without the mod: ten on Customs and Factory, five on Labs, four on most other maps. Extra pictures aren't used, and if you add fewer, they repeat.
+
+### Size and shape
+
+The mod measures how big banners really are on your screen. The first time you load into a raid at a resolution, it writes that to the BepInEx log (`BepInEx/LogOutput.log`), for example:
+
+```
+[DeployScreen] banners show at 1530x920 px on this 3840x2160 screen (1.78:1). Custom images at least that size will look sharp; the stock art is 765x460.
+```
+
+Make your images at least that size and they'll look sharp. Any picture too small for your screen is named in the log.
+
+**Any shape works.** Images are cropped from the center to the banner's shape, never stretched, so a screenshot from a 21:9, 32:9 or 16:10 monitor can go straight in.
+
+### Several sizes of one picture
+
+Give each size the same name, with `@` and anything after it:
+
+```
+banners/bigmap/01 - Dorms.png
+banners/bigmap/01 - Dorms@1440p.png
+banners/bigmap/01 - Dorms@4k.png
+```
+
+They count as one picture. The mod reads each file's real size and uses the smallest one that's sharp on your screen, so the same folder works on any monitor. What you write after the `@` is only a label.
 
 ### Captions from file names
 
@@ -128,7 +151,8 @@ Shoreline     = Random     # leave the menu alone for this map
 ## Performance
 
 - **Motion** and **map intel** only do anything while the loading screen is showing.
-- **Custom banners** are loaded the first time they're needed and kept in memory until you quit.
+- **Custom banners** are loaded the first time they're needed and kept in memory until you quit. Big pictures take longer to load and use more video memory: one sized for a 4K screen is about 22 MB, so ten come to over 200 MB. Giving each picture a smaller size too lets lower resolutions use less.
+- **Measuring** the banners happens once per raid and isn't something you'd notice.
 - **Backdrop** loads a scene whenever the next map needs a different one, which can cause a short stutter. That's why it's off by default.
 
 ## Compatibility
@@ -146,12 +170,15 @@ Shoreline     = Random     # leave the menu alone for this map
 - **Card headings are in English.** Names follow your game language, but labels like `BOSSES` and `min raid` don't. Nor do a few boss names the game has no text for, such as Kaban and Kollontay.
 - **The first banner might show its normal caption** until the banners switch for the first time.
 - **High Zoom values can show a banner's edges.** Lower **Zoom** if you see them.
+- **The first raid at a new resolution uses the largest size of each picture.** Banners can only be measured once they're on screen, so the best size is picked from the next raid on.
+- **The mod can't change the game's own layout.** On ultrawide and other screens it measures, and crops to, wherever the game puts the banner.
 
 ## How it works
 
 The loading screen builds each banner by loading its image from the server, then fills in the caption when that banner is selected.
 
-- **Custom banners** use your image instead of the one from the server.
+- **Custom banners** use your image instead of the one from the server, cropped to the banner's shape.
+- **Resolution**: once banners are on screen, the mod measures them in pixels, writes that to the log, and uses it to choose between sizes of the same picture from then on.
 - **Motion** slowly scales and moves each banner image.
 - **Map intel** reads what the game already knows about the map you picked (boss chances, extracts and your tasks) and adds it to the game's own text, so the banners show it as their captions.
 - **Backdrop** asks the game to load a different menu scene.
@@ -177,6 +204,12 @@ scripts\pack.ps1 -SPTPath "C:\path\to\SPT" -Install   # also copy it into that i
 ```
 
 `-Install` never overwrites your `environments.txt` or anything in `banners`.
+
+To check the parts that don't need the game (reading image sizes, cropping, choosing a size, and reading captions from file names) against real files:
+
+```powershell
+scripts\test-logic.ps1 -SPTPath "C:\path\to\SPT"
+```
 
 Use PowerShell rather than Git Bash: Bash can mangle Windows paths passed to `-SPTPath`.
 

@@ -21,22 +21,47 @@ How many show up
 ----------------
 
 The same number the map shows in vanilla -- Customs and Factory have ten, Woods
-four, Labs five. Extra files past that are not reached; fewer files than that are
-cycled so every slot is filled. The mod does not change the count.
+four, Labs five. Extra pictures past that are not reached; fewer pictures than that
+are cycled so every slot is filled. The mod does not change the count.
 
 
-Size
-----
+Size and shape
+--------------
 
-The stock banners are 765x460. Anything with that shape works; something far off it
-will be stretched to fit.
+Banners are measured on your screen. The first time you load into a raid at a
+resolution, the BepInEx log says how big they really are, for example:
+
+    [DeployScreen] banners show at 1530x920 px on this 3840x2160 screen ...
+
+Make images at least that size and they will look sharp. The stock art is 765x460.
+Any picture too small for your screen is named in the log.
+
+Any shape works. Images are cropped from the centre to the banner's shape, never
+stretched, so a screenshot from a 21:9, 32:9 or 16:10 monitor can go straight in.
+
+
+Several sizes of one picture
+----------------------------
+
+Give each size the same name, with @ and anything after it:
+
+    01 - Dorms.png
+    01 - Dorms@1440p.png
+    01 - Dorms@4k.png
+
+They count as one picture. The mod reads each file's real size and uses the smallest
+one that is sharp on your screen, so one folder works on any monitor. What comes
+after the @ is only a label.
+
+The first raid at a new resolution uses the largest size, because a banner can only
+be measured once it is on screen. From the next raid on, the best size is used.
 
 
 Ordering and captions
 ---------------------
 
-Files are used in name order, so number them if the order matters. A leading "01 - "
-or "3." is treated as ordering and dropped from the caption.
+Pictures are used in name order, so number them if the order matters. A leading
+"01 - " or "3." is treated as ordering and dropped from the caption.
 
 The Captions setting in F12 decides what is written over each banner:
 

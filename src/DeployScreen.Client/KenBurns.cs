@@ -73,6 +73,20 @@ namespace DeployScreen.Client
             Restore();
         }
 
+        /// <summary>
+        /// How far this banner is zoomed right now, so a measurement of it can divide the zoom back
+        /// out and get the banner's size at rest.
+        /// </summary>
+        internal float CurrentZoom
+        {
+            get
+            {
+                if (_rect == null || !_captured || Mathf.Approximately(_originalScale.x, 0f)) return 1f;
+
+                return _rect.localScale.x / _originalScale.x;
+            }
+        }
+
         /// <summary>Puts the transform back exactly as it was found.</summary>
         internal void Restore()
         {
