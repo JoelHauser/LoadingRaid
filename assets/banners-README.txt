@@ -41,8 +41,8 @@ or "3." is treated as ordering and dropped from the caption.
 The Captions setting in F12 decides what is written over each banner:
 
     Map intel       (default) bosses, extracts, and your active tasks on this map
-    From file name  the name before a pipe is the heading, the rest the line under it:
-                        Dorms|Three storey, two keys.png
+    From file name  the name before a semicolon is the heading, the rest the line under it:
+                        Dorms; Three storeys, two keys.png
     Keep vanilla    the game's own headings; the file name only sets the order
 
 

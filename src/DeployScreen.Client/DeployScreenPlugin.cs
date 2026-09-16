@@ -42,7 +42,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.1.0";
+        public const string PluginVersion = "1.1.1";
 
         internal static ManualLogSource Log;
 
@@ -71,7 +71,7 @@ namespace DeployScreen.Client
                 CaptionSource.Intel,
                 "Map intel: bosses and their chances, extract count, and the tasks you have "
                 + "active on this map.\n"
-                + "From file name: 'Dorms|Three storey, two keys.png' becomes that heading and that "
+                + "From file name: 'Dorms; Three storeys, two keys.png' becomes that heading and that "
                 + "line under it. A leading '01 - ' is treated as ordering and dropped.\n"
                 + "Keep vanilla: the game's own banner headings.\n"
                 + "Takes effect on the next raid.");

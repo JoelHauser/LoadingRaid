@@ -55,12 +55,14 @@ namespace DeployScreen.Client
         internal static FieldInfo BossSpawn_BossChance;
         internal static FieldInfo Exit_Name;
         internal static FieldInfo Exit_Chance;
+        internal static FieldInfo Exit_PassageRequirement;
 
         internal static Type LocalizationManager;
         internal static PropertyInfo LocalizationManager_Instance;
         internal static PropertyInfo LocalizationManager_Culture;
         internal static MethodInfo LocalizationManager_UpdateLocale;
         internal static MethodInfo LocalizationManager_LocalizedValue;
+        internal static MethodInfo LocalizationManager_TryGetLocalization;
 
         /// <summary>EFT.Locale, which is itself a Dictionary&lt;string, string&gt;.</summary>
         internal static Type Locale;
@@ -198,6 +200,10 @@ namespace DeployScreen.Client
             {
                 Exit_Name = AccessTools.Field(exit, "Name");
                 Exit_Chance = AccessTools.Field(exit, "Chance");
+
+                // EFT.Interactive.ERequirementState; None = 0, which is also what an exit whose
+                // data omits the field comes through as (every Factory exit).
+                Exit_PassageRequirement = AccessTools.Field(exit, "PassageRequirement");
             }
 
             // Intel is delivered through the locale table -- see Localization.cs for why a raw
@@ -218,6 +224,10 @@ namespace DeployScreen.Client
             // Two overloads; the one-argument one applies the current culture itself.
             LocalizationManager_LocalizedValue =
                 AccessTools.Method(LocalizationManager, "LocalizedValue", new[] { typeof(string) });
+
+            // TryGetLocalization(string id, string locale, out string localizedValue) -- whether a
+            // key exists, which is not the same as whether its text differs from the key.
+            LocalizationManager_TryGetLocalization = AccessTools.Method(LocalizationManager, "TryGetLocalization");
 
             if (LocalizationManager_Instance == null) return Missing("LocalizationManager.Instance");
             if (LocalizationManager_Culture == null) return Missing("LocalizationManager.Culture");

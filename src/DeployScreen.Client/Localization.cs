@@ -4,9 +4,10 @@ using System.Collections.Generic;
 namespace DeployScreen.Client
 {
     /// <summary>
-    /// Puts this mod's strings into the game's own locale table.
+    /// Puts this mod's strings into the game's own locale table, and reads the game's names
+    /// out of it.
     ///
-    /// This exists because of one line in MatchmakerBannersPanel.SelectBanner:
+    /// Publishing exists because of one line in MatchmakerBannersPanel.SelectBanner:
     ///
     ///     var localized = BannerDescription.Localized();
     ///     if (localized.IsNullOrEmpty() || localized.Equals(BannerDescription)) hide it;
@@ -43,15 +44,12 @@ namespace DeployScreen.Client
             Available = false;
 
             if (entries == null || entries.Count == 0) return false;
-            if (GameTypes.LocalizationManager_Instance == null) return false;
 
             try
             {
-                var manager = GameTypes.LocalizationManager_Instance.GetValue(null, null);
-                if (manager == null) return false;
-
-                var culture = GameTypes.LocalizationManager_Culture.GetValue(manager, null) as string;
-                if (string.IsNullOrEmpty(culture)) return false;
+                object manager;
+                string culture;
+                if (!Reach(out manager, out culture)) return false;
 
                 // Locale's only constructor takes the dictionary to seed it from.
                 var locale = Activator.CreateInstance(GameTypes.Locale, new object[] { entries });
@@ -69,34 +67,92 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
-        /// The game's own lookup, used for names it already knows -- boss roles under
-        /// "QuestCondition/Elimination/Kill/BotRole/..." and quests under "&lt;id&gt; name".
-        /// Returns null when the key does not resolve, rather than the key itself, so callers
-        /// can tell the difference and fall back.
+        /// The game's text for a key, or null when it has none -- so callers can tell "unknown"
+        /// from "known" and fall back.
         /// </summary>
         internal static string Lookup(string key)
         {
-            if (string.IsNullOrEmpty(key)) return null;
-            if (GameTypes.LocalizationManager_Instance == null) return null;
+            string value;
+            return TryTranslate(key, out value) && !string.IsNullOrEmpty(value) ? value : null;
+        }
+
+        /// <summary>
+        /// Whether the game has text for a key, and what it is.
+        ///
+        /// This asks TryGetLocalization whether the key **exists**, rather than calling
+        /// LocalizedValue and checking whether the answer differs from the key. Some keys
+        /// translate to themselves -- the exit "Crossroads" is "Crossroads" -- and the
+        /// differs-from-key test reads those as missing. That is the mistake that made the
+        /// preview's first pass drop every Customs extract.
+        /// </summary>
+        internal static bool TryTranslate(string key, out string value)
+        {
+            value = null;
+            if (string.IsNullOrEmpty(key)) return false;
+
+            if (GameTypes.LocalizationManager_TryGetLocalization == null)
+            {
+                value = DiffersFromKey(key);
+                return value != null;
+            }
 
             try
             {
-                var manager = GameTypes.LocalizationManager_Instance.GetValue(null, null);
-                if (manager == null) return null;
+                object manager;
+                string culture;
+                if (!Reach(out manager, out culture)) return false;
+
+                // TryGetLocalization(string id, string locale, out string localizedValue)
+                var arguments = new object[] { key, culture, null };
+                var found = (bool)GameTypes.LocalizationManager_TryGetLocalization.Invoke(manager, arguments);
+
+                value = arguments[2] as string;
+                return found;
+            }
+            catch (Exception error)
+            {
+                WarnOnce(error);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// The fallback when TryGetLocalization cannot be found: LocalizedValue hands back the
+        /// key when it does not know it. Wrong for keys that translate to themselves, which is
+        /// why it is only the fallback.
+        /// </summary>
+        private static string DiffersFromKey(string key)
+        {
+            try
+            {
+                object manager;
+                string culture;
+                if (!Reach(out manager, out culture)) return null;
 
                 var value = GameTypes.LocalizationManager_LocalizedValue
                     .Invoke(manager, new object[] { key }) as string;
 
-                // LocalizedValue hands back the key when it does not know it.
-                if (string.IsNullOrEmpty(value) || value == key) return null;
-
-                return value;
+                return string.IsNullOrEmpty(value) || value == key ? null : value;
             }
             catch (Exception error)
             {
                 WarnOnce(error);
                 return null;
             }
+        }
+
+        private static bool Reach(out object manager, out string culture)
+        {
+            manager = null;
+            culture = null;
+
+            if (GameTypes.LocalizationManager_Instance == null) return false;
+
+            manager = GameTypes.LocalizationManager_Instance.GetValue(null, null);
+            if (manager == null) return false;
+
+            culture = GameTypes.LocalizationManager_Culture.GetValue(manager, null) as string;
+            return !string.IsNullOrEmpty(culture);
         }
 
         private static void WarnOnce(Exception error)

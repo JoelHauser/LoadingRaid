@@ -23,7 +23,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.1.0.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.1.1.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -55,11 +55,15 @@ With **Captions** set to **Map intel**, each banner shows one of these cards:
 | Card | Shows |
 | --- | --- |
 | Map name | Raid length, how long a typical raid lasts, and the average player level |
-| **BOSSES** | Up to four bosses and their spawn chance, like `Reshala 39%  ·  Knight 20%` |
+| **BOSSES** | The four most likely bosses and their spawn chance, like `Reshala 39%  ·  Knight 20%` |
 | **EXTRACTS** | How many extracts the map has, and up to three that are always open |
 | **YOUR TASKS** | Tasks you've started that take place on this map |
 
-A card only appears when there's something to put on it, so Labs, for example, has no **BOSSES** card. Boss and task names are in your game language. If a map has more banners than cards, the cards repeat.
+- **Always open** means a 100% chance and nothing asked of you, like payment, power, a co-op deal or a flare. Every extract on Labs and Reserve asks for something, so their cards say none are always open.
+- **Bosses** are listed most likely first. Escorts and event-only spawns aren't counted.
+- A card only appears when there's something to put on it, so Labs, for example, has no **BOSSES** card.
+- Map, boss, extract and task names come from the game's own text, in your game language.
+- If a map has more banners than cards, the cards repeat.
 
 ## Custom banners
 
@@ -80,10 +84,10 @@ banners/_default/anything.png
 
 ### Captions from file names
 
-Set **Captions** to **From file name** to caption each banner with its file name. Anything after a `|` becomes the line underneath:
+Set **Captions** to **From file name** to caption each banner with its file name. Anything after a `;` becomes the line underneath:
 
 ```
-Dorms|Three storeys, two keys.png
+Dorms; Three storeys, two keys.png
 ```
 
 ### Map folder names
@@ -138,9 +142,8 @@ Shoreline     = Random     # leave the menu alone for this map
 ## Known limitations
 
 - **Your tasks card only lists tasks tied to one map.** Tasks you can do anywhere don't appear, even if you plan to do them here.
-- **The extract count covers the whole map.** Some extracts only open from certain spawns, and the card doesn't know where you'll spawn.
-- **"Always open" means a 100% chance to be available.** The extract may still need payment or an item.
-- **Card headings are in English.** Boss and task names follow your game language, but labels like `BOSSES` and `min raid` don't.
+- **Extracts are counted for the whole map.** Some only open from certain spawns, and the card doesn't know where you'll spawn, so an extract listed as always open may not be open to you.
+- **Card headings are in English.** Names follow your game language, but labels like `BOSSES` and `min raid` don't. Nor do a few boss names the game has no text for, such as Kaban and Kollontay.
 - **The first banner might show its normal caption** until the banners switch for the first time.
 - **High Zoom values can show a banner's edges.** Lower **Zoom** if you see them.
 

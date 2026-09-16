@@ -144,18 +144,22 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
-        /// Captions read out of the file name: "Dorms|Three storey, two keys" splits on the
-        /// pipe, and a leading "01 - " or "3." is treated as ordering and dropped.
+        /// Captions read out of the file name: "Dorms; Three storeys, two keys" splits on the
+        /// first semicolon, and a leading "01 - " or "3." is treated as ordering and dropped.
+        ///
+        /// 1.1.0 split on a pipe, which Windows does not allow in a file name -- so no file
+        /// could ever have carried a description. A pipe is still accepted, for files named
+        /// somewhere that does allow it.
         /// </summary>
         internal static void CaptionsFrom(string fileName, out string name, out string description)
         {
             description = string.Empty;
 
-            var pipe = fileName.IndexOf('|');
-            if (pipe >= 0)
+            var split = fileName.IndexOfAny(new[] { ';', '|' });
+            if (split >= 0)
             {
-                description = fileName.Substring(pipe + 1).Trim();
-                fileName = fileName.Substring(0, pipe);
+                description = fileName.Substring(split + 1).Trim();
+                fileName = fileName.Substring(0, split);
             }
 
             name = StripOrderPrefix(fileName).Trim();

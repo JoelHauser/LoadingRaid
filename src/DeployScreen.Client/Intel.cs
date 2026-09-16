@@ -1,7 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Text;
+using System.Linq;
 
 namespace DeployScreen.Client
 {
@@ -29,14 +29,44 @@ namespace DeployScreen.Client
     /// Quests come from the profile hanging off the session, matched on
     /// QuestTemplate.LocationId == Location._Id -- the same MongoID the database keys quests
     /// by, with "any" for the ones not tied to a map.
+    ///
+    /// Almost every name the raw data holds is internal: "ReserveBase", "EXFIL_Train", "E1",
+    /// "exUsec". What a player should see is looked up in the game's own text. 1.1.0 showed the
+    /// raw values and it read badly on ten of twelve maps.
     /// </summary>
     internal static class Intel
     {
-        /// <summary>The key the game files boss role names under.</summary>
+        private const string Separator = "  ·  ";
+
+        /// <summary>Where the game files boss role names.</summary>
         private const string BotRoleKey = "QuestCondition/Elimination/Kill/BotRole/";
+
+        /// <summary>Where the few roles missing from BotRole live -- "ScavRole/ExUsec" is "Rogue".</summary>
+        private const string ScavRoleKey = "ScavRole/";
 
         /// <summary>EQuestStatus.Started.</summary>
         private const int QuestStarted = 2;
+
+        /// <summary>ERequirementState.None -- also the value an exit gets when its data omits the field.</summary>
+        private const int NoRequirement = 0;
+
+        private const int MaxBosses = 4;
+        private const int MaxOpenExtracts = 3;
+
+        /// <summary>
+        /// Roles the game has no text for under either key. They are proper nouns, so the same
+        /// spelling is right in every language.
+        /// </summary>
+        private static readonly Dictionary<string, string> KnownBosses =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "bossBoar", "Kaban" },
+                { "bossKolontay", "Kollontay" },
+                { "bossKnight", "Knight" },
+                { "bossPartisan", "Partisan" },
+                { "bossZryachiy", "Zryachiy" },
+                { "peacemaker", "Peacemaker" },
+            };
 
         private static bool _warnedOnce;
 
@@ -68,7 +98,6 @@ namespace DeployScreen.Client
 
         private static void AddBriefing(List<IntelCard> cards, object location)
         {
-            var name = Str(GameTypes.Location_Name, location);
             var escape = Int(GameTypes.Location_EscapeTimeLimit, location);
             var average = Int(GameTypes.Location_AveragePlayTime, location);
             var level = Int(GameTypes.Location_AveragePlayerLevel, location);
@@ -80,9 +109,24 @@ namespace DeployScreen.Client
 
             if (parts.Count == 0) return;
 
+            var name = MapName(location);
+
             cards.Add(new IntelCard(
                 string.IsNullOrEmpty(name) ? "BRIEFING" : name.ToUpperInvariant(),
-                string.Join("  ·  ", parts.ToArray())));
+                string.Join(Separator, parts.ToArray())));
+        }
+
+        /// <summary>
+        /// The name the game shows, which is "&lt;_Id&gt; Name" in its text -- exactly what
+        /// Location.LocalizedName looks up. The raw Name field is internal: "ReserveBase" for
+        /// Reserve, "Sandbox" for Ground Zero, "Laboratory" for The Lab.
+        /// </summary>
+        private static string MapName(object location)
+        {
+            var mongoId = Str(GameTypes.Location_MongoId, location);
+            var name = string.IsNullOrEmpty(mongoId) ? null : Localization.Lookup(mongoId + " Name");
+
+            return string.IsNullOrEmpty(name) ? Str(GameTypes.Location_Name, location) : name;
         }
 
         // ------------------------------------------------------------------ bosses
@@ -105,21 +149,18 @@ namespace DeployScreen.Client
                 if (spawn == null) continue;
 
                 var role = Str(GameTypes.BossSpawn_BossName, spawn);
-                if (string.IsNullOrEmpty(role)) continue;
-
-                // pmcBEAR and pmcUSEC are the PMC waves, not bosses, and sit at 50% on every
-                // map -- listing them as bosses would be wrong and identical everywhere.
-                if (role.StartsWith("pmc", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.IsNullOrEmpty(role) || !IsBoss(role)) continue;
 
                 var chance = Float(GameTypes.BossSpawn_BossChance, spawn);
                 if (chance <= 0f) continue;
 
-                if (!best.ContainsKey(role))
+                float known;
+                if (!best.TryGetValue(role, out known))
                 {
                     best[role] = chance;
                     order.Add(role);
                 }
-                else if (chance > best[role])
+                else if (chance > known)
                 {
                     best[role] = chance;
                 }
@@ -127,25 +168,51 @@ namespace DeployScreen.Client
 
             if (order.Count == 0) return;
 
-            var text = new StringBuilder();
-            for (var i = 0; i < order.Count && i < 4; i++)
-            {
-                if (i > 0) text.Append("  ·  ");
-                text.Append(BossName(order[i])).Append(' ').Append((int)Math.Round(best[order[i]])).Append('%');
-            }
+            // Most likely first. OrderByDescending is stable, so equal chances keep the order
+            // the map lists them in. Capping before sorting is what dropped Shoreline's 40%
+            // Cultist Priest in 1.1.0 while a 15% spawn was shown.
+            var shown = order
+                .OrderByDescending(role => best[role])
+                .Take(MaxBosses)
+                .Select(role => BossName(role) + " " + (int)Math.Round(best[role]) + "%")
+                .ToArray();
 
-            cards.Add(new IntelCard("BOSSES", text.ToString()));
+            cards.Add(new IntelCard("BOSSES", string.Join(Separator, shown)));
         }
 
         /// <summary>
-        /// The game already localizes role names -- bossBully is "Reshala", bossKojaniy is
-        /// "Shturman". Not every role has a key, so an unknown one is tidied up instead.
+        /// BossLocationSpawn lists more than bosses. Left out: the PMC waves and Raiders
+        /// (pmcBEAR, pmcUSEC, pmcBot), escorts (follower*), a boss's sniper guards listed at
+        /// 100% (bossBoarSniper), and event-only spawns at 5% (arenaFighterEvent,
+        /// crazyAssaultEvent).
         /// </summary>
+        private static bool IsBoss(string role)
+        {
+            if (role.StartsWith("pmc", StringComparison.OrdinalIgnoreCase)) return false;
+            if (role.StartsWith("follower", StringComparison.OrdinalIgnoreCase)) return false;
+            if (role.IndexOf("sniper", StringComparison.OrdinalIgnoreCase) >= 0) return false;
+            if (role.EndsWith("Event", StringComparison.OrdinalIgnoreCase)) return false;
+
+            return true;
+        }
+
         private static string BossName(string role)
         {
-            var localized = Localization.Lookup(BotRoleKey + role);
-            if (!string.IsNullOrEmpty(localized)) return localized;
+            var name = Localization.Lookup(BotRoleKey + role);
+            if (!string.IsNullOrEmpty(name)) return name;
 
+            name = Localization.Lookup(ScavRoleKey + char.ToUpperInvariant(role[0]) + role.Substring(1));
+            if (!string.IsNullOrEmpty(name)) return name;
+
+            string known;
+            if (KnownBosses.TryGetValue(role, out known)) return known;
+
+            return Tidy(role);
+        }
+
+        /// <summary>Last resort for a role nobody has named: drop the prefix, capitalise.</summary>
+        private static string Tidy(string role)
+        {
             var trimmed = role;
             foreach (var prefix in new[] { "boss", "sectant", "arenaFighter", "exUsec" })
             {
@@ -155,8 +222,6 @@ namespace DeployScreen.Client
                     break;
                 }
             }
-
-            if (trimmed.Length == 0) return role;
 
             return char.ToUpperInvariant(trimmed[0]) + trimmed.Substring(1);
         }
@@ -172,32 +237,65 @@ namespace DeployScreen.Client
             if (exits == null) return;
 
             var total = 0;
-            var guaranteed = new List<string>();
+            var open = new List<string>();
 
             foreach (var exit in exits)
             {
                 if (exit == null) continue;
 
-                var name = Str(GameTypes.Exit_Name, exit);
-                if (string.IsNullOrEmpty(name)) continue;
+                var id = Str(GameTypes.Exit_Name, exit);
+                if (string.IsNullOrEmpty(id)) continue;
 
                 total++;
 
-                if (Float(GameTypes.Exit_Chance, exit) >= 100f && guaranteed.Count < 3)
-                {
-                    guaranteed.Add(name);
-                }
+                if (open.Count >= MaxOpenExtracts || !IsAlwaysOpen(exit, id)) continue;
+
+                var name = ExtractName(id);
+                if (name != null) open.Add(name);
             }
 
             if (total == 0) return;
 
-            var body = total + (total == 1 ? " extract" : " extracts");
-            if (guaranteed.Count > 0)
-            {
-                body += "  ·  always open: " + string.Join(", ", guaranteed.ToArray());
-            }
+            var body = total + (total == 1 ? " extract" : " extracts") + Separator
+                       + (open.Count > 0 ? "always open: " + string.Join(", ", open.ToArray()) : "none always open");
 
             cards.Add(new IntelCard("EXTRACTS", body));
+        }
+
+        /// <summary>
+        /// A 100% chance and nothing asked of you. 1.1.0 checked only the chance, which listed
+        /// Reserve's armored train, its co-op exit and the climbing route as always open.
+        ///
+        /// Flare exits are the exception PassageRequirement does not catch: they say None but
+        /// only open when you fire a flare. Their ids all contain "sniper" -- customs_sniper_exit,
+        /// E9_sniper, wood_sniper_exit, Sniper_exit.
+        /// </summary>
+        private static bool IsAlwaysOpen(object exit, string id)
+        {
+            if (Float(GameTypes.Exit_Chance, exit) < 100f) return false;
+
+            if (GameTypes.Exit_PassageRequirement != null
+                && Int(GameTypes.Exit_PassageRequirement, exit) != NoRequirement)
+            {
+                return false;
+            }
+
+            return id.IndexOf("sniper", StringComparison.OrdinalIgnoreCase) < 0;
+        }
+
+        /// <summary>
+        /// An exit's id is its key in the game's text: "EXFIL_Train" is "Armored Train", "E1" is
+        /// "Stylobate Building Elevator". Some ids translate to themselves -- "Crossroads" -- which
+        /// is why this asks whether a translation exists rather than whether it differs. An id
+        /// with no translation is shown only when it already reads as a name ("Factory Gate"),
+        /// never when it is plainly internal ("tunnel_shared").
+        /// </summary>
+        private static string ExtractName(string id)
+        {
+            string name;
+            if (Localization.TryTranslate(id, out name) && !string.IsNullOrEmpty(name)) return name;
+
+            return id.IndexOf('_') < 0 ? id : null;
         }
 
         // ------------------------------------------------------------------ quests
@@ -217,8 +315,8 @@ namespace DeployScreen.Client
             }
 
             var shown = quests.Count > 3 ? quests.GetRange(0, 3) : quests;
-            var body = string.Join("  ·  ", shown.ToArray());
-            if (quests.Count > shown.Count) body += "  ·  +" + (quests.Count - shown.Count) + " more";
+            var body = string.Join(Separator, shown.ToArray());
+            if (quests.Count > shown.Count) body += Separator + "+" + (quests.Count - shown.Count) + " more";
 
             cards.Add(new IntelCard("YOUR TASKS  (" + quests.Count + ")", body));
         }

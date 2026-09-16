@@ -17,7 +17,7 @@ corrected; nothing has been tested.
 | SPT version | 4.1.5 |
 | EFT client | `0.16.9.5.40743` |
 | BepInEx | 5.4.23.5, HarmonyLib **2.9.0** |
-| Built | 1.1.0 on 2026-09-16, clean, 0 warnings |
+| Built | 1.1.1 on 2026-09-16, clean, 0 warnings |
 
 ```
 scripts\pack.ps1 -SPTPath C:\HUH
@@ -139,17 +139,47 @@ including:
 | Field | Type |
 | --- | --- |
 | `_Id` | the MongoID quests are keyed by |
-| `Name`, `Id` | display name, and the id banner folders use |
+| `Name`, `Id` | **internal** names (`ReserveBase`, `Sandbox`); `Id` is what banner folders use. The display name is `Localized(_Id + " Name")`, which is what `Location.LocalizedName` does |
 | `BossLocationSpawn` | `BossLocationSpawn[]` -- `BossName`, `BossChance`, `BossZone`, ... |
 | `exits` | `JsonType.BackendExitTriggerSettings[]` -- `Name`, `Chance`, `ExfiltrationTime`, `PassageRequirement` |
 | `EscapeTimeLimit`, `AveragePlayTime`, `AveragePlayerLevel` | `int` |
 
-- **Boss names** localize under `QuestCondition/Elimination/Kill/BotRole/<role>`:
-  `bossBully` -> Reshala, `bossKojaniy` -> Shturman, `bossGluhar` -> Glukhar,
-  `sectantPriest` -> Cultist Priest. **`bossKnight` has no key**, hence `Intel.BossName`'s
-  fallback. `pmcBEAR` / `pmcUSEC` are PMC waves at 50% on every map and are filtered out.
-- **Exfil names** are locale keys that map to themselves, so raw is safe.
-- A boss appears once per zone with the same chance, so `AddBosses` dedupes by role.
+**Almost every name in the raw data is internal**, and 1.1.0 showed them raw. Its text was
+wrong or read badly on 10 of 12 maps -- found only by running the real database through the
+intel rules for the preview. 1.1.1's rules, each checked against the data:
+
+- **Map heading**: `Localized(_Id + " Name")`, falling back to `Name`. Raw `Name` gave
+  `RESERVEBASE`, `SANDBOX`, `LABORATORY` for Reserve, Ground Zero and The Lab.
+- **Boss names**, in order: `QuestCondition/Elimination/Kill/BotRole/<role>` (bossBully ->
+  Reshala, bossKojaniy -> Shturman, bossGluhar -> Glukhar, sectantPriest -> Cultist Priest);
+  then `ScavRole/<Role>` (**exUsec -> Rogue**, the only one found there); then
+  `Intel.KnownBosses` for roles with no text at all -- bossBoar Kaban, bossKolontay Kollontay,
+  bossKnight Knight, bossPartisan Partisan, bossZryachiy Zryachiy, peacemaker Peacemaker;
+  then the old prefix-stripping tidy-up. 1.1.0 showed `ExUsec`, `Boar`, `Kolontay`.
+- **Which roles are bosses**: not `pmc*` (the PMC waves and Raiders), not `follower*`, nothing
+  containing `sniper` (**bossBoarSniper** is Kaban's guards, listed at 100%), nothing ending
+  `Event` (arenaFighterEvent, crazyAssaultEvent at 5%). A boss appears once per zone with the
+  same chance, so `AddBosses` dedupes by role.
+- **Boss order**: most likely first, with a *stable* sort so equal chances keep map order,
+  then capped at four. 1.1.0 capped in map order, so Shoreline showed Peacemaker 15% and
+  dropped Cultist Priest 40%.
+- **Extract names are locale keys, but not ones that translate to themselves.** 1.0.0/1.1.0's
+  notes said "exfil names map to themselves, so raw is safe" -- concluded from four Customs
+  exits, and **false**: `EXFIL_Train` is Armored Train, `E1` is Stylobate Building Elevator,
+  `NW Exfil` is Railway Exfil, `Alpinist` is Cliff Descent. A handful have no text at all
+  (`tunnel_shared`, `lab_Elevator_Med`, `Coastal_South_Road`). `ExtractName` uses the text when
+  a key *exists* (`TryGetLocalization`), else the raw id only if it has no underscore.
+- **"Always open"** is `Chance >= 100` **and** `PassageRequirement == None` **and** the id does
+  not contain `sniper`. 1.1.0 checked only the chance, so Reserve listed its armored train,
+  co-op exit and climbing route. `EFT.Interactive.ERequirementState`: `None=0 Empty=1
+  TransferItem=2 WorldEvent=3 NotEmpty=4 HasItem=5 WearsItem=6 EmptyOrSize=7 SkillLevel=8
+  Reference=9 ScavCooperation=10 Train=11 Timer=12 SecretTransferItem=13`. **Factory's exits
+  omit the field entirely**, which deserializes as None -- correct, they have no requirement.
+  **Flare exits say None** but only open on a flare; their ids all contain `sniper`
+  (customs_sniper_exit, E9_sniper, wood_sniper_exit, Sniper_exit). Every Labs and Reserve
+  exit has a requirement, so those cards read "none always open".
+- The extract **count** is still every named exit on the map; `EntryPoints` limits some to
+  certain spawn areas and the card does not know the player's.
 
 ### Quests on this map
 
@@ -249,8 +279,13 @@ captures the original transform on enable so `Restore()` puts it back exactly.
 - **Negative caching.** `BannerArt.Cache` stores nulls, so a map with no folder is not
   re-stat'ed on every deploy.
 - **One warning per session** per feature. A cosmetic patch that throws must not bury the log.
-- `Localization.Lookup` returns **null** for an unresolved key rather than the key, so
-  callers can tell "unknown" from "known".
+- `Localization.Lookup` returns **null** for an unresolved key rather than the key, and it
+  asks `TryGetLocalization(id, locale, out value)` whether the key **exists** -- not whether
+  its text differs from the key, which misreads keys that translate to themselves
+  ("Crossroads"). The differs-from-key test is kept only as a fallback if that method is gone.
+- **File-name captions split on `;`.** 1.1.0 split on `|`, which Windows refuses in a file
+  name ("Illegal characters in path", tested), so a description was impossible. `|` is still
+  accepted.
 
 ## Traps hit while building this
 
@@ -270,6 +305,39 @@ Each of these produced a confident wrong answer first. Worth checking for again.
 - `$props.Count` on `PSObject.Properties` enumerates rather than counting.
 - A PowerShell `foreach { } | Select-Object` is an empty pipe element -- collect into a
   variable first.
+- **Generalizing from one map.** "Exfil names map to themselves" came from checking four
+  Customs exits. Run a rule over all twelve maps before writing it down.
+- **Differs-from-key is not "missing".** A lookup helper that treats `value == key` as
+  untranslated drops every name that translates to itself -- it emptied Customs' extract list
+  in the preview's first pass.
+- **`ConvertFrom-Json` cannot read `en.json`**: it has keys differing only by case
+  (`Arena/Widgets/activate object`), and PowerShell's parser is case-insensitive, so it throws
+  and every lookup silently comes back empty. Use
+  `System.Web.Script.Serialization.JavaScriptSerializer` with `MaxJsonLength = [int]::MaxValue`.
+- **`Sort-Object` in Windows PowerShell 5.1 is not stable.** The preview's first boss order put
+  equal chances in arbitrary order; C#'s `OrderByDescending` is stable.
+- **Windows file names cannot contain `< > : " / \ | ? *`.** Check any file-naming convention
+  against that list before documenting it.
+
+## The preview
+
+https://claude.ai/artifact/5nfufGxXp3ZbeRz4k9QEEB -- private to the user. A browser
+simulation of the deploy screen for all twelve playable maps, switchable between Vanilla,
+1.1.0 and 1.1.1:
+
+- **Real**: banner timing (`MatchmakerBannersPanel.BANNER_SWITCH_TIME = 10` s,
+  `MatchmakerBanner.SWITCH_SPEED = 2` alpha/s, so a 0.5 s fade), `KenBurns`' exact math, each
+  map's banner count, the vanilla captions (`<bannerId> Name` / `<bannerId> Description`),
+  and every intel caption.
+- **Guessed**: layout, font (Bender in game), the pictures, and whether the frame clips a
+  zoomed image.
+
+The vanilla captions are worth knowing: lore paragraphs about the map and factions, plus
+promotions for BSG's Emissaries and Sherpas programs.
+
+Its caption data was generated in PowerShell by applying the intel rules to `base.json`,
+`en.json` and `quests.json`. **When an intel rule changes, that data has to be regenerated**,
+or the preview silently shows the old rule.
 
 ## Untested, and what to look for
 
@@ -347,8 +415,16 @@ with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo w
 
 ## Where this was left off
 
-2026-09-16: **1.1.0** adds motion and map intel, and corrects the location-id casing and the
-"tested" claim in the docs. Built clean against SPT 4.1.5 / BepInEx 5.4.23.5 and packed to
-`releases\DeployScreen_V1.1.0.zip`.
+2026-09-16: **1.1.0** added motion and map intel, and corrected the location-id casing and the
+"tested" claim in the docs.
+
+**1.1.1** fixes the intel text found broken by the preview -- game names for maps, extracts
+and bosses, a stable most-likely-first boss order, a real "always open" rule -- and switches
+file-name captions from `|` to `;`. Built clean against SPT 4.1.5 / BepInEx 5.4.23.5 and
+packed to `releases\DeployScreen_V1.1.1.zip`.
+
+**Next, requested by the user:** resolution detection -- measure the banner's real on-screen
+size, pick the best-sized version of each custom image, log the ideal image size, and make
+banners right on ultrawide and 16:10 screens. Motion scaling was explicitly not wanted.
 
 **Still not installed, and still never run in the game.**
