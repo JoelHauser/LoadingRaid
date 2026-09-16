@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net472 because that is what the game's mono runtime loads. -->
+    <TargetFramework>net472</TargetFramework>
+    <RootNamespace>DeployScreen.Client</RootNamespace>
+    <AssemblyName>DeployScreen.Client</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <Version>1.0.0</Version>
+
+    <SPTPath Condition="'$(SPTPath)' == ''">C:\HUH</SPTPath>
+    <GameManaged>$(SPTPath)\EscapeFromTarkov_Data\Managed</GameManaged>
+    <BepInExCore>$(SPTPath)\BepInEx\core</BepInExCore>
+
+    <AssemblySearchPaths>$(GameManaged);$(AssemblySearchPaths)</AssemblySearchPaths>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <Target Name="ValidateSPTPath" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(GameManaged)\UnityEngine.CoreModule.dll')"
+           Text="SPTPath ('$(SPTPath)') is not an SPT install root -- no EscapeFromTarkov_Data\Managed\UnityEngine.CoreModule.dll." />
+    <Error Condition="!Exists('$(BepInExCore)\BepInEx.dll')"
+           Text="No BepInEx.dll under '$(BepInExCore)'." />
+  </Target>
+
+  <!-- Deliberately no Assembly-CSharp reference. Every game type this plugin touches is
+       resolved by name at runtime through AccessTools (see GameTypes.cs).
+
+       The reason is that the Assembly-CSharp sitting in Managed is NOT the one the game
+       runs: the SPT Launcher applies an HDiffPatch delta at startup that renames obfuscated
+       types. Compiling against the on-disk copy binds to names the running game does not
+       have. Reflection by the *patched* name sidesteps that entirely, so this builds against
+       any install, launched or not. See CLAUDE.md.
+
+       Also no spt-* references: SPT's PluginValidator only rejects a plugin whose spt-*
+       references disagree with the running server, and one with none is skipped outright. -->
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExCore)\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExCore)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(GameManaged)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Sprite, Texture2D, Rect, Vector2, Debug. -->
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(GameManaged)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- ImageConversion.LoadImage: PNG/JPG bytes into a Texture2D. -->
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>$(GameManaged)\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,39 @@
+# Deploy Screen -- which backdrop each map gets.
+#
+# Only read when "Match the map" is on in the F12 settings. Anything not named here
+# keeps the built-in choice; delete a line to go back to it.
+#
+#   <location id> = <backdrop>
+#
+# Backdrops:   Factory  Wood  Laboratory  TheUnheardEdition  Cyber  Random
+#
+# Random means "leave the menu alone for this map".
+#
+# TheUnheardEdition and Cyber are edition-themed and are not in every install. If one
+# is missing the mod logs it and leaves the backdrop alone rather than loading nothing.
+#
+# Location ids are the folder names under SPT_Data\database\locations:
+#
+#   bigmap (Customs)      factory4_day        factory4_night      interchange
+#   laboratory            labyrinth           lighthouse          rezervbase (Reserve)
+#   sandbox (Ground Zero) sandbox_high        shoreline           suburbs
+#   tarkovstreets         terminal            town                woods
+#
+# The defaults, for reference -- uncomment and edit any of them:
+#
+# factory4_day   = Factory
+# factory4_night = Factory
+# bigmap         = Factory
+# interchange    = Factory
+# rezervbase     = Factory
+# tarkovstreets  = Factory
+# laboratory     = Laboratory
+# labyrinth      = Laboratory
+# woods          = Wood
+# shoreline      = Wood
+# lighthouse     = Wood
+# sandbox        = Wood
+# sandbox_high   = Wood
+# suburbs        = Wood
+# town           = Wood
+# terminal       = Wood
