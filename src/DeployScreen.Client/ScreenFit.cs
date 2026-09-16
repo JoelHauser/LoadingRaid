@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using UnityEngine;
 
 namespace DeployScreen.Client
@@ -45,6 +46,9 @@ namespace DeployScreen.Client
 
         private static readonly Dictionary<string, BannerFit> ByScreen = new Dictionary<string, BannerFit>();
         private static readonly Vector3[] Corners = new Vector3[4];
+
+        /// <summary>Screen sizes the ideal-size line has been logged for this session.</summary>
+        private static readonly HashSet<string> Logged = new HashSet<string>();
 
         internal static string ScreenKey
         {
@@ -99,17 +103,23 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
-        /// Keeps a measurement for the current screen and, the first time a screen size is seen,
-        /// says in the log what size to make custom images.
+        /// Keeps a measurement for the current screen and, the first time a screen size is seen
+        /// this session, says in the log what size to make custom images.
         /// </summary>
         internal static void Record(BannerFit fit)
         {
             var key = ScreenKey;
-            var isNew = !ByScreen.ContainsKey(key);
+
+            BannerFit known;
+            var changed = !ByScreen.TryGetValue(key, out known)
+                          || known.Width != fit.Width
+                          || known.Height != fit.Height;
 
             ByScreen[key] = fit;
 
-            if (!isNew) return;
+            if (changed) Save();
+
+            if (!Logged.Add(key)) return;
 
             DeployScreenPlugin.Log.LogInfo(
                 "[DeployScreen] banners show at " + fit.Width + "x" + fit.Height + " px on this "
@@ -122,6 +132,75 @@ namespace DeployScreen.Client
             return height > 0
                 ? ((float)width / height).ToString("0.00", CultureInfo.InvariantCulture) + ":1"
                 : "unknown shape";
+        }
+
+        // -------------------------------------------------------------- remembering
+
+        /// <summary>
+        /// Measurements only last a session, and the first raid of one therefore has none -- so it
+        /// loads the *largest* size of every picture, and the smaller one it settles on from the
+        /// second raid onwards is decoded and kept as well. At around 22 MB for a banner sized for
+        /// 4K that is worth avoiding, so what was measured is written to the config file and read
+        /// back at load.
+        ///
+        /// It is only a head start: every Show measures again and overwrites this, so a screen or
+        /// interface-scale change costs one raid of the old numbers, exactly as it did before.
+        /// </summary>
+        internal static void Remember(string saved)
+        {
+            ByScreen.Clear();
+
+            if (string.IsNullOrEmpty(saved)) return;
+
+            foreach (var entry in saved.Split(';'))
+            {
+                var equals = entry.IndexOf('=');
+                if (equals <= 0) continue;
+
+                var key = entry.Substring(0, equals).Trim();
+                int width, height;
+
+                if (key.Length > 0 && TryReadSize(entry.Substring(equals + 1), out width, out height))
+                {
+                    ByScreen[key] = new BannerFit { Width = width, Height = height };
+                }
+            }
+        }
+
+        /// <summary>"765x460" -- the shape both halves of the saved line are written in.</summary>
+        private static bool TryReadSize(string text, out int width, out int height)
+        {
+            width = 0;
+            height = 0;
+
+            var by = text.IndexOf('x');
+            if (by <= 0) return false;
+
+            return int.TryParse(text.Substring(0, by).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out width)
+                   && int.TryParse(text.Substring(by + 1).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out height)
+                   && width > 0 && height > 0;
+        }
+
+        /// <summary>
+        /// Writes the table back to the config file. Setting a ConfigEntry saves the whole file
+        /// synchronously, which is why Record only calls this when the numbers actually changed:
+        /// that is once for a screen size the player has never used, and never again.
+        /// </summary>
+        private static void Save()
+        {
+            // Null outside the game -- scripts\test-logic.ps1 loads this assembly with no plugin.
+            if (DeployScreenPlugin.MeasuredSizes == null) return;
+
+            var text = new StringBuilder();
+
+            foreach (var entry in ByScreen)
+            {
+                if (text.Length > 0) text.Append(';');
+
+                text.Append(entry.Key).Append('=').Append(entry.Value.Width).Append('x').Append(entry.Value.Height);
+            }
+
+            DeployScreenPlugin.MeasuredSizes.Value = text.ToString();
         }
     }
 }

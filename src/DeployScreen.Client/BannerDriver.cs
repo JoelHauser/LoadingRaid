@@ -30,9 +30,18 @@ namespace DeployScreen.Client
         private List<IntelCard> _cards;
         private List<BannerImage> _images;
 
-        private readonly HashSet<object> _seen = new HashSet<object>();
+        /// <summary>
+        /// The panel's own _locationBanners. The panel builds it in its constructor and never
+        /// replaces it -- Close only clears it -- so reading the field once per Show stands for
+        /// the whole raid, and an idle frame costs a Count and nothing else.
+        /// </summary>
+        private IList _banners;
+
         private readonly List<KenBurns> _attached = new List<KenBurns>();
         private readonly List<RectTransform> _measurable = new List<RectTransform>();
+
+        /// <summary>How far along _banners this has already dressed. The list only grows within a Show.</summary>
+        private int _scanned;
 
         private int _nextCard;
         private bool _measured;
@@ -45,21 +54,30 @@ namespace DeployScreen.Client
         /// </summary>
         internal void Begin(object panel, List<IntelCard> cards, List<BannerImage> images)
         {
+            // Every banner of the last raid is a fresh object built by CreateBanner, so holding
+            // the old components would grow this list by a page of dead entries per raid.
+            RestoreAttached();
+            _attached.Clear();
+
             _panel = panel;
             _cards = cards;
             _images = images;
             _nextCard = 0;
-            _seen.Clear();
+            _scanned = 0;
             _measurable.Clear();
             _measured = false;
             _attempts = 0;
+
+            _banners = GameTypes.BannersPanel_LocationBanners == null
+                ? null
+                : GameTypes.BannersPanel_LocationBanners.GetValue(panel) as IList;
 
             enabled = true;
         }
 
         private void Update()
         {
-            if (_panel == null || GameTypes.BannersPanel_LocationBanners == null)
+            if (_panel == null || _banners == null)
             {
                 enabled = false;
                 return;
@@ -67,18 +85,22 @@ namespace DeployScreen.Client
 
             try
             {
-                var banners = GameTypes.BannersPanel_LocationBanners.GetValue(_panel) as IEnumerable;
-                if (banners == null) return;
+                var count = _banners.Count;
 
-                foreach (var entry in banners)
+                // Close clears the list. If that happened without the postfix disabling this --
+                // an install where Close could not be resolved -- start the pass over.
+                if (count < _scanned) _scanned = 0;
+
+                for (; _scanned < count; _scanned++)
                 {
+                    var entry = _banners[_scanned];
                     if (entry == null) continue;
 
                     var banner = GameTypes.BannerWithToggle_Banner == null
                         ? null
                         : GameTypes.BannerWithToggle_Banner.GetValue(entry);
 
-                    if (banner == null || !_seen.Add(banner)) continue;
+                    if (banner == null) continue;
 
                     Dress(banner);
                 }
@@ -100,10 +122,21 @@ namespace DeployScreen.Client
             {
                 _measurable.Add(rect);
 
-                if (DeployScreenPlugin.MotionEnabled.Value) AddMotion(rect);
+                if (DeployScreenPlugin.MotionEnabled.Value) AddMotion(rect, BannerGroup(banner));
             }
 
             if (DeployScreenPlugin.BannerCaptions.Value == CaptionSource.Intel) AddIntel(banner);
+        }
+
+        /// <summary>
+        /// The banner's CanvasGroup, which is how motion tells whether it is worth moving. Null
+        /// when the field could not be resolved, and motion then treats every banner as visible.
+        /// </summary>
+        private static CanvasGroup BannerGroup(object banner)
+        {
+            return GameTypes.Banner_BannerCanvasGroup == null
+                ? null
+                : GameTypes.Banner_BannerCanvasGroup.GetValue(banner) as CanvasGroup;
         }
 
         /// <summary>
@@ -121,13 +154,14 @@ namespace DeployScreen.Client
 
         // ------------------------------------------------------------------ motion
 
-        private void AddMotion(RectTransform rect)
+        private void AddMotion(RectTransform rect, CanvasGroup group)
         {
             if (rect.GetComponent<KenBurns>() != null) return;
 
             var motion = rect.gameObject.AddComponent<KenBurns>();
             motion.Zoom = DeployScreenPlugin.MotionZoom.Value;
             motion.Period = DeployScreenPlugin.MotionPeriod.Value;
+            motion.Group = group;
 
             _attached.Add(motion);
         }
@@ -198,6 +232,15 @@ namespace DeployScreen.Client
         }
 
         private void OnDisable()
+        {
+            RestoreAttached();
+        }
+
+        /// <summary>
+        /// Puts every banner this pass moved back where it was found. A banner destroyed with the
+        /// panel restores itself anyway; this is for the ones still on screen when it closes.
+        /// </summary>
+        private void RestoreAttached()
         {
             foreach (var motion in _attached)
             {

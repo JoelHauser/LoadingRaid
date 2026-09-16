@@ -66,11 +66,16 @@ namespace DeployScreen.Client
             InFlight.Remove(__instance);
 
             var component = __instance as Component;
-            if (component == null) return;
+            if (component != null)
+            {
+                // Disabling it is what puts every banner transform back where it was found.
+                var driver = component.GetComponent<BannerDriver>();
+                if (driver != null) driver.enabled = false;
+            }
 
-            // Disabling it is what puts every banner transform back where it was found.
-            var driver = component.GetComponent<BannerDriver>();
-            if (driver != null) driver.enabled = false;
+            // The banners are gone with the panel, so the pictures behind them can go too --
+            // all but the size this screen would ask for next time.
+            BannerArt.ReleaseUnused();
         }
 
         /// <summary>

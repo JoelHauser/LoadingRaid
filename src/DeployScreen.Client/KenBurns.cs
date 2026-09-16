@@ -20,6 +20,17 @@ namespace DeployScreen.Client
         internal float Period = 18f;
         internal float DriftPixels = 14f;
 
+        /// <summary>
+        /// The banner's own CanvasGroup. The game holds its alpha at 1 while the banner is
+        /// selected and drops it to 0 once the fade-out finishes, so this says whether the
+        /// banner is on screen at all -- and only one of a page of them is.
+        ///
+        /// Moving a hidden one still dirties its RectTransform and so still costs the canvas a
+        /// rebuild, for something nobody can see. Null means "always move", which is what this
+        /// did before the field was resolved.
+        /// </summary>
+        internal CanvasGroup Group;
+
         private RectTransform _rect;
         private Vector3 _originalScale;
         private Vector2 _originalPosition;
@@ -58,6 +69,10 @@ namespace DeployScreen.Client
 
             _phase += Time.unscaledDeltaTime / Period;
             if (_phase > 1f) _phase -= Mathf.Floor(_phase);
+
+            // The phase keeps advancing whether or not the banner is visible, so one that comes
+            // back is where it would have been rather than where it was left.
+            if (Group != null && Group.alpha <= 0.001f) return;
 
             // Ping-pong 0..1..0, then smoothstep so the turn at each end is not a visible jolt.
             var t = Mathf.PingPong(_phase * 2f, 1f);

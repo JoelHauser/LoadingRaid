@@ -38,6 +38,7 @@ namespace DeployScreen.Client
         internal static FieldInfo BannerWithToggle_Banner;
         internal static Type Banner;
         internal static FieldInfo Banner_BannerImage;
+        internal static FieldInfo Banner_BannerCanvasGroup;
         internal static FieldInfo Banner_BannerName;
         internal static FieldInfo Banner_BannerDescription;
 
@@ -171,6 +172,11 @@ namespace DeployScreen.Client
             Banner_BannerImage = AccessTools.Field(Banner, "_bannerImage");
             Banner_BannerName = AccessTools.Field(Banner, "BannerName");
             Banner_BannerDescription = AccessTools.Field(Banner, "BannerDescription");
+
+            // SetSelected(true) sets this group's alpha to 1, and the fade-out's completion
+            // callback sets it back to 0 -- so it says exactly whether a banner is on screen.
+            // Optional: without it, motion runs on every banner as it did in 1.2.0.
+            Banner_BannerCanvasGroup = AccessTools.Field(Banner, "_bannerCanvasGroup");
 
             if (BannerWithToggle_Banner == null) return Missing("BannerWithToggle.Banner");
             if (Banner_BannerImage == null) return Missing("MatchmakerBanner._bannerImage");

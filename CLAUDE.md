@@ -17,7 +17,7 @@ corrected; nothing has been tested.
 | SPT version | 4.1.5 |
 | EFT client | `0.16.9.5.40743` |
 | BepInEx | 5.4.23.5, HarmonyLib **2.9.0** |
-| Built | 1.2.0 on 2026-09-16, clean, 0 warnings; `scripts\test-logic.ps1` passes |
+| Built | 1.2.1 on 2026-09-16, clean, 0 warnings; `scripts\test-logic.ps1` 31 passed, exit 0 |
 
 ```
 scripts\pack.ps1 -SPTPath C:\HUH
@@ -264,8 +264,24 @@ scripts/test-logic.ps1  ImageHeader, cropping, size choice and captions, checked
 `Show` is `async`: a Harmony postfix runs when it hands back its `Task`, **before any banner
 exists**. Banners are added to `_locationBanners` over several frames as each one's image
 arrives. So `BannerDriver` is a MonoBehaviour added to the panel's GameObject that checks the
-list every `Update` and dresses each banner the first time it sees it (`_seen`). `Begin`
-resets it on every `Show`, because the panel is reused between raids.
+list every `Update` and dresses each banner the first time it sees it. `Begin` resets it on
+every `Show`, because the panel is reused between raids.
+
+The driver runs for the whole deploy screen -- twenty to sixty seconds -- so what an **idle
+frame** costs matters. 1.2.0's cost one `FieldInfo.GetValue`, a `foreach` over the list as
+`IEnumerable` (which boxes `List<T>`'s struct enumerator, so one heap allocation per frame), a
+`GetValue` per banner and a `HashSet<object>` probe -- every frame, long after there was
+anything new to find. 1.2.1 reads the field **once in `Begin`** and scans by index from
+`_scanned`, so an idle frame is one `IList.Count` and nothing else. Two facts from the IL make
+that safe, and both were checked with Cecil:
+
+- `_locationBanners` is `stfld` **only in the panel's constructor**. `Close()` calls `Clear()`
+  on the same instance. So the reference never goes stale within a panel's life.
+- `CreateBanner` does `Object.Instantiate` per banner per `Show`, so banners are new objects
+  every raid. `_seen` was therefore never doing anything an index could not.
+
+`Update` guards `count < _scanned` for the install where `Close` cannot be resolved and the
+postfix never disables the driver.
 
 ### Motion
 
@@ -274,6 +290,20 @@ resets it on every `Show`, because the panel is reused between raids.
 transform, so they do not fight. It ping-pongs with a smoothstep rather than running away,
 picks a random direction and starting phase per banner, uses `Time.unscaledDeltaTime`, and
 captures the original transform on enable so `Restore()` puts it back exactly.
+
+**It skips banners that are not on screen** (1.2.1). Every transform write dirties the
+RectTransform and costs the canvas a rebuild, and a page of banners has one visible -- so
+1.2.0 paid that five or six times over for something nobody could see. `MatchmakerBanner`'s
+own `_bannerCanvasGroup` is the test, and the IL is why it is exact:
+
+- `SetSelected(true)` sets `_bannerCanvasGroup.alpha = 1` **before** the fade begins, so a
+  visible banner always reads as visible -- the gate cannot freeze one by mistake.
+- `CG_SetSelected`, the fade's completion callback, sets it to `0` when `_isVisible` is false.
+- The fade itself is on `_imageCanvasGroup`, through `VisualExtensions.SoftChange(..., 2f)`.
+
+The phase keeps advancing while a banner is hidden, so one that comes back is where it would
+have been rather than where it was left. The field is **optional** in `GameTypes`: if it
+cannot be resolved, `Group` is null and every banner animates, exactly as 1.2.0 did.
 
 ### Deliberate choices
 
@@ -308,6 +338,15 @@ Each of these produced a confident wrong answer first. Worth checking for again.
   passing it as an argument makes git treat it as a pathspec. **Write the message to a file
   with `UTF8Encoding($false)` and use `git commit -F <file>`.**
 - `$props.Count` on `PSObject.Properties` enumerates rather than counting.
+- **A void `MethodInfo.Invoke` still puts a `$null` on the PowerShell pipeline.** A helper that
+  called one and then returned a hashtable handed back *two* objects, so `.Count` was 2 for a
+  one-key table and every lookup came back empty -- four tests failed with numbers that looked
+  almost right. Prefix it with `[void]`. Same family as the `$props.Count` trap.
+- **An `AssemblyResolve` handler left attached overflows the stack at shutdown.** `test-logic.ps1`
+  printed "27 passed" and then died with a StackOverflowException, exiting **253**, on 1.2.0 as
+  well -- the handler is still live while PowerShell tears the runspace down and a resolve
+  arriving then re-enters it. Keep the handler in a variable and `remove_AssemblyResolve` it
+  before the end. A script that reports every test passing can still be failing its caller.
 - A PowerShell `foreach { } | Select-Object` is an empty pipe element -- collect into a
   variable first.
 - **Generalizing from one map.** "Exfil names map to themselves" came from checking four
@@ -375,17 +414,42 @@ so `Sprite.Create` never gets a rect outside the texture. Rounding matters: 460 
 ### Memory
 
 Textures load with `LoadImage(..., markNonReadable: true)`, dropping the CPU copy; a banner sized
-for 4K is ~22 MB of GPU memory. Nothing is destroyed: the first raid at a resolution loads the
-largest sizes, a later raid may load smaller ones as well, and both stay for the session.
-Bounded by what is on disk, but real.
+for 4K is ~22 MB of GPU memory.
+
+1.2.0 destroyed nothing, and the waste had a specific shape: a measurement only lasts the
+session, so the **first raid of every session** ran unmeasured and loaded the *largest* size of
+every picture; from the second raid on a smaller one was usually chosen and decoded **as well**,
+and both stayed. Six banners at two sizes each is ~260 MB where ~60 MB was wanted. 1.2.1 attacks
+it from both ends:
+
+- **The measurement is kept between sessions.** `ScreenFit.Save`/`Remember` write `ByScreen` to
+  the `Measured sizes` config entry as `1920x1080=765x460;...`. A session that has played at
+  this resolution before starts measured, so the largest-size load stops happening at all after
+  the first time. It is only a head start -- every `Show` measures again and overwrites it, so a
+  resolution or interface-scale change still costs exactly one raid of the old numbers.
+- **`BannerArt.ReleaseUnused`** frees, for every picture in the cache, each size other than the
+  one this screen would choose now. It is called from the `Close` postfix: the banners are gone
+  with the panel so nothing freed is still drawn, and it hands memory back at the moment the map
+  is about to load. Anything freed is read from disk again if it is wanted later --
+  `BannerVariant.Release` clears `_texture` and the sprites but leaves `_failed` alone, so a file
+  that would not decode is still not retried.
+
+What is still not freed: `BannerArt.Forget()` (the config-changed hook) drops the cache without
+releasing, on the grounds that its sprites may be on screen at the time.
 
 ### Tested, and not
 
 `scripts\test-logic.ps1` loads the built DLL by reflection -- Unity's `Rect` and `Mathf` resolve
-from Managed, and their managed parts run fine outside the engine -- and checks, all passing on
-1.2.0: header sizes on all 44 stock banners against System.Drawing; generated PNG and JPEG; a JPEG
+from Managed, and their managed parts run fine outside the engine -- and checks, all 31 passing on
+1.2.1: header sizes on all 44 stock banners against System.Drawing; generated PNG and JPEG; a JPEG
 with 130 KB of APP1 metadata ahead of its frame header; a text file named .png; size tags;
-file-name captions; crop rects for stock, 21:9, 16:9, 16:10 and tall images; and six size choices.
+file-name captions; crop rects for stock, 21:9, 16:9, 16:10 and tall images; six size choices; and
+(1.2.1) `ScreenFit.Remember` against a good line, an empty one, a hand-mangled one and a round
+trip. `Save` cannot be checked there -- it needs the config entry -- so it null-guards instead.
+
+The script itself had two faults, both fixed in 1.2.1 and both worth knowing (see Traps): it
+exited **253 with a StackOverflowException** after printing "N passed", and a void `Invoke` was
+quietly adding a `$null` to a helper's output.
 
 **Nothing that needs a screen has run**: `TryMeasure`, which render mode EFT's menu canvas uses,
 whether world corners match what the player sees, the log lines, the driver's timing.
@@ -431,7 +495,19 @@ In rough order of risk:
 - **`TryCreateBanner` interleaving.** Art order assumes each is awaited before the next.
 - **`object __0` / `__3` on an async method.** Harmony patches the outer stub, whose
   parameters are the declared ones. Confirm the log names the right map.
-- **Sprite lifetime.** Sprites are cached and never destroyed -- bounded by files on disk.
+- **`ReleaseUnused` on `Close` (1.2.1).** The one change in 1.2.1 that can be *seen* if it is
+  wrong: it destroys textures and sprites from the `Close` postfix, on the assumption that
+  `UIElement.Close()` -- the first instruction of the panel's `Close` -- has already disposed the
+  banners through the `CompositeDisposable` that `CreateBanner` registers them with. If any
+  `Image` still references one, expect blank or magenta banners **on the raid after** a
+  resolution change. Suspect this first if banners ever come up empty.
+- **Does the motion gate ever freeze a visible banner?** It should not -- `SetSelected(true)`
+  sets the alpha before the fade -- but the failure would look like one banner in a page not
+  moving. The page does select two banners per switch (`Update` calls `SelectBanner` on the
+  current and the next), which is worth remembering if it looks wrong.
+- **`Measured sizes` in the config.** Check `BepInEx\config\com.mybutthasarash.deployscreen.cfg`
+  holds something like `1920x1080=765x460` after a raid, and that the second session at that
+  resolution logs no `banners show at` line difference from the first.
 - **The backdrop scene load.** Why it defaults to off.
 - **BepInEx log** lines are all prefixed `[DeployScreen]`; the load line reports
   `motion=` and `intel=` so a resolve failure is visible immediately.
@@ -501,4 +577,32 @@ with the smallest sharp one chosen, centre-cropping to the banner's shape, and t
 the log. Built clean against SPT 4.1.5 / BepInEx 5.4.23.5, packed to
 `releases\DeployScreen_V1.2.0.zip`, and `scripts\test-logic.ps1` passes.
 
-**Still not installed, and still never run in the game.**
+**1.2.1** is performance only -- no feature changes, and the four that were done were picked out
+of a read of the whole client:
+
+1. The driver's idle frame: read `_locationBanners` once per `Show` and scan by index, instead of
+   a reflective re-walk and a boxed enumerator every frame for the length of the deploy screen.
+2. Motion skips banners that are not on screen, so the canvas is not rebuilt for the five or six
+   invisible ones.
+3. `BannerDriver._attached` is cleared in `Begin`. It never was, and banners are new objects each
+   raid, so it grew by a page of dead components per raid for the session.
+4. Memory: the measurement is kept in the config between sessions, and `ReleaseUnused` frees the
+   sizes this screen has no use for when the panel closes.
+
+Built clean, packed to `releases\DeployScreen_V1.2.1.zip`, and `test-logic.ps1` is 31 passed /
+exit 0 -- exit 0 being new, see Traps.
+
+Three more were found and **not** done, in the same read, roughly in value order: `Intel.Build`
+re-resolves the LocalizationManager on every lookup and walks the whole `QuestsData` list (hundreds
+of entries on a real profile) reflectively, all synchronously in the `Show` prefix;
+`ScreenFit.TryMeasure` calls `GetComponentInParent<Canvas>()` on every attempt for up to 120 frames
+and `Measure` re-`GetComponent`s a `KenBurns` the driver already holds; and per-call array
+allocations in `Intel.Tidy`, `BannerArt.CaptionsFrom` and `BannerArt.Read`.
+
+There is also one bigger idea deliberately left alone: if the banners share the menu's main
+Canvas, a single moving banner re-batches that whole canvas every frame, and a nested `Canvas`
+component on the banner image would isolate it. That is only worth doing with a profiler, and it
+can shift sorting.
+
+**Still not installed, and still never run in the game** -- so none of 1.2.1 is measured either.
+It is reasoning about allocation and canvas rebuilds, not a profile.

@@ -45,15 +45,20 @@ Copy-Item $dll $work
 
 $script:managed = Join-Path $SPTPath 'EscapeFromTarkov_Data\Managed'
 $script:bepinex = Join-Path $SPTPath 'BepInEx\core'
-[AppDomain]::CurrentDomain.add_AssemblyResolve([ResolveEventHandler] {
-        param($sender, $e)
-        $name = (New-Object Reflection.AssemblyName($e.Name)).Name
-        foreach ($dir in @($script:managed, $script:bepinex)) {
-            $path = Join-Path $dir "$name.dll"
-            if (Test-Path $path) { return [Reflection.Assembly]::LoadFrom($path) }
-        }
-        return $null
-    })
+
+# Kept in a variable so it can be taken off again at the end. Left attached, it is still live
+# while PowerShell tears the runspace down, and a resolve that arrives then re-enters it until
+# the stack runs out -- which is where the StackOverflowException after "N passed" came from.
+$script:resolver = [ResolveEventHandler] {
+    param($sender, $e)
+    $name = (New-Object Reflection.AssemblyName($e.Name)).Name
+    foreach ($dir in @($script:managed, $script:bepinex)) {
+        $path = Join-Path $dir "$name.dll"
+        if (Test-Path $path) { return [Reflection.Assembly]::LoadFrom($path) }
+    }
+    return $null
+}
+[AppDomain]::CurrentDomain.add_AssemblyResolve($script:resolver)
 
 Add-Type -AssemblyName System.Drawing
 
@@ -237,9 +242,54 @@ try {
 }
 catch { Check 'size-choice checks ran' $false $_.Exception.GetBaseException().Message }
 
+# ------------------------------------------- measurements kept between sessions
+
+Write-Host "=== remembered banner sizes ===" -ForegroundColor Cyan
+try {
+    $fitType = TypeOf 'BannerFit'
+    $screenFit = TypeOf 'ScreenFit'
+    $remember = $screenFit.GetMethod('Remember', $static)
+    $byScreen = $screenFit.GetField('ByScreen', $static)
+    $fitWidth = $fitType.GetField('Width', $instance)
+    $fitHeight = $fitType.GetField('Height', $instance)
+
+    function Remembered($saved) {
+        # [void]: Remember returns void, but Invoke still puts a $null on the pipeline, and the
+        # function would then hand back two objects rather than the table.
+        [void]$remember.Invoke($null, [object[]]@([string]$saved))
+        $map = $byScreen.GetValue($null)
+        $out = @{}
+        foreach ($k in $map.Keys) {
+            $fit = $map[$k]
+            $out[$k] = "$($fitWidth.GetValue($fit))x$($fitHeight.GetValue($fit))"
+        }
+        return $out
+    }
+
+    $r = Remembered '1920x1080=765x460;3840x2160=1530x920'
+    Check 'two screen sizes read back' ($r.Count -eq 2 -and $r['1920x1080'] -eq '765x460' -and $r['3840x2160'] -eq '1530x920') "got $($r.Count): $($r.Keys -join ',')"
+
+    $r = Remembered ''
+    Check 'an empty setting leaves nothing remembered' ($r.Count -eq 0) "got $($r.Count)"
+
+    # Anything the mod did not write itself, or that a player has edited by hand.
+    $r = Remembered 'rubbish;=765x460;1920x1080=;1920x1080=0x0;1920x1080=nonsense;2560x1440=1020x613'
+    Check 'malformed entries are dropped, good ones kept' ($r.Count -eq 1 -and $r['2560x1440'] -eq '1020x613') "got $($r.Count): $($r.Keys -join ',')"
+
+    # A round trip has to survive, or a session would lose what the last one measured.
+    $r = Remembered '3440x1440=1371x824'
+    Check 'an ultrawide measurement survives the round trip' ($r['3440x1440'] -eq '1371x824') "got '$($r['3440x1440'])'"
+
+    [void]$remember.Invoke($null, [object[]]@([string]''))
+}
+catch { Check 'remembered-size checks ran' $false $_.Exception.GetBaseException().Message }
+
+[AppDomain]::CurrentDomain.remove_AssemblyResolve($script:resolver)
+
 Write-Host ""
 if ($script:fail -gt 0) {
     Write-Host "$script:pass passed, $script:fail failed" -ForegroundColor Red
     exit 1
 }
 Write-Host "$script:pass passed" -ForegroundColor Green
+exit 0

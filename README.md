@@ -23,7 +23,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.2.0.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.2.1.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -150,9 +150,9 @@ Shoreline     = Random     # leave the menu alone for this map
 
 ## Performance
 
-- **Motion** and **map intel** only do anything while the loading screen is showing.
-- **Custom banners** are loaded the first time they're needed and kept in memory until you quit. Big pictures take longer to load and use more video memory: one sized for a 4K screen is about 22 MB, so ten come to over 200 MB. Giving each picture a smaller size too lets lower resolutions use less.
-- **Measuring** the banners happens once per raid and isn't something you'd notice.
+- **Motion** and **map intel** only do anything while the loading screen is showing, and motion skips the banners that aren't currently on screen.
+- **Custom banners** are loaded the first time they're needed and kept while they're useful. Big pictures take longer to load and use more video memory: one sized for a 4K screen is about 22 MB. Sizes your screen has no use for are freed when the loading screen closes, so keeping several sizes of a picture costs you nothing but disk space.
+- **Measuring** the banners happens once per raid and isn't something you'd notice. What it measures is saved, so later sessions at the same resolution get the right size from the first raid.
 - **Backdrop** loads a scene whenever the next map needs a different one, which can cause a short stutter. That's why it's off by default.
 
 ## Compatibility
@@ -170,7 +170,7 @@ Shoreline     = Random     # leave the menu alone for this map
 - **Card headings are in English.** Names follow your game language, but labels like `BOSSES` and `min raid` don't. Nor do a few boss names the game has no text for, such as Kaban and Kollontay.
 - **The first banner might show its normal caption** until the banners switch for the first time.
 - **High Zoom values can show a banner's edges.** Lower **Zoom** if you see them.
-- **The first raid at a new resolution uses the largest size of each picture.** Banners can only be measured once they're on screen, so the best size is picked from the next raid on.
+- **The first raid at a resolution you've never played at uses the largest size of each picture.** Banners can only be measured once they're on screen, so the best size is picked from the next raid on. The measurement is remembered between sessions, so this only happens once per resolution rather than once per session.
 - **The mod can't change the game's own layout.** On ultrawide and other screens it measures, and crops to, wherever the game puts the banner.
 
 ## How it works

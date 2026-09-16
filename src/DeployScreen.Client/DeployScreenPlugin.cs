@@ -44,7 +44,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.2.0";
+        public const string PluginVersion = "1.2.1";
 
         internal static ManualLogSource Log;
 
@@ -55,6 +55,7 @@ namespace DeployScreen.Client
         internal static ConfigEntry<float> MotionPeriod;
         internal static ConfigEntry<bool> IntelQuests;
         internal static ConfigEntry<bool> MatchEnvironment;
+        internal static ConfigEntry<string> MeasuredSizes;
 
         private void Awake()
         {
@@ -118,6 +119,18 @@ namespace DeployScreen.Client
                 + "This loads a Unity scene while you are setting up the raid. It is off by default "
                 + "because that is a real scene load on a screen you are about to leave; turn it on "
                 + "and watch for a hitch. Per-map choices live in " + EnvironmentMatch.OverrideFile + ".");
+
+            MeasuredSizes = Config.Bind(
+                "Banners",
+                "Measured sizes",
+                string.Empty,
+                "Written by the mod, not meant to be edited: how big banners were last measured on "
+                + "each screen size, as '1920x1080=765x460', semicolons between.\n"
+                + "It is kept so the first raid of a session already knows which size of each "
+                + "picture to load, instead of loading the largest and keeping it for the session. "
+                + "Deleting it costs one raid of that, nothing else -- every raid measures again.");
+
+            ScreenFit.Remember(MeasuredSizes.Value);
 
             var folder = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
 

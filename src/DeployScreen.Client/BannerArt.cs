@@ -61,6 +61,29 @@ namespace DeployScreen.Client
             return sprite;
         }
 
+        /// <summary>
+        /// Lets go of the decoded picture and the sprites cut from it. Asked for again it reads
+        /// the file afresh; a file that already failed to decode stays failed and is not retried.
+        ///
+        /// False when there was nothing to let go of, so a caller can say how much it freed.
+        /// </summary>
+        internal bool Release()
+        {
+            if (_texture == null) return false;
+
+            foreach (var sprite in _sprites.Values)
+            {
+                if (sprite != null) UnityEngine.Object.Destroy(sprite);
+            }
+
+            _sprites.Clear();
+
+            UnityEngine.Object.Destroy(_texture);
+            _texture = null;
+
+            return true;
+        }
+
         private Texture2D Texture()
         {
             if (_texture != null || _failed) return _texture;
@@ -183,6 +206,53 @@ namespace DeployScreen.Client
         internal static void Forget()
         {
             Cache.Clear();
+        }
+
+        /// <summary>
+        /// Frees every decoded picture this screen has no use for -- the sizes of each picture
+        /// other than the one that would be chosen now.
+        ///
+        /// Called once the banners panel has closed, so nothing freed is still being drawn, and
+        /// at the one moment in a raid where giving memory back is most useful: the map is about
+        /// to load. Anything freed is read from disk again if it is wanted later.
+        ///
+        /// What makes it worth doing is the first raid at a resolution, which runs before any
+        /// measurement exists and so loads the largest size of everything.
+        /// </summary>
+        internal static void ReleaseUnused()
+        {
+            try
+            {
+                BannerFit fit;
+                if (!ScreenFit.TryCurrent(out fit)) return;
+
+                var freed = 0;
+
+                foreach (var images in Cache.Values)
+                {
+                    if (images == null) continue;
+
+                    foreach (var image in images)
+                    {
+                        var keep = image.Choose(fit, true);
+
+                        foreach (var variant in image.Variants)
+                        {
+                            if (variant != keep && variant.Release()) freed++;
+                        }
+                    }
+                }
+
+                if (freed > 0)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] freed " + freed + " banner picture(s) this screen has no use for");
+                }
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning("[DeployScreen] could not free banner pictures: " + error.Message);
+            }
         }
 
         /// <summary>
