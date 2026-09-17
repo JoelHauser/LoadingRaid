@@ -131,28 +131,51 @@ namespace DeployScreen.Client
             target.SetActive(false);
         }
 
+        /// <summary>
+        /// Puts back everything that was switched off, then lets the game reassert what it wants
+        /// visible through its own code path.
+        ///
+        /// This used to skip re-enabling an environment root whenever EFT no longer wanted the
+        /// environment shown -- which meant a GameObject we had disabled stayed disabled for the
+        /// rest of the session. The menu came back with no environment at all, and nothing in the
+        /// game would ever switch it on again, because as far as EFT was concerned it had never
+        /// been switched off. Leaving a foreign object disabled is not deference to the game's
+        /// state; it is a hole in it.
+        ///
+        /// So: always undo our own SetActive(false) -- we only ever disabled objects that were
+        /// active when we found them -- and then call ShowEnvironment with whatever EFT currently
+        /// wants, so the game's own visibility logic has the last word and its state and the scene
+        /// agree again.
+        /// </summary>
         internal void Restore()
         {
-            // The game may already have requested a hidden environment during raid transition.
-            // Respect that request instead of bringing the menu scene back over the raid.
-            var showEnvironment = false;
-            Component currentEnvironment = null;
-            try
-            {
-                showEnvironment = _environment != null
-                    && (bool)GameTypes.Environment_Visible.GetValue(_environment);
-                if (_environment != null) currentEnvironment = GameTypes.Environment_Current.GetValue(_environment) as Component;
-            }
-            catch { }
             foreach (var item in _hidden)
             {
                 if (item.Object == null) continue;
-                if (item.Environment && (!showEnvironment || currentEnvironment == null
-                    || item.Object != currentEnvironment.gameObject)) continue;
                 try { item.Object.SetActive(true); }
                 catch (Exception e) { DeployScreenPlugin.Log.LogWarning("[DeployScreen] could not restore presentation object: " + e.Message); }
             }
             _hidden.Clear();
+
+            // Hand visibility back to the game. If it wants the environment hidden for a raid
+            // transition it hides it here, through the same method it always uses -- and crucially
+            // _lastVisibleStateEnvironment and the scene end up describing the same thing.
+            try
+            {
+                if (_environment != null && GameTypes.Environment_Visible != null
+                    && GameTypes.EnvironmentUI_ShowEnvironment != null)
+                {
+                    var wanted = (bool)GameTypes.Environment_Visible.GetValue(_environment);
+                    GameTypes.EnvironmentUI_ShowEnvironment.Invoke(_environment, new object[] { wanted });
+                }
+            }
+            catch (Exception e)
+            {
+                DeployScreenPlugin.Log.LogWarning("[DeployScreen] could not hand the environment back: " + e.Message);
+            }
+
+            _environment = null;
+
             if (_background != null) UnityEngine.Object.Destroy(_background);
             _background = null;
         }

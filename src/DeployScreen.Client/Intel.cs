@@ -68,6 +68,16 @@ namespace DeployScreen.Client
                 { "peacemaker", "Peacemaker" },
             };
 
+        /// <summary>Allocated once. This used to be built fresh on every call to Tidy.</summary>
+        private static readonly string[] RolePrefixes = { "boss", "sectant", "arenaFighter", "exUsec" };
+
+        /// <summary>
+        /// IEftSession.Profile, found once. The session type does not change within a session and
+        /// GetProperty is not free -- this ran on every intel build, on the loading path.
+        /// </summary>
+        private static System.Reflection.PropertyInfo _sessionProfile;
+        private static Type _sessionType;
+
         private static bool _warnedOnce;
 
         internal static List<IntelCard> Build(object location, object session)
@@ -77,6 +87,10 @@ namespace DeployScreen.Client
 
             try
             {
+                // One resolve of the localization manager for the whole build, instead of one per
+                // name looked up. Everything below goes through Localization.
+                Localization.Refresh();
+
                 AddBriefing(cards, location);
                 AddBosses(cards, location);
                 AddExtracts(cards, location);
@@ -214,7 +228,7 @@ namespace DeployScreen.Client
         private static string Tidy(string role)
         {
             var trimmed = role;
-            foreach (var prefix in new[] { "boss", "sectant", "arenaFighter", "exUsec" })
+            foreach (var prefix in RolePrefixes)
             {
                 if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && trimmed.Length > prefix.Length)
                 {
@@ -329,10 +343,15 @@ namespace DeployScreen.Client
         {
             try
             {
-                var profileProperty = session.GetType().GetProperty("Profile");
-                if (profileProperty == null) return null;
+                var type = session.GetType();
+                if (!ReferenceEquals(type, _sessionType))
+                {
+                    _sessionType = type;
+                    _sessionProfile = type.GetProperty("Profile");
+                }
+                if (_sessionProfile == null) return null;
 
-                var profile = profileProperty.GetValue(session, null);
+                var profile = _sessionProfile.GetValue(session, null);
                 if (profile == null) return null;
 
                 if (GameTypes.Profile_QuestsData == null) return null;

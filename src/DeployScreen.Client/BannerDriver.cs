@@ -38,7 +38,16 @@ namespace DeployScreen.Client
         private IList _banners;
 
         private readonly List<KenBurns> _attached = new List<KenBurns>();
-        private readonly List<RectTransform> _measurable = new List<RectTransform>();
+
+        /// <summary>
+        /// A banner that can be measured, with whatever motion was put on it. The two are kept
+        /// together because _attached only gains an entry when motion is switched on, so the two
+        /// lists do not line up by index -- pairing them here is what lets Measure read the zoom
+        /// without a GetComponent on every one of its 120 attempts.
+        /// </summary>
+        private struct Measurable { internal RectTransform Rect; internal KenBurns Motion; }
+
+        private readonly List<Measurable> _measurable = new List<Measurable>();
 
         /// <summary>How far along _banners this has already dressed. The list only grows within a Show.</summary>
         private int _scanned;
@@ -58,6 +67,9 @@ namespace DeployScreen.Client
             // the old components would grow this list by a page of dead entries per raid.
             RestoreAttached();
             _attached.Clear();
+
+            // The panel is rebuilt between raids, so a cached canvas from the last one is stale.
+            ScreenFit.ForgetCanvas();
 
             _panel = panel;
             _cards = cards;
@@ -120,9 +132,11 @@ namespace DeployScreen.Client
 
             if (rect != null)
             {
-                _measurable.Add(rect);
+                var motion = DeployScreenPlugin.MotionEnabled.Value
+                    ? AddMotion(rect, BannerGroup(banner))
+                    : null;
 
-                if (DeployScreenPlugin.MotionEnabled.Value) AddMotion(rect, BannerGroup(banner));
+                _measurable.Add(new Measurable { Rect = rect, Motion = motion });
             }
 
             if (DeployScreenPlugin.BannerCaptions.Value == CaptionSource.Intel) AddIntel(banner);
@@ -154,9 +168,11 @@ namespace DeployScreen.Client
 
         // ------------------------------------------------------------------ motion
 
-        private void AddMotion(RectTransform rect, CanvasGroup group)
+        /// <summary>Attaches the drift, and hands back what is on the banner either way.</summary>
+        private KenBurns AddMotion(RectTransform rect, CanvasGroup group)
         {
-            if (rect.GetComponent<KenBurns>() != null) return;
+            var existing = rect.GetComponent<KenBurns>();
+            if (existing != null) return existing;
 
             var motion = rect.gameObject.AddComponent<KenBurns>();
             motion.Zoom = DeployScreenPlugin.MotionZoom.Value;
@@ -164,6 +180,7 @@ namespace DeployScreen.Client
             motion.Group = group;
 
             _attached.Add(motion);
+            return motion;
         }
 
         // ------------------------------------------------------------ measurement
@@ -185,12 +202,16 @@ namespace DeployScreen.Client
                 return;
             }
 
-            foreach (var rect in _measurable)
+            for (var i = 0; i < _measurable.Count; i++)
             {
+                var entry = _measurable[i];
+                var rect = entry.Rect;
                 if (rect == null) continue;
 
-                var motion = rect.GetComponent<KenBurns>();
-                var zoom = motion != null ? motion.CurrentZoom : 1f;
+                // The motion was paired with the banner when it was dressed, so there is nothing
+                // to look up. Measure is retried for up to 120 frames, and this used to be a
+                // GetComponent on every one of them.
+                var zoom = entry.Motion != null ? entry.Motion.CurrentZoom : 1f;
 
                 BannerFit fit;
                 if (!ScreenFit.TryMeasure(rect, zoom, out fit)) continue;

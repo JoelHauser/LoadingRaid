@@ -31,7 +31,11 @@ $reports = @(foreach ($file in Get-ChildItem -LiteralPath $Path -Filter '*.json'
     catch { Write-Warning "Skipping unreadable report: $($file.Name)" }
 })
 if ($reports.Count -eq 0) { Write-Warning 'No confirmed, continuously focused loading reports found.'; return }
-$reports | Group-Object map, mode, resolution, label, version, configuredCustomArt, configuredMotion, configuredCaptions, configuredBackdrop, minimalPreviewSkipped, minimalBannersSkipped, minimalBackgroundCreated, minimalEnvironmentSuspended | ForEach-Object {
+# Staging captures are grouped on what staging actually did, for the same reason the minimal
+# fields are: a raid where the map had no art, or where the character lighting could not be
+# applied, is not comparable with one where both worked, and pooling them would hide exactly
+# the difference the capture exists to measure.
+$reports | Group-Object map, mode, resolution, label, version, configuredCustomArt, configuredMotion, configuredCaptions, configuredBackdrop, minimalPreviewSkipped, minimalBannersSkipped, minimalBackgroundCreated, minimalEnvironmentSuspended, stagingArtShown, stagingCharacterLit, stagingIntelShown | ForEach-Object {
     $group = $_.Group
     [pscustomobject][ordered]@{
         Map = $group[0].map
@@ -42,6 +46,9 @@ $reports | Group-Object map, mode, resolution, label, version, configuredCustomA
         MinimalPreviewSkipped = $group[0].minimalPreviewSkipped
         MinimalBannersSkipped = $group[0].minimalBannersSkipped
         MinimalEnvironmentSuspended = $group[0].minimalEnvironmentSuspended
+        StagingArtShown = $group[0].stagingArtShown
+        StagingCharacterLit = $group[0].stagingCharacterLit
+        RaidConditions = $group[0].raidConditions
         Runs = $group.Count
         MedianLoadSeconds = [Math]::Round((Median $group.durationSeconds), 3)
         MedianLongestGapSeconds = [Math]::Round((Median $group.longestFocusedFrameGapSeconds), 3)

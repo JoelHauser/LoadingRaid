@@ -9,7 +9,32 @@ using HarmonyLib;
 
 namespace DeployScreen.Client
 {
-    public enum LoadingScreenMode { Enhanced, Vanilla, Minimal }
+    public enum LoadingScreenMode
+    {
+        Enhanced,
+        Vanilla,
+        Minimal,
+
+        /// <summary>
+        /// The staging area: the map's own art becomes the world the PMC is standing in, the menu
+        /// scene's furniture and the banner panel get out of the way, the backdrop is lit for the
+        /// destination and the character is lit to match it.
+        /// </summary>
+        Staging,
+    }
+
+    /// <summary>Unity's backgroundLoadingPriority, as an option rather than a raw enum.</summary>
+    public enum LoadPriority
+    {
+        [Description("Leave alone")]
+        Unchanged,
+
+        [Description("Below normal")]
+        BelowNormal,
+
+        Normal,
+        High,
+    }
 
     public enum CaptionSource
     {
@@ -46,7 +71,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.3.1";
+        public const string PluginVersion = "1.6.0";
 
         internal static ManualLogSource Log;
 
@@ -57,25 +82,96 @@ namespace DeployScreen.Client
         internal static ConfigEntry<float> MotionPeriod;
         internal static ConfigEntry<bool> IntelQuests;
         internal static ConfigEntry<bool> MatchEnvironment;
+        internal static ConfigEntry<bool> DepthEnabled;
+        internal static ConfigEntry<float> DepthDrift;
+        internal static ConfigEntry<float> DepthSway;
+        internal static ConfigEntry<float> DepthLight;
+        internal static ConfigEntry<bool> DepthGroundShadow;
+        internal static ConfigEntry<bool> DepthPatrol;
+        internal static ConfigEntry<bool> DepthOverlay;
+        internal static ConfigEntry<float> StagingDistance;
+        internal static ConfigEntry<float> StagingOverscan;
+        internal static ConfigEntry<float> StagingVignette;
+        internal static ConfigEntry<bool> StagingHideMenuScene;
+        internal static ConfigEntry<bool> StagingGradeScene;
+        internal static ConfigEntry<float> StagingGradeStrength;
+        internal static ConfigEntry<bool> StagingLightCharacter;
+        internal static ConfigEntry<float> StagingKeyIntensity;
+        internal static ConfigEntry<float> StagingRimIntensity;
+        internal static ConfigEntry<bool> StagingFollowWeather;
+        internal static ConfigEntry<bool> StagingIntelLine;
+        internal static ConfigEntry<float> StagingIntelSeconds;
         internal static ConfigEntry<string> MeasuredSizes;
         internal static ConfigEntry<LoadingScreenMode> ScreenMode;
         internal static ConfigEntry<bool> RecordLoading;
         internal static ConfigEntry<string> TestLabel;
+        internal static ConfigEntry<bool> EasePrewarmArt;
+        internal static ConfigEntry<int> EaseFrameRate;
+        internal static ConfigEntry<LoadPriority> EasePriority;
+        internal static ConfigEntry<bool> EasePauseIk;
 
         private void Awake()
         {
             Log = Logger;
 
             ScreenMode = Config.Bind("Performance", "Loading screen", LoadingScreenMode.Enhanced,
-                "Enhanced: this mod's banners and intel. Vanilla: stock presentation with diagnostics only. "
-                + "Minimal: skip loading-screen banners and character preview, and suspend the menu scene "
-                + "behind a plain background when supported. Experimental; compare measured results. Next raid.");
+                "Staging area: your map art becomes the world your PMC is standing in -- the menu "
+                + "scene and the banner panel step aside, the backdrop is lit for the destination "
+                + "and the character is lit to match. Needs art in the map's banners folder.\n"
+                + "Enhanced: this mod's banners and intel, on the normal screen.\n"
+                + "Vanilla: stock presentation with diagnostics only.\n"
+                + "Minimal: skip loading-screen banners and character preview, and suspend the menu "
+                + "scene behind a plain background when supported.\n"
+                + "Takes effect next raid.");
             RecordLoading = Config.Bind("Performance", "Record loading", true,
                 "Record loading phases, frame gaps of at least 100 ms, focus changes, GC counts and memory. "
                 + "Writes a bounded JSON report after loading, on a background thread. No per-frame disk writes. Next raid.");
             TestLabel = Config.Bind("Performance", "Test label", "",
                 "Optional label for reports, for example first or repeat. Reuse the same label for "
                 + "comparable runs; keep first loads and repeat loads separate. Next raid.");
+
+            EasePrewarmArt = Config.Bind(
+                "Ease the load",
+                "Decode art early",
+                true,
+                "Decode this map's pictures while you are still setting the raid up, instead of "
+                + "during the load.\n"
+                + "Reading a 4K image is tens of milliseconds of main-thread work, and doing it "
+                + "while the map is loading puts a stall exactly where you least want one. This "
+                + "moves the same work to the previous screen, where nobody will notice it. Only "
+                + "does anything if you use custom art.");
+
+            EaseFrameRate = Config.Bind(
+                "Ease the load",
+                "Frame rate cap while loading",
+                0,
+                new ConfigDescription(
+                    "Cap the frame rate while the deploy screen is up, so drawing the menu "
+                    + "competes less with loading the raid. 0 leaves your own setting alone.\n"
+                    + "Your cap is restored when the screen closes. Values below 10 are refused: "
+                    + "the diagnostics count a stall at 100 ms, and a cap that low would look "
+                    + "like hitching in this mod's own measurements.",
+                    new AcceptableValueRange<int>(0, 240)));
+
+            EasePriority = Config.Bind(
+                "Ease the load",
+                "Loading priority",
+                LoadPriority.Unchanged,
+                "How much of each frame Unity may spend integrating loaded assets.\n"
+                + "Higher finishes the load sooner but makes each frame do more, so frames get "
+                + "longer even as there are fewer of them -- it trades a smoother number for a "
+                + "shorter wait, and which you prefer is a question only measuring on your machine "
+                + "can answer. The game lowers this itself while streaming a raid, so 'Leave "
+                + "alone' is the safe default and is not a cop-out.");
+
+            EasePauseIk = Config.Bind(
+                "Ease the load",
+                "Pause character IK while loading",
+                false,
+                "Stop the PMC solving inverse kinematics while the raid loads.\n"
+                + "The character stays on screen and keeps animating; it just stops running its "
+                + "limb solvers and hand posers every frame. Off by default because it is the one "
+                + "setting here that changes what you see.");
 
             BannersEnabled = Config.Bind(
                 "Banners",
@@ -130,11 +226,81 @@ namespace DeployScreen.Client
                 "Backdrop",
                 "Match the map",
                 false,
-                "Switch the menu environment behind the deploy screen to suit the destination -- "
-                + "the Factory backdrop for Factory, the woods one for Woods, and so on.\n"
-                + "This loads a Unity scene while you are setting up the raid. It is off by default "
-                + "because that is a real scene load on a screen you are about to leave; turn it on "
-                + "and watch for a hitch. Per-map choices live in " + EnvironmentMatch.OverrideFile + ".");
+                "Override YOUR chosen backdrop with one picked to suit the destination map.\n"
+                + "Off by default, and off is what this mod now assumes: your backdrop is a real "
+                + "game setting, and it is treated as the foundation to build on rather than "
+                + "something to replace. With this on, the backdrop is put back the moment you "
+                + "leave the deploy screen -- cancelled, or returned from the raid -- so it can no "
+                + "longer follow you to the main menu. A map with no backdrop of its own restores "
+                + "yours instead of keeping the last map's. Per-map choices live in "
+                + EnvironmentMatch.OverrideFile + ".");
+
+            DepthEnabled = Config.Bind(
+                "Scene",
+                "Depth and atmosphere",
+                true,
+                "Give the deploy screen depth by moving the backdrop's own camera and breathing "
+                + "its own lights.\n"
+                + "The backdrop is a real 3D scene, not a picture, so drifting the camera a few "
+                + "centimetres parallaxes near geometry against far geometry for real. Nothing is "
+                + "added to the scene, and everything is put back on the way out. Next raid.");
+
+            DepthDrift = Config.Bind(
+                "Scene",
+                "Camera drift",
+                0.05f,
+                new ConfigDescription(
+                    "How far the backdrop camera drifts, in world units. This is the setting that "
+                    + "creates the parallax, and the one most likely to want tuning: the scenes' "
+                    + "scale is not something the mod can measure, so raise it if the motion is "
+                    + "invisible and lower it if the scene swims. 0 turns the drift off.",
+                    new AcceptableValueRange<float>(0f, 0.5f)));
+
+            DepthSway = Config.Bind(
+                "Scene",
+                "Camera sway",
+                0.12f,
+                new ConfigDescription(
+                    "A slow rotation on top of the drift, in degrees. Rotation alone gives no "
+                    + "parallax -- it shifts near and far by the same angle -- so this is only here "
+                    + "to keep the drift from reading as a slider. 0 turns it off.",
+                    new AcceptableValueRange<float>(0f, 1.5f)));
+
+            DepthLight = Config.Bind(
+                "Scene",
+                "Light wander",
+                0.06f,
+                new ConfigDescription(
+                    "How much the scene's own lights breathe, as a fraction of their set intensity. "
+                    + "0.06 reads as air moving rather than as a flicker. 0 leaves them alone.",
+                    new AcceptableValueRange<float>(0f, 0.4f)));
+
+            DepthGroundShadow = Config.Bind(
+                "Scene",
+                "Ground the character",
+                true,
+                "Switch on the PMC's own contact shadow if it is off.\n"
+                + "MenuPlayerPoser.BottomShadow already exists in the game, so this needs no new "
+                + "art. Without it the character reads as pasted in front of the scene rather than "
+                + "standing in it.");
+
+            DepthPatrol = Config.Bind(
+                "Scene",
+                "Idle movement",
+                false,
+                "Ask the PMC's own animator for its idle patrol motion.\n"
+                + "Off by default because the property that sets it cannot be read back, so the mod "
+                + "cannot know what it was before and simply turns it off again on the way out. If "
+                + "your character already shifts its weight on the deploy screen, leave this alone.");
+
+            DepthOverlay = Config.Bind(
+                "Scene",
+                "Dim behind the text",
+                false,
+                "Use the game's own scrim (EnvironmentUI.EnableOverlay) behind the loading text.\n"
+                + "Helps readability on a bright backdrop, at the cost of flattening the scene -- "
+                + "which is the opposite of what the rest of this section is for. Off unless you "
+                + "find your backdrop is fighting the text.");
 
             MeasuredSizes = Config.Bind(
                 "Banners",
@@ -145,6 +311,114 @@ namespace DeployScreen.Client
                 + "It is kept so the first raid of a session already knows which size of each "
                 + "picture to load, instead of loading the largest and keeping it for the session. "
                 + "Deleting it costs one raid of that, nothing else -- every raid measures again.");
+
+            StagingDistance = Config.Bind(
+                "Staging area",
+                "Near plane distance",
+                3f,
+                new ConfigDescription(
+                    "How far in front of the backdrop camera the near haze plane sits, in world "
+                    + "units. The map itself is placed further back again, and the gap between "
+                    + "them is what the camera drift shears to make parallax. Larger values "
+                    + "flatten the effect; smaller ones exaggerate it.",
+                    new AcceptableValueRange<float>(0.5f, 20f)));
+
+            StagingOverscan = Config.Bind(
+                "Staging area",
+                "Overscan",
+                1.12f,
+                new ConfigDescription(
+                    "How much bigger than the frame each plane is built, so drifting the camera "
+                    + "cannot reveal an edge. Raise it if you see the art end at the side of the "
+                    + "screen; there is no reason to lower it.",
+                    new AcceptableValueRange<float>(1f, 1.6f)));
+
+            StagingVignette = Config.Bind(
+                "Staging area",
+                "Near haze",
+                0.55f,
+                new ConfigDescription(
+                    "How dark the near plane's frame is. This plane exists mainly to sit at a "
+                    + "different depth from the map so the two shear against each other; the "
+                    + "darkening is the visible part. 0 removes the plane entirely.",
+                    new AcceptableValueRange<float>(0f, 1f)));
+
+            StagingHideMenuScene = Config.Bind(
+                "Staging area",
+                "Hide the menu scene",
+                true,
+                "Switch off the menu backdrop's own furniture while the map art is up.\n"
+                + "With it on you are looking at the place you are going to. With it off, the "
+                + "factory crates or mall shutters sit in front of it, which is someone else's "
+                + "location in the way of yours.");
+
+            StagingGradeScene = Config.Bind(
+                "Staging area",
+                "Light the scene for the map",
+                true,
+                "Tint the backdrop's own lights toward the destination -- sodium for Streets, "
+                + "cold green for Woods, clinical blue for Labs.");
+
+            StagingGradeStrength = Config.Bind(
+                "Staging area",
+                "Grade strength",
+                0.65f,
+                new ConfigDescription(
+                    "How far the lights and the art are pulled toward the destination's colour. "
+                    + "1 is the full grade; lower keeps more of the original look.",
+                    new AcceptableValueRange<float>(0f, 1f)));
+
+            StagingLightCharacter = Config.Bind(
+                "Staging area",
+                "Light the character to match",
+                true,
+                "Add a key and a rim light that fall on your PMC and nothing else, coloured for "
+                + "the destination.\n"
+                + "This is the setting that stops the character reading as a cut-out: a composite "
+                + "gives itself away through light that disagrees with its surroundings, not "
+                + "through geometry. It is masked to the character's own render layer, so it "
+                + "cannot touch the backdrop, the interface or anything in a raid.");
+
+            StagingKeyIntensity = Config.Bind(
+                "Staging area",
+                "Key light",
+                0.85f,
+                new ConfigDescription(
+                    "The main light on the character, from front-left and above.",
+                    new AcceptableValueRange<float>(0f, 3f)));
+
+            StagingRimIntensity = Config.Bind(
+                "Staging area",
+                "Rim light",
+                1.25f,
+                new ConfigDescription(
+                    "The light from behind that draws an edge along the character and separates "
+                    + "them from the map. Usually wants to be brighter than the key.",
+                    new AcceptableValueRange<float>(0f, 3f)));
+
+            StagingFollowWeather = Config.Bind(
+                "Staging area",
+                "Follow the raid's weather",
+                true,
+                "Light the screen for the raid you are actually loading, not just for the map.\n"
+                + "Time of day, fog, rain and cloud are all settled before you deploy, so a 03:00 "
+                + "foggy Woods can look like one and a clear midday Streets like another. Off "
+                + "keeps the map's own fixed look whatever the conditions.");
+
+            StagingIntelLine = Config.Bind(
+                "Staging area",
+                "Intel under the map name",
+                true,
+                "Show the map briefing, bosses, extracts and your tasks in the line beneath the "
+                + "location name, cycling slowly, instead of on banner captions.");
+
+            StagingIntelSeconds = Config.Bind(
+                "Staging area",
+                "Seconds per intel line",
+                7f,
+                new ConfigDescription(
+                    "How long each line stays before the next.",
+                    new AcceptableValueRange<float>(3f, 30f)));
 
             ScreenFit.Remember(MeasuredSizes.Value);
 
@@ -167,6 +441,7 @@ namespace DeployScreen.Client
             try
             {
                 if (GameTypes.BannersReady) BannerPatches.Install(harmony);
+                if (GameTypes.EnvironmentRestoreReady) EnvironmentState.Install(harmony);
                 if (GameTypes.EnvironmentReady) EnvironmentMatch.Install(harmony);
             }
             catch (Exception error)
@@ -182,7 +457,9 @@ namespace DeployScreen.Client
 
             Log.LogInfo(
                 "[DeployScreen] loaded -- banners from " + BannerArt.RootFolder
-                + " (motion=" + GameTypes.DriverReady + " intel=" + GameTypes.IntelReady + ")");
+                + " (motion=" + GameTypes.DriverReady + " intel=" + GameTypes.IntelReady
+                + " depth=" + GameTypes.DepthReady
+                + " backdrop-restore=" + GameTypes.EnvironmentRestoreReady + ")");
         }
     }
 }

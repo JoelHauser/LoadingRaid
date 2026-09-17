@@ -248,7 +248,12 @@ BannerArt.cs            pictures and their sizes on disk, cropping, size choice,
 ScreenFit.cs            measuring a banner in screen pixels, per screen size; the ideal-size log
 ImageHeader.cs          pixel size from a PNG or JPEG header, without decoding
 EnvironmentMatch.cs     the map -> backdrop table, environments.txt, the scene request
-scripts/test-logic.ps1  ImageHeader, cropping, size choice and captions, checked against real files
+EnvironmentState.cs     the ONLY caller of SetEnvironmentAsync; captures and restores the player's
+SceneDepth.cs           camera parallax, light wander, PMC grounding; rides LoadingPerformance
+StagingArea.cs          the map art as the world: two world-space planes, furniture hidden, intel
+MapGrade.cs             per-map light: scene tint, and the PMC key/rim masked to WeaponPreview
+scripts/test-logic.ps1  ImageHeader, cropping, size choice, captions, backdrop table coverage
+scripts/test-gametypes.ps1  every name GameTypes resolves, against a PATCHED Assembly-CSharp
 ```
 
 ### The patches
@@ -519,6 +524,468 @@ In rough order of risk:
 - **The backdrop scene load.** Why it defaults to off.
 - **BepInEx log** lines are all prefixed `[DeployScreen]`; the load line reports
   `motion=` and `intel=` so a resolve failure is visible immediately.
+
+## 1.4.0: the backdrop is the player's, and the scene has depth
+
+The user reported, from their own play: map selection changed their chosen background, some maps
+appeared to have none, and the changes leaked into the main menu. All three were real, all three
+come from the same feature, and the diagnosis below came off the **patched** assembly.
+
+### The patched assembly is obtainable again -- this unblocks a lot
+
+1.3.1 recorded this as blocked ("Regenerate the patched assembly before attempting this"). It is
+not. `hpatchz.exe` survived in an older session scratchpad, and the delta is still in the install:
+
+```
+hpatchz.exe  <SPT>\EscapeFromTarkov_Data\Managed\Assembly-CSharp.dll
+             <SPT>\SPT_Runtime\SPT_Data\Launcher\Patches\SPT-core\EscapeFromTarkov_Data\Managed\Assembly-CSharp.dll.delta
+             <out>\Assembly-CSharp.dll
+```
+
+15,994,432 in, **16,233,472** out, matching what 1.0.0 recorded. Note the delta lives under
+`SPT_Runtime\SPT_Data\`, not `SPT_Data\`. `Mono.Cecil.dll` is in `SPT_Runtime\`.
+
+**Keep a copy outside the session scratchpad.** This is the second time it has been lost, and it is
+the difference between reading the game and guessing at it.
+
+`scripts\test-gametypes.ps1` is new and exists because of this: it checks every type and member
+`GameTypes.cs` resolves by name against a patched assembly, with Cecil, executing nothing. 62
+checks, all passing. That is the compile-time checking the no-Assembly-CSharp design gives up, and
+until now there was no substitute for it.
+
+### The player's backdrop is a setting, and the mod was bypassing it
+
+`EnvironmentUI.Awake()`, from its IL:
+
+```
+SettingsManager.Instance.Game.Settings.EnvironmentUiType    Bsg.GameSettings.GameSetting<EEnvironmentUIType>
+_compositeDisposable.BindState(setting, CG_Awake)           CG_Awake -> SetEnvironmentAsync
+```
+
+So the setting drives the scene, **one way**. `SetEnvironmentAsync` writes
+`_currentEnvironmentUiType` and loads the scene; it never writes the setting back. 1.1.0's
+`EnvironmentMatch` called it directly and had no restore at all, so:
+
+- **The override outlived the screen.** The binding only fires when the *setting* changes, and the
+  setting never changed -- so nothing put it back, for the rest of the session, main menu included.
+  That is the leak, and it had exactly one cause.
+- **Unmapped maps inherited the last map's backdrop.** `Request` returned early when a map was not
+  in `Defaults`, leaving whatever the previous map had asked for. With a static `_lastRequested`
+  that was never reset, the same map could show different scenes depending on where you went before.
+- **Availability was checked against the wrong list.** `IsAvailable` only looked at
+  `EnvironmentUI._environments`, which is which scenes the *build* ships. The game's own
+  `GetRandomEnvironment` filters on `CustomizationSolver.GetAvailableEnvironmentUIs(side)` --
+  backdrops are **customization unlocks**. Asking for one the player does not own is the most likely
+  cause of "some maps have no background"; the `Defaults` table itself covers all 11 playable maps,
+  which `test-logic.ps1` now asserts against the database.
+
+`EnvironmentState.cs` owns all of it now, and nothing else may call `SetEnvironmentAsync`. It
+captures `_currentEnvironmentUiType` first, refuses to change anything it cannot put back
+(`EnvironmentRestoreReady`), and restores on every exit. Two subtleties worth keeping:
+
+- **A restore is itself a scene load.** Running one the instant the raid starts drops it on the
+  frames the map load needs, for a menu nobody is looking at. So when the raid started the restore
+  is *owed*, and a postfix on `ShowEnvironment(true)` settles it when the menu comes back.
+- **It lets go if the backdrop moves under it.** `_applied` records what we asked for; if the live
+  value is neither that nor the captured original, the player changed the setting themselves, and
+  forcing our value back would undo their choice.
+
+`MinimalScreen.Restore` had a second, independent leak: it re-enabled an environment root **only
+if** EFT still wanted it visible, so a root we disabled during a raid transition stayed disabled
+forever, with EFT unaware it had ever been off. It now always undoes its own `SetActive(false)` and
+then calls `ShowEnvironment` with what EFT wants, so the game's state and the scene agree again.
+
+### What the deploy screen actually renders
+
+Read off the patched assembly, not assumed:
+
+- **The PMC is a live 3D model.** `_playerModelView` is `EFT.UI.PlayerModelView`; it exposes
+  `PlayerBody` (`EFT.PlayerBody`) and `ModelPlayerPoser` (`MenuPlayerPoser`, with FinalIK `LimbIK[]`,
+  hand posers, an `Animator`). The screen also holds `XCoordRotation _rotator` and
+  `DragTrigger _dragTrigger` -- it is draggable. `ShowPlayerModel` calls
+  `PlayerModelView.Show(..., update: 0f, position: null, animateWeapon: **true**)`, so it is already
+  animating. The screen does not feel dead because the model is frozen.
+- **`MenuPlayerPoser.BottomShadow` is a public GameObject.** The PMC's ground contact already
+  exists. Grounding the character needs no new art, only for it to be on.
+- **The backdrop is a real 3D scene.** `EFT.UI.EnvironmentUIRoot` has public
+  `Transform CameraContainer`, `Light[] MainScreenLights`, `GameObject[] MainScreenObjects`,
+  `ScreenPositionAnchor[] ScreenAnchors` (each with its own `Camera`), `CanvasGroup Shading`, and
+  `RandomRotate/GetRandomOffset/RotateBack/ResetRotation`. DOTween ships (`DG.Tweening.Sequence` on
+  `EnvironmentUI._currentSequence`).
+
+**So parallax is free.** The depth is already in the scene; nothing ever moves. Translating
+`CameraContainer` a few centimetres parallaxes near geometry against far geometry for real, because
+the engine computes it. Rotation does **not** do this -- it shifts near and far by the same angle --
+which is why `SceneDepth` leads with translation and treats sway as garnish.
+
+`SceneDepth.cs` never assigns an absolute transform: it subtracts the offset it applied last frame,
+reads whatever the game left, and adds the new one. The game moves `CameraContainer` itself
+(`EnvironmentUI.Rotate()` -> `RandomRotate`), so composing rather than overwriting is what keeps the
+two from fighting, and is what makes `Restore()` exact. It rides `LoadingPerformance`'s lifecycle
+deliberately -- cancel, raid start, timeout, Show-threw and plugin-destroy all already funnel
+through `Restore()`.
+
+**Also verified, and matching what 1.3.0 claimed:** `ShowCameraContainer(false)` really does toggle
+`CameraManager.Instance.Camera.gameObject` when `!InGameStatus.InRaid`. That note was right.
+
+### The one number that needs a human
+
+`Scene / Camera drift` is in **world units**, and the scenes' scale cannot be measured from code.
+0.05 is a guess that assumes 1 unit = 1 metre. If the motion is invisible, raise it; if the scene
+swims, lower it. Everything else in that section is relative -- light wander is a fraction of set
+intensity, sway is degrees -- and so is scale-independent.
+
+### Deliberately not done
+
+- **Dust, haze, smoke.** A ParticleSystem needs a material, and a material needs a shader that is
+  actually in the build. `Shader.Find` on a name that was not included returns null, and there is no
+  way to confirm from here which were. This needs a shipped asset -- an AssetBundle with a particle
+  material and a soft dust texture -- before it can be written honestly. **Identified, not invented.**
+- **Moving the loading text.** The composition ask is real, but layout cannot be previewed from here
+  and a wrong guess makes it worse. `EnvironmentUI.EnableOverlay(true)` -- the game's own scrim,
+  `SetShadingVisibility(true, 0.4f)` -- is exposed as an opt-in instead, which is the readability
+  half without moving anything.
+- **`MenuPlayerPoser.Patrol` is write-only.** There is no readable backing field, so what it was
+  before cannot be recovered; `Restore` sets it false. Hence opt-in, default off.
+
+### Still not run in the game
+
+Nothing here has executed. Build is clean at 0 warnings; `test-logic.ps1` is 35 passed, exit 0;
+`test-performance.ps1` 11 passed; `test-gametypes.ps1` 62 passed against the patched assembly --
+which means every name resolves, not that any of it behaves. **In-game verification is still owed**
+for: the drift amplitude, whether the light wander reads as air or as a flicker, whether
+`BottomShadow` was off in the first place, the cancel path, and the main menu after a raid.
+
+## 1.5.0: the staging area
+
+The user asked for the deploy screen to feel like the PMC is standing **in** the map, and for the
+experience to be reinvented rather than decorated. They chose, when asked: the world comes from
+their own per-map art, and the banner panel gives way to it.
+
+### The screen is a composite, and that is the whole design
+
+Read off the patched assembly. `PlayerModelView.Show` calls:
+
+```
+PlayerModelLoader.Load(playerVisual, inventoryController, update, filter, spinner, ct,
+                       position:  _position,
+                       parent:    playerModelView.transform,     <- a UI RectTransform
+                       layer:     LayersMaskController.WeaponPreview,
+                       animateWeapon: true,
+                       alternativeBones: null,
+                       enableBottomShadow: true)                 <- ldc.i4.1
+```
+
+So there are **three cameras**, not one scene:
+
+| | what | drawn by |
+| --- | --- | --- |
+| backdrop | a real 3D scene, `EnvironmentUIRoot` | camera under `CameraContainer` |
+| PMC | a real skinned model on layer `WeaponPreview`, parented into the canvas | a preview camera |
+| UI | banners, map name, timer, cancel | the UI canvas |
+
+`WeaponPreview` is shared with item icons, clothing icons and player icons -- it is the game's
+"render a model for the interface" layer. **The character is not in the backdrop's 3D space**, and
+putting it there means re-parenting out of the canvas and changing its layer, which breaks
+`ScreenPositionAnchor` alignment, `XCoordRotation`/`DragTrigger` drag-to-rotate and UI ordering.
+
+That is not a wall, it is the method. A composite is how film puts an actor somewhere they never
+went, and three things sell one -- all reachable:
+
+1. **Parallax.** Different cameras means drifting the backdrop camera moves the world and *not* the
+   character. 1.4.0's `SceneDepth` drift was already doing this; it just had nothing behind it.
+2. **Light agreement.** `Light.cullingMask = 1 << WeaponPreview` falls on the PMC and nothing else.
+   This is the biggest lever by far: a cut-out reads as a cut-out because its light disagrees with
+   its surroundings, not because of geometry.
+3. **The map as the world.** The player's own art, hung deep in the backdrop scene, with
+   `MainScreenObjects` switched off so the menu's furniture is not standing in front of the place
+   they are going.
+
+### Why a world-space Canvas and not a quad
+
+A quad needs a material, a material needs a shader, and `Shader.Find` only finds shaders the build
+included -- unknowable from outside the game. A **world-space `Canvas` with a `UnityEngine.UI.Image`**
+draws through the UI path the mod already uses for the minimal background, so nothing is guessed.
+Two planes at different depths (`StagingDistance`, and `DepthRatio` 2.6x beyond it) shear against
+each other under the drift, which a single plane cannot do.
+
+Both planes are **parented to the environment root, never to the camera** -- parented to the camera
+they would travel with the drift and never parallax. Both are built oversized (`StagingOverscan`)
+so the drift cannot reveal an edge. Their layer is chosen from the camera's own `cullingMask`, since
+a plane on a culled layer is invisible with nothing in the log to explain it.
+
+### Corrections to 1.4.0
+
+- **"Ground the character" is a no-op.** `enableBottomShadow: true` is passed at load and
+  `CreatePlayerBody` does `BottomShadow.SetActive(enableBottomShadow)` -- the contact shadow is
+  **already on**. 1.4.0 claimed it was sometimes off. It was not. Grounding comes from the light
+  match instead, which is the better answer anyway.
+- **`EnvironmentShading` is not a colour grade**, just a dictionary of `CanvasGroup` overlays. The
+  "dim behind the text" option is a flat UI scrim and nothing more.
+
+### Intel borrows `_subCaption`
+
+Rather than building a TextMeshPro object -- which would mean referencing TMPro and guessing a font,
+a size and a position -- intel is written to `MatchmakerTimeHasCome._subCaption`, the line under the
+map name. Nothing in that class writes it: `ChangeStatus` and `UpdateStatusText` both write
+`_deployingText`. The `text` property is resolved off the live object, so the **assembly still has no
+TMPro reference**.
+
+**The caption trap does not apply here.** It is `SelectBanner`'s -- it hides a description that
+localizes to itself -- and this sets the TMP text directly, so raw strings are correct and the
+locale round-trip is unnecessary.
+
+### Staging is a mode, and is not the default
+
+`LoadingScreenMode` gains `Staging`. It is **not** the default, deliberately: this is a large feature
+in a mod that has still never run, and Enhanced is the fallback that does not depend on any of it.
+It also makes the thing A/B-able against the existing modes, which is what the mode infrastructure
+was built for. Say so when handing it over -- the user has to switch to it.
+
+Degrades in pieces: no art for the map means the menu scene is left alone and only the light follows
+the destination; no `MainScreenObjects` means the furniture stays; no `WeaponPreview` means the PMC
+is not relit; no `_subCaption` means intel has nowhere to go. Each is logged.
+
+### What still needs a human
+
+- **`Staging area / Near plane distance`** is in world units, like `Camera drift`, and the scenes'
+  scale is not measurable from code. Both want tuning together: drift creates the parallax, distance
+  sets how much of it you see.
+- **Whether the character lights do anything at all.** A directional light masked to the preview
+  layer should fall on the PMC, but if that preview is drawn with unlit shaders or a fixed light
+  setup, it will do nothing. It fails invisible, not loud.
+- **Whether hiding `MainScreenObjects` leaves a void.** If the scene's floor or walls live in that
+  array rather than outside it, the map plane may be all that remains -- which may look right or may
+  look like a poster. `Hide the menu scene` turns it off.
+
+### Not done, and why
+
+The **AssetBundle route** -- a modelled staging area the PMC genuinely stands in -- was offered and
+not chosen for now. It remains the only way to get real geometry around the character, and it needs
+a Unity project on 2022.3.43f1, a bundle build-and-load pipeline this repo has never had, and art.
+`StagingArea` is deliberately shaped so a different backdrop provider could replace `MapSprite` and
+`BuildPlanes` without touching the lighting, the lifecycle or the teardown.
+
+## Aspect ratios
+
+The banner path was already shape-agnostic and stays that way: `ScreenFit` **measures** a banner on
+screen rather than working it out from the resolution, which is why 1.2.0 handles ultrawide and
+16:10 without knowing anything about the game's CanvasScaler. Nothing there needed changing.
+
+The **staging area** did. Two real faults, both found by the tests rather than by reading:
+
+1. **The art was cropped to the screen and shown on a plane shaped by the camera.** `MapSprite`
+   used `Screen.width/Screen.height`; `BuildPlane` sized the plane from `camera.aspect`. A UI Image
+   stretches its sprite to its RectTransform, so any disagreement between those two is a stretch --
+   which is exactly what happens when the camera has a viewport rect or renders to a RenderTexture.
+   **Everything now takes its shape from the camera**, so the two cannot disagree and we never have
+   to know which case we are in. `SafeAspect()` falls back to the measured screen, never a
+   hard-coded 16:9.
+
+2. **Overscan was a fixed 1.12 and that is not a number you can fix.** The planes are built
+   oversized so the drift cannot reveal an edge, and how much they need depends on the distance,
+   the field of view, the drift amplitudes **and the shape of the screen** -- the same sideways
+   excursion is a small fraction of an ultrawide frame and a large fraction of a portrait one.
+   `StagingArea.RequiredOverscan` computes it; the config value is now a **floor**.
+
+### The bound, and how it is checked
+
+```
+halfTan    = tan(fov/2)
+pulled     = distance + 0.8*drift          // camera pulled back: the frustum grows, the plane does not
+growth     = pulled / distance
+halfHeight = distance * halfTan
+halfWidth  = halfHeight * aspect           // the aspect lives here, and only here
+vertical   = growth + (0.55*drift + pulled*tan(0.6*sway)) / halfHeight
+horizontal = growth + (drift     + pulled*tan(sway))     / halfWidth
+```
+
+`test-logic.ps1` checks that bound against the motion it is meant to cover: it runs SceneDepth's
+actual drift sines over 1,080 combinations of aspect x drift x distance x fov x sway, and at each
+sampled moment works out how much of the plane the camera can see. **The first version failed**, and
+for a reason worth keeping: the rotation term was `2*sway/fov` on both axes, which ignores the
+aspect entirely -- so a portrait screen was under-covered and would have shown the plane's edge. The
+horizontal rotation shift has to be divided by the *horizontal* half-extent, which carries the
+aspect. A closed form that looks symmetric usually is not.
+
+Also fixed: `BannerArt.CoverRect` returned a **zero-height rect** for a very small source against a
+very wide shape (a 1x1 image cropped to 48:9 wants 0.19 of a pixel, which rounds to 0), and
+`Sprite.Create` throws on that. Clamped to at least one pixel on each side.
+
+### Overscan is not free
+
+The picture is stretched across the whole oversized plane, so at rest you see the middle
+`1/overscan` of it. At the default (16:9, drift 0.05, distance 3) that is x1.04 and invisible. At
+drift 0.2 over distance 0.5 on a 32:9 it is **x2.34**, meaning only the middle 43% of the art is on
+screen. There is a log warning past x1.5 naming the two settings that cause it. This is inherent --
+more drift needs more margin -- not a bug to fix.
+
+### Checked at
+
+5:4, 4:3, 3:2, 16:10, 16:9, 21:9 (3440x1440), 32:9 (5120x1440), 48:9 (7680x1440), 1:1 and 9:16
+portrait, against ten source-image shapes: 100 crop combinations and 1,080 overscan combinations,
+all passing. The browser preview carries the same `requiredOverscan` and is cross-checked against
+the shipped C# to 1e-4, so the two cannot quietly drift apart.
+
+**Still not run in the game.** None of this says the planes look right, only that the geometry
+holds.
+
+## 1.6.0: the raid's own light, the caption fix, and a cost pass
+
+### The light follows the raid, not just the map
+
+`RaidSettings.TimeAndWeatherSettings` is a public struct settled **before** deploy:
+
+```
+int HourOfDay   ERainType RainType   EFogType FogType
+ECloudinessType CloudinessType       EWindSpeed WindType
+bool IsRandomTime  bool IsRandomWeather
+```
+
+`MapGrade.ForRaid` bends the per-map grade with it. Hour is a smooth daylight curve (not a switch)
+with its own golden-hour term; night pulls toward moonlight, drops exposure to ~0.42 and *lifts* the
+rim, because at night a figure reads by its edge. Fog greys and collapses the key/rim gap -- fog is a
+contrast eater before it is a colour. Rain cools, desaturates and darkens. Cloud flattens key toward
+rim, because overcast has no direction. Exposure is clamped to 0.25-1.6 so no combination can black
+the screen out or blow it white.
+
+The weather enums are ordinal (`NoRain..Shower`, `NoFog..Continuous`, `Clear..Thundercloud`), so the
+code converts to int and uses magnitude rather than hard-coding names.
+
+`test-logic.ps1` runs **3,888 combinations** -- 6 maps x 24 hours x rain x fog x cloud -- and checks
+exposure and every colour channel stays in range, plus that night is actually darker and cooler than
+noon, fog actually flattens, rain actually darkens, and unknown weather leaves the map grade exactly
+as it was.
+
+### The caption fix, finally
+
+1.3.1 recorded "keep vanilla captions are still emptied when custom art is on" as blocked, because
+`LocationBanner` could not be resolved. With the patched assembly back, `TryCreateBanner`'s IL is
+unambiguous:
+
+```
+CreateBanner(banner.id + " Name", banner.id + " Description", sprite)
+```
+
+`JsonType.LocationSettings+Location+LocationBanner.id` is public. `BeforeTryCreateBanner` now takes
+`__0`, reads the id, and passes those two keys through when captions are set to Vanilla. **A player
+can have this mod's art under BSG's own lore text**, which is what the setting always claimed.
+
+### Staging is in the reports now
+
+Staging state only reached the trace as `Mark()` events, so `compare-loading.ps1` -- which groups on
+mode and the minimal-mode fields -- would have pooled a staging capture where the art was missing
+with one where it worked. Exactly the mistake 1.3.1 had to fix for minimal mode. The report now
+carries `stagingArtShown`, `stagingSceneObjectsHidden`, `stagingCharacterLit`, `stagingIntelShown`
+and `raidConditions`, and the comparison groups on them.
+
+### What the cost pass actually changed
+
+The three items 1.2.1 found and deferred, all of which now matter more because `Intel.Build` runs on
+the staging path too:
+
+1. **`Localization.Reach` re-resolved the manager and culture on every lookup** -- a static property
+   get plus an instance property get, times the dozens of lookups one `Intel.Build` does, on the
+   loading path. Cached per batch; `Refresh()` at the top of `Build` and in `Publish`. Roughly 40-80
+   reflective gets become 2.
+2. **One `object[3]` allocated per `TryGetLocalization`.** Now a reused static buffer, cleared after
+   each call so it pins nothing. Main thread only, which every caller is.
+3. **`session.GetType().GetProperty("Profile")` on every intel build** -- cached against the session
+   type. **`Tidy` allocated its prefix array per call** -- now `static readonly`.
+4. **`ScreenFit.TryMeasure` did `GetComponentInParent<Canvas>()` on each of up to 120 attempts.**
+   Cached, and `ForgetCanvas()` is called from `BannerDriver.Begin` because the panel is rebuilt
+   between raids.
+5. **`Measure` re-`GetComponent`d a `KenBurns` the driver already held.** The banner and its motion
+   are now paired in one list.
+
+That last one is worth a note: the first attempt indexed `_attached` by the `_measurable` index,
+which **is wrong** -- `_attached` only gains an entry when motion is on and the component was not
+already there, so the two diverge. Pairing them in a struct is the correct fix. A cache that is fast
+and wrong is worse than the lookup it replaced.
+
+### On "better than default"
+
+Worth being precise, because it is easy to overclaim: **none of this makes the game's loading
+faster.** The raid's asset load is on the main thread underneath all of it and this mod does not
+touch it. What the pass does is make the mod's own cost small enough not to matter -- the deploy
+screen is open for twenty to sixty seconds, and an idle frame should cost approximately nothing.
+Whether *Minimal* mode's removal of presentation work helps the load itself is still an open
+question with no runtime evidence either way; that is what the diagnostics exist to answer.
+
+### Suites
+
+52 logic (3,888 weather + 1,080 overscan + 100 crop combinations), 11 performance, **80** name
+checks against the patched assembly, 0 warnings, references still clean. **Still never run in the
+game.**
+
+## The hitching on the deploy screen -- what it actually is
+
+The user reports heavy hitching while waiting to get into a raid, and guessed it was the game
+world being rendered. **It is not**, and the distinction matters for what can be done:
+
+- **The raid world is not rendered during the deploy screen. It is being built.** The load runs
+  through `EFT.AssetsManager.AssetsManager/LoadSceneOperation`,
+  `EFT.LoadScenesFromPresetOperation` and `Streamer`, all of which call `SceneManager.LoadSceneAsync`.
+- **Unity's async scene load is only asynchronous in its reading.** Integration -- instantiating
+  objects, uploading textures, warming shaders -- happens on the **main thread, in slices, every
+  frame**. That is the hitching, and no mod can move it off the main thread because Unity does not
+  offer that.
+- What *is* being rendered is the **menu**: the `EnvironmentUIRoot` scene, the PMC preview on the
+  WeaponPreview layer, and the canvas.
+
+### The game already tunes the obvious levers
+
+Checked before touching anything, and worth knowing before anyone "optimises" these again:
+
+- `LoadScenesFromPresetOperation/CG_LoadPresetAsync` reads `QualitySettings.asyncUploadTimeSlice`
+  and `asyncUploadBufferSize`, **doubles both** (`get` then `ldc.i4.2` then `mul` then `set`) for
+  the load, and restores them at the end.
+- `Streamer/CG_LoadSceneCoroutine` sets `Application.backgroundLoadingPriority` to `Low (0)` while
+  streaming chunks -- deliberately, so in-raid streaming does not cost frames.
+- `ApplicationConfig` carries `QualitySettingsAsyncUploadTimeSlice` and
+  `QualitySettingsAsyncUploadBufferSize` as configured values.
+- There is an `FPSLimit` MonoBehaviour that writes `vSyncCount` and `targetFrameRate` every
+  `Update` when its `SetFps` is true -- so anything we set could be overwritten by it. Capture and
+  restore, and expect it may not hold on every screen.
+
+So the naive win -- "raise the async upload budget" -- is already taken, and overriding it blindly
+would be arguing with tuning done by people who could profile it.
+
+### What is left, and what was built (`LoadEase.cs`)
+
+Only two honest categories: reduce what the loader competes with, and stop this mod adding stalls
+of its own.
+
+1. **Decode art early** (default **on**). This is the one unambiguous fix, because the stall was
+   ours. `Texture2D.LoadImage` is main-thread work -- tens of milliseconds for a 4K JPEG -- and it
+   was happening inside `MatchmakerBannersPanel.Show`, i.e. *during the load*. `BannerArt.Prewarm`
+   now runs from a postfix on `MatchmakerOfflineRaidScreen.Show`, while the player is still picking
+   a time of day. Same work, same cache, different moment. Staging decodes only the one picture it
+   will use (`StagingArea.PictureIndex` is shared so both agree); Enhanced decodes all of them.
+2. **Frame rate cap** (default off). Fewer menu frames leave more machine for the loader. Refuses
+   anything under 10 fps, because `LoadTrace` counts a stall at 100 ms and a lower cap would make
+   every ordinary frame read as a hitch -- the setting would flatter itself in the measurement
+   meant to judge it.
+3. **Loading priority** (default *leave alone*). `Application.backgroundLoadingPriority`, the
+   documented frame-rate-versus-load-speed trade. Off by default and the docs say why: raising it
+   makes each frame do **more** integration, so frames get *longer* even as the load finishes
+   sooner. That may read as worse hitching, not better. It is a real lever and an honest coin-flip.
+4. **Pause character IK** (default off). `MenuPlayerPoser` runs FinalIK `LimbIK[]` solvers, twist
+   relaxers and two hand posers in `LateUpdate` every frame for one model. Disabling the component
+   stops that; the model stays and its Animator keeps running.
+
+Everything is captured before it is changed and restored on every exit path `LoadingPerformance`
+already owns -- a frame-rate cap or a loading priority left behind would follow the player out of
+the menu into everything else.
+
+### The part that matters most
+
+**None of 2-4 is measured, and "make sure there are no hitches" cannot be answered without
+measuring.** Every setting is written into the report (`easeFrameRateCap`, `easeLoadPriority`,
+`easeCharacterIkPaused`, `easePrewarmArt`) precisely so a comparison is possible: one lever at a
+time, `Record loading` on, same map and settings, at least three runs each, and
+`compare-loading.ps1` to read them. Anyone who claims one of these helps without that has not
+demonstrated anything.
 
 ## Future work
 

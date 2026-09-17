@@ -71,15 +71,38 @@ namespace DeployScreen.Client
         /// moment; it is divided back out, since KenBurns zooms about the centre and the size that
         /// matters is the banner at rest.
         /// </summary>
+        private static RectTransform _lastMeasured;
+        private static Canvas _lastCanvas;
+
+        /// <summary>Drops the cached canvas, for a panel that has been rebuilt.</summary>
+        internal static void ForgetCanvas()
+        {
+            _lastMeasured = null;
+            _lastCanvas = null;
+        }
+
         internal static bool TryMeasure(RectTransform rect, float zoom, out BannerFit fit)
         {
             fit = default(BannerFit);
 
             if (rect == null || !rect.gameObject.activeInHierarchy) return false;
 
-            var canvas = rect.GetComponentInParent<Canvas>();
-            if (canvas == null) return false;
-            canvas = canvas.rootCanvas;
+            // Cached across attempts: the driver retries this for up to 120 frames, and
+            // GetComponentInParent walks the hierarchy every single time. The banner does not
+            // change canvas between one frame and the next.
+            Canvas canvas;
+            if (ReferenceEquals(rect, _lastMeasured) && _lastCanvas != null)
+            {
+                canvas = _lastCanvas;
+            }
+            else
+            {
+                canvas = rect.GetComponentInParent<Canvas>();
+                if (canvas == null) return false;
+                canvas = canvas.rootCanvas;
+                _lastMeasured = rect;
+                _lastCanvas = canvas;
+            }
 
             // An overlay canvas already draws in screen pixels and takes no camera; the others
             // are projected through theirs.

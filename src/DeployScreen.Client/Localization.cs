@@ -31,8 +31,41 @@ namespace DeployScreen.Client
 
         private static bool _warnedOnce;
 
+        /// <summary>
+        /// The LocalizationManager and the culture, held for the length of one batch of lookups.
+        ///
+        /// Every Lookup used to re-read both through reflection -- a static property get plus an
+        /// instance property get -- and Intel.Build does dozens of lookups in the Show prefix, on
+        /// the loading path. Resolving them once per batch turns that into two.
+        ///
+        /// Deliberately not cached forever: the culture changes when the player changes language,
+        /// and the manager is a game object we should not pin. Refresh() is called at the top of
+        /// each batch, which is short and always on the main thread.
+        /// </summary>
+        private static object _manager;
+        private static string _culture;
+        private static bool _fresh;
+
+        /// <summary>
+        /// Reused for the three-argument TryGetLocalization call. One lookup per boss, extract and
+        /// quest adds up to a small pile of single-use arrays otherwise. Main thread only, which
+        /// every caller here is.
+        /// </summary>
+        private static readonly object[] TranslateArgs = new object[3];
+
         /// <summary>True if the last Publish actually reached the locale table.</summary>
         internal static bool Available { get; private set; }
+
+        /// <summary>
+        /// Re-reads the manager and culture. Call once before a run of lookups; everything after
+        /// it reuses what this found.
+        /// </summary>
+        internal static void Refresh()
+        {
+            _fresh = false;
+            _manager = null;
+            _culture = null;
+        }
 
         /// <summary>
         /// Registers every pair, replacing any registered earlier. Returns false when the
@@ -42,6 +75,7 @@ namespace DeployScreen.Client
         internal static bool Publish(Dictionary<string, string> entries)
         {
             Available = false;
+            Refresh();
 
             if (entries == null || entries.Count == 0) return false;
 
@@ -103,10 +137,16 @@ namespace DeployScreen.Client
                 if (!Reach(out manager, out culture)) return false;
 
                 // TryGetLocalization(string id, string locale, out string localizedValue)
-                var arguments = new object[] { key, culture, null };
-                var found = (bool)GameTypes.LocalizationManager_TryGetLocalization.Invoke(manager, arguments);
+                TranslateArgs[0] = key;
+                TranslateArgs[1] = culture;
+                TranslateArgs[2] = null;
 
-                value = arguments[2] as string;
+                var found = (bool)GameTypes.LocalizationManager_TryGetLocalization.Invoke(manager, TranslateArgs);
+
+                value = TranslateArgs[2] as string;
+                TranslateArgs[0] = null;
+                TranslateArgs[1] = null;
+                TranslateArgs[2] = null;
                 return found;
             }
             catch (Exception error)
@@ -143,6 +183,13 @@ namespace DeployScreen.Client
 
         private static bool Reach(out object manager, out string culture)
         {
+            if (_fresh)
+            {
+                manager = _manager;
+                culture = _culture;
+                return manager != null && !string.IsNullOrEmpty(culture);
+            }
+
             manager = null;
             culture = null;
 
@@ -152,7 +199,12 @@ namespace DeployScreen.Client
             if (manager == null) return false;
 
             culture = GameTypes.LocalizationManager_Culture.GetValue(manager, null) as string;
-            return !string.IsNullOrEmpty(culture);
+            if (string.IsNullOrEmpty(culture)) return false;
+
+            _manager = manager;
+            _culture = culture;
+            _fresh = true;
+            return true;
         }
 
         private static void WarnOnce(Exception error)

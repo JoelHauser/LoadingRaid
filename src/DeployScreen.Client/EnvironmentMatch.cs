@@ -62,9 +62,6 @@ namespace DeployScreen.Client
         private static readonly Dictionary<string, Backdrop> Overrides =
             new Dictionary<string, Backdrop>(StringComparer.OrdinalIgnoreCase);
 
-        /// <summary>What this mod last asked for, so a repeat is not a second scene load.</summary>
-        private static Backdrop _lastRequested = Backdrop.Random;
-
         private static bool _warnedOnce;
 
         internal const string OverrideFile = "environments.txt";
@@ -93,8 +90,22 @@ namespace DeployScreen.Client
             try
             {
                 if (LoadingPerformance.Mode != LoadingScreenMode.Enhanced) return;
-                if (!DeployScreenPlugin.MatchEnvironment.Value) return;
                 if (__args == null) return;
+
+                // Without a way to read the live backdrop back, we decline to move it at all.
+                // An override that cannot be undone is precisely the bug this feature caused.
+                if (!GameTypes.EnvironmentRestoreReady) return;
+
+                if (!DeployScreenPlugin.MatchEnvironment.Value)
+                {
+                    // Turned off mid-session, or never on: make sure nothing of ours is left on
+                    // the backdrop before we stop looking at it.
+                    EnvironmentState.Restore();
+                    return;
+                }
+
+                // Note the player's backdrop before anything is asked of it. Idempotent.
+                EnvironmentState.Capture();
 
                 object raidSettings = null;
                 foreach (var argument in __args)
@@ -122,100 +133,51 @@ namespace DeployScreen.Client
             }
         }
 
+        /// <summary>
+        /// Points the backdrop at the destination map, or -- and this is the part that was missing
+        /// -- puts the player's own backdrop back when the destination has no mapping.
+        ///
+        /// Leaving an unmapped map alone was what made this feel inconsistent: the backdrop simply
+        /// stayed on whatever the *previous* map had asked for, so the same map showed a different
+        /// scene depending on where you went last. Every path through here now ends with the
+        /// backdrop in a defined state.
+        /// </summary>
         private static void Request(string locationId)
         {
             Backdrop wanted;
-            if (!Overrides.TryGetValue(locationId, out wanted) &&
-                !Defaults.TryGetValue(locationId, out wanted))
+            var mapped = Overrides.TryGetValue(locationId, out wanted)
+                || Defaults.TryGetValue(locationId, out wanted);
+
+            if (!mapped || wanted == Backdrop.Random)
             {
+                // No opinion about this map. The player's choice is the answer, not the last map's.
+                if (EnvironmentState.Overridden)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] " + locationId + " has no backdrop of its own -- "
+                        + "restoring the player's");
+                    EnvironmentState.Restore();
+                }
+
                 return;
             }
 
-            if (wanted == Backdrop.Random) return;
-            if (wanted == _lastRequested) return;
-            if (!IsAvailable(wanted))
+            // Available means both "this build ships the scene" and "the player has it unlocked".
+            // Asking for one they do not own is how you get an empty backdrop.
+            if (!EnvironmentState.IsAvailable((int)wanted))
             {
                 DeployScreenPlugin.Log.LogInfo(
-                    "[DeployScreen] backdrop " + wanted + " is not in this install, leaving it alone");
+                    "[DeployScreen] backdrop " + wanted + " is not available to this player, "
+                    + "leaving their own in place");
+                EnvironmentState.Restore();
                 return;
             }
-
-            var environmentUI = Instance();
-            if (environmentUI == null) return;
-
-            _lastRequested = wanted;
 
             DeployScreenPlugin.Log.LogInfo("[DeployScreen] " + locationId + " -> " + wanted + " backdrop");
 
-            // Fire and forget: the returned Task finishes when the scene has swapped, and
-            // nothing here needs to wait for it. Faulting it must not surface as an unhandled
-            // task exception, so it is observed and swallowed.
-            var task = GameTypes.EnvironmentUI_SetEnvironmentAsync.Invoke(
-                environmentUI, new[] { Enum.ToObject(GameTypes.EEnvironmentUIType, (int)wanted) });
-
-            Observe(task);
-        }
-
-        private static void Observe(object task)
-        {
-            var asTask = task as System.Threading.Tasks.Task;
-            if (asTask == null) return;
-
-            asTask.ContinueWith(finished =>
-            {
-                if (finished.Exception == null) return;
-
-                WarnOnce(finished.Exception);
-                _lastRequested = Backdrop.Random;
-            });
-        }
-
-        private static object Instance()
-        {
-            if (GameTypes.EnvironmentUI_Instantiated != null)
-            {
-                var live = GameTypes.EnvironmentUI_Instantiated.GetValue(null, null) as bool?;
-                if (live != true) return null;
-            }
-
-            return GameTypes.EnvironmentUI_Instance.GetValue(null, null);
-        }
-
-        /// <summary>
-        /// Whether the install actually has this backdrop. EnvironmentData carries an
-        /// EligibleVersions list, and the edition-themed scenes are not in every build --
-        /// asking for one that is missing is how you get a black menu.
-        /// </summary>
-        private static bool IsAvailable(Backdrop backdrop)
-        {
-            if (GameTypes.EnvironmentUI_Environments == null || GameTypes.EnvironmentData_Type == null)
-            {
-                return true;
-            }
-
-            try
-            {
-                var environmentUI = Instance();
-                if (environmentUI == null) return false;
-
-                var environments = GameTypes.EnvironmentUI_Environments.GetValue(environmentUI) as IEnumerable;
-                if (environments == null) return true;
-
-                foreach (var environment in environments)
-                {
-                    if (environment == null) continue;
-
-                    var type = GameTypes.EnvironmentData_Type.GetValue(environment);
-                    if (type != null && Convert.ToInt32(type) == (int)backdrop) return true;
-                }
-
-                return false;
-            }
-            catch
-            {
-                // Unreadable is not the same as absent; let the game decide.
-                return true;
-            }
+            // Everything that changes the backdrop goes through EnvironmentState, which captured
+            // the player's value first and owns putting it back.
+            EnvironmentState.Apply((int)wanted);
         }
 
         /// <summary>

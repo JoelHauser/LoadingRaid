@@ -24,7 +24,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.3.1.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.6.0.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -41,16 +41,140 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 
 | Section | Setting | Default | What it does |
 | --- | --- | --- | --- |
-| Performance | Loading screen | Enhanced | **Enhanced**: existing banners, motion and intel. **Vanilla**: stock presentation with optional diagnostics. **Minimal**: experimental reduced screen. |
+| Performance | Loading screen | Enhanced | **Staging area**: your map art becomes the world your PMC stands in — see [The staging area](#the-staging-area).<br>**Enhanced**: banners, motion and intel on the normal screen.<br>**Vanilla**: stock presentation with optional diagnostics.<br>**Minimal**: experimental reduced screen. |
 | Performance | Record loading | On | Save a JSON loading report under the plugin's `diagnostics` folder. |
 | Performance | Test label | Empty | Group comparable runs, for example `first` or `repeat`. |
 | Banners | Enabled | On | Use your own images from the `banners` folder. Does nothing until you add some. |
-| Banners | Captions | Map intel | **Map intel**: a briefing for the map. See [Map intel](#map-intel).<br>**From file name**: captions taken from your image file names.<br>**Keep vanilla**: the game's own captions — but see the note below. |
+| Banners | Captions | Map intel | **Map intel**: a briefing for the map. See [Map intel](#map-intel).<br>**From file name**: captions taken from your image file names.<br>**Keep vanilla**: the game's own captions, now working alongside your own art. |
 | Motion | Enabled | On | Slowly zoom and drift each banner. |
 | Motion | Zoom | 1.06 | How far the zoom goes, from 1.0 to 1.3. |
 | Motion | Seconds per cycle | 18 | How long one zoom in and back out takes, from 4 to 60. |
 | Intel | Show your tasks | On | Include a card listing the tasks you've started on this map. |
-| Backdrop | Match the map | Off | Change the menu scene behind the screen to suit the map. See [Backdrop](#backdrop). |
+| Backdrop | Match the map | Off | Override **your** chosen backdrop with one picked to suit the map. See [Backdrop](#backdrop). |
+| Scene | Depth and atmosphere | On | Drift the backdrop's camera and breathe its lights, for real parallax. See [Depth](#depth). |
+| Scene | Camera drift | 0.05 | How far the camera drifts, in world units. **The one setting likely to need tuning.** |
+| Scene | Camera sway | 0.12 | A slow rotation on top of the drift, in degrees. |
+| Scene | Light wander | 0.06 | How much the scene's lights breathe, as a fraction of their set intensity. |
+| Scene | Ground the character | On | Switch on the PMC's own contact shadow if it's off. |
+| Scene | Idle movement | Off | Ask the PMC's animator for its idle patrol motion. |
+| Scene | Dim behind the text | Off | Use the game's own scrim behind the loading text, for readability. |
+| Ease the load | Decode art early | On | Read your pictures before the load starts, not during it. |
+| Ease the load | Frame rate cap while loading | 0 (off) | Cap FPS on the deploy screen so the menu competes less with loading. |
+| Ease the load | Loading priority | Leave alone | Unity's frame-rate-vs-load-speed trade. See [Hitching](#hitching-while-you-wait). |
+| Ease the load | Pause character IK while loading | Off | Stop the PMC's limb solvers while the raid loads. |
+| Staging area | Follow the raid's weather | On | Light the screen for the raid's real time of day, fog, rain and cloud. |
+| Staging area | Near plane distance | 3 | Gap between the two art planes, in world units. Wider gap, stronger parallax. |
+| Staging area | Overscan | 1.12 | A **floor**. The mod works out what your screen shape and drift actually need. |
+| Staging area | Near haze | 0.55 | How dark the near frame is. 0 removes that plane. |
+| Staging area | Hide the menu scene | On | Switch off the menu backdrop's furniture so your art is the world. |
+| Staging area | Light the scene for the map | On | Tint the backdrop's own lights toward the destination. |
+| Staging area | Grade strength | 0.65 | How far lights and art are pulled toward the destination's colour. |
+| Staging area | Light the character to match | On | Key and rim lights that fall on your PMC and nothing else. |
+| Staging area | Key light / Rim light | 0.85 / 1.25 | The two character lights. Rim usually wants to be brighter. |
+| Staging area | Intel under the map name | On | Briefing, bosses, extracts and tasks in the line under the location. |
+| Staging area | Seconds per intel line | 7 | How long each line stays. |
+
+## The staging area
+
+Set **Performance → Loading screen** to **Staging area** and the deploy screen stops being a menu
+with a picture in it. Your art for the destination becomes the place your PMC is standing in while
+the raid loads.
+
+**It is not the default.** Switch to it deliberately, keep some raids on **Enhanced**, and compare —
+that's what the modes are for.
+
+**It needs art.** Put images in the map's folder under `banners/` (see [Custom banners](#custom-banners)).
+A map with no art is left alone: you get the normal screen, with only the lighting following the
+destination.
+
+### What it actually does
+
+Your PMC is a real 3D model, but it's drawn by a *different camera* than the backdrop scene and
+composited on top — that's how the game is built, and it can't be changed cheaply. So rather than
+fight it, the staging area uses the three things that make a composite convincing:
+
+- **Parallax.** Because the character and the world are on different cameras, drifting the world's
+  camera moves the world and *not* the character. Two art planes at different depths shear against
+  each other as well, so the scene has genuine depth rather than a pan across a flat image.
+- **Light that agrees.** A key and a rim light are added that fall on your PMC *and nothing else*,
+  coloured for where you're going — sodium for Streets, cold green for Woods, clinical blue for
+  Labs. This is the setting that matters most: a cut-out looks like a cut-out because its light
+  disagrees with its surroundings, not because of its shape.
+- **The map as the world.** Your art is hung deep in the scene and the menu backdrop's own furniture
+  is switched off, so you're looking at the destination rather than at a mall shutter with the
+  destination behind it.
+
+**It's lit for the raid, not just the map.** Time of day, fog, rain and cloud are all decided before
+you deploy, so a 03:00 foggy Woods and a clear midday one don't look the same: night pulls everything
+toward moonlight and leans on the rim light to keep your PMC readable, fog greys things down and eats
+the contrast, rain cools and darkens. Turn off **Follow the raid's weather** if you'd rather each map
+always looked the same.
+
+The banner panel steps aside — its pictures are the world now — and the map briefing, bosses,
+extracts and your tasks cycle slowly in the line beneath the location name.
+
+### Tuning it
+
+Two settings are in **world units**, and the mod can't measure how big the game's scenes are, so
+these are the ones likely to want adjusting on your machine:
+
+- **Scene → Camera drift** — how far the world camera moves. This creates the parallax.
+- **Staging area → Near plane distance** — the gap between the two art planes. Wider gap, stronger shear.
+
+**Overscan** is worked out for you. The art planes are built oversized so the drift can't reveal an
+edge, and how much they need depends on your screen's shape as much as on the drift — a sideways
+drift is a much bigger fraction of a 4:3 frame than a 32:9 one. The setting is a **floor**; the mod
+uses whichever is larger and logs what it picked.
+
+That margin isn't free: at rest you see the middle `1/overscan` of your picture. At the defaults
+that's about 96% of it and you'd never notice. Crank the drift up on a short plane distance and it
+can reach half — the log warns past 1.5× and names the two settings that cause it.
+
+### Ultrawide and unusual screens
+
+Everything takes its shape from the game's own camera, so 21:9, 32:9, 16:10, 4:3, 5:4 and a rotated
+portrait monitor are all handled the same way, and nothing is ever stretched — pictures are
+cover-cropped, never squashed.
+
+The one thing worth knowing on a very wide screen: a 16:9 screenshot cover-cropped to 32:9 keeps its
+width and throws away most of its height, so it arrives with far fewer pixels than the frame wants
+and will look soft. The log says so, once per picture. Save a taller or larger source and the mod
+will pick it — see [Several sizes of one picture](#several-sizes-of-one-picture).
+
+If the scene looks empty with the menu furniture gone, turn off **Hide the menu scene** and the
+original set stays in front of your art.
+
+Nothing is loaded that wasn't already, so this costs no extra loading time, and everything is put
+back when you leave the screen.
+
+## Depth
+
+The screen behind your PMC isn't a picture — it's a real 3D scene, with geometry at different
+distances and real lights. The stock deploy screen simply never moves any of it, which is most of
+why it reads as a flat wallpaper with someone standing in front of it.
+
+**Depth and atmosphere** drifts that scene's own camera by a few centimetres. Because the scene is
+genuinely three-dimensional, near geometry sweeps across the frame faster than far geometry does —
+the parallax is computed by the engine, not faked with layers. A slow rotation on top keeps the
+drift from reading like a slider, and the scene's lights wander by a fraction of a stop so the air
+feels like it's moving.
+
+Nothing is added to the scene and nothing new is loaded, so this costs no loading time. Everything
+is put back exactly as it was found when you leave the screen.
+
+**Camera drift is the setting to tune.** It's measured in world units, and the mod has no way to
+measure how big the scenes are. The default assumes one unit is about a metre:
+
+- Motion invisible? Raise it, a little at a time.
+- Scene swimming or seasick? Lower it.
+- 0 turns the drift off and leaves only the sway.
+
+**Ground the character** switches on a contact shadow the game already has but doesn't always show.
+It's what stops the PMC looking pasted on top of the backdrop rather than standing in it.
+
+**Idle movement** is off by default for an honest reason: the game property that enables it can be
+set but not read, so the mod can't tell what it was before and simply turns it off again on the way
+out. If your PMC already shifts its weight, leave this alone.
 
 ## Map intel
 
@@ -119,11 +243,10 @@ Dorms; Three storeys, two keys.png
 
 ### "Keep vanilla" captions with your own art
 
-**Known limitation.** With **Captions** set to **Keep vanilla**, banners that use your own
-images show no caption at all rather than the game's lore text. The game's captions belong to
-the pictures this mod replaces, and recovering them needs a part of the game this mod cannot
-currently read. Use **Map intel** or **From file name** if you want captions on custom art;
-**Keep vanilla** still works normally on maps you haven't put images in.
+With **Captions** set to **Keep vanilla**, your own images now keep the game's own lore text
+underneath them — the map's own writing, your pictures. This didn't work before 1.6.0: custom art
+came up with no caption at all, because the mod couldn't reach the id the game files those captions
+under. It can now.
 
 ### Map folder names
 
@@ -146,11 +269,30 @@ Capitalization doesn't matter, so `woods` and `Woods` both work.
 
 ## Backdrop
 
-Turn on **Match the map** and the menu scene behind the loading screen changes to suit where you're going: the factory scene for Factory, the forest for Woods, the lab for Labs.
+Your backdrop is a real game setting — the one in the game's own options. **This mod treats it as
+the foundation to build on, not as something to replace**, so **Match the map** is off by default
+and off is the recommended setting.
 
-**It's off by default** because switching scenes means loading one, which can cause a brief stutter while you're setting up the raid. Turn it on and see how it runs for you.
+Turn it on and the menu scene behind the loading screen changes to suit where you're going: the
+factory scene for Factory, the forest for Woods, the lab for Labs. With it on:
 
-The game has six scenes to choose from: `Factory`, `Wood`, `Laboratory`, `TheUnheardEdition`, `Cyber` and `Random`. The mod only uses the first three by default. `TheUnheardEdition` and `Cyber` are themed for game editions and aren't in every install; if a map asks for one you don't have, the mod leaves the backdrop alone.
+- **Your backdrop comes back.** It's restored the moment you leave the deploy screen — whether you
+  cancel or come back from the raid — so an override can't follow you to the main menu. (Restoring
+  is itself a scene load, so when a raid actually starts it's deferred until the menu returns,
+  rather than stealing frames from the map load.)
+- **A map with no backdrop of its own restores yours**, instead of keeping whatever the previous map
+  asked for.
+- **If a backdrop isn't available to you, yours stays.** The six scenes are customization unlocks,
+  not just files — the mod checks what you actually have before asking for one.
+- **If you change the setting yourself while it's on, the mod backs off** rather than overwriting
+  your new choice.
+
+Switching scenes means loading one, which can cause a brief stutter while you're setting up the
+raid. That's the other reason it's off by default.
+
+The game has six scenes: `Factory`, `Wood`, `Laboratory`, `TheUnheardEdition`, `Cyber` and `Random`.
+The mod only uses the first three by default — the other two are themed for game editions and look
+out of place behind a raid.
 
 To pick a different scene for a map, edit `environments.txt`:
 
@@ -159,6 +301,36 @@ TarkovStreets = Cyber
 Woods         = Wood
 Shoreline     = Random     # leave the menu alone for this map
 ```
+
+## Hitching while you wait
+
+If the deploy screen stutters while your raid loads, it's worth knowing what's actually happening:
+**the raid world isn't being drawn — it's being built.** Unity loads the map asynchronously, but the
+part that turns loaded data into a live scene (creating objects, uploading textures, compiling
+shaders) runs on the **main thread, a slice at a time, every frame**. That's the hitch. No mod can
+move that work elsewhere, and anything claiming to "fix" it is worth a raised eyebrow.
+
+EFT already does the sensible things — it doubles Unity's texture-upload budget during the load and
+restores it afterwards. This mod doesn't override any of that.
+
+What it can do is smaller and more honest:
+
+- **Decode art early** (on by default) — this one is a real fix, because the stall was this mod's
+  own. Reading a 4K picture costs tens of milliseconds of main-thread time, and it used to happen
+  *while the map was loading*. Now it happens on the previous screen, while you're picking a time of
+  day. Same work, better moment.
+- **Frame rate cap while loading** — fewer menu frames leave more of the machine for the loader.
+  Your own cap is restored when the screen closes.
+- **Loading priority** — Unity's documented trade. Raising it finishes the load sooner but makes
+  each frame do more work, so frames get *longer* even as there are fewer of them. That can read as
+  worse stuttering, not better. It's genuinely a coin-flip and it's off by default.
+- **Pause character IK** — your PMC runs limb solvers and hand posers every frame. This stops those
+  while loading; the character stays on screen and keeps animating.
+
+**Change one at a time and measure.** Turn on **Record loading**, do three raids on the same map
+with the same settings, change one setting, do three more, then run `scripts/compare-loading.ps1`.
+Every one of these settings is written into the report so the comparison is fair. Without that
+you're guessing, and so is anyone else.
 
 ## Performance
 

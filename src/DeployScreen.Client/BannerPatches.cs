@@ -53,6 +53,16 @@ namespace DeployScreen.Client
                 GameTypes.BannersPanel_TryCreateBanner,
                 prefix: new HarmonyMethod(AccessTools.Method(typeof(BannerPatches), nameof(BeforeTryCreateBanner))));
 
+            // The offline raid screen is up while the player sets time of day, long before
+            // anything is loading. Decoding the art there instead of during the load is the
+            // cheapest hitch this mod can remove, because it is one it was causing itself.
+            if (GameTypes.OfflineRaidScreen_Show != null)
+            {
+                harmony.Patch(
+                    GameTypes.OfflineRaidScreen_Show,
+                    postfix: new HarmonyMethod(AccessTools.Method(typeof(BannerPatches), nameof(AfterOfflineRaidScreen))));
+            }
+
             // InFlight is keyed by panel, which is a strong reference to a Unity object the game
             // will destroy. Without this the table pins every panel it ever saw.
             if (GameTypes.BannersPanel_Close != null)
@@ -60,6 +70,64 @@ namespace DeployScreen.Client
                 harmony.Patch(
                     GameTypes.BannersPanel_Close,
                     postfix: new HarmonyMethod(AccessTools.Method(typeof(BannerPatches), nameof(AfterClose))));
+            }
+        }
+
+        /// <summary>
+        /// The raid is being configured: decode this map's art now, while nothing is loading.
+        /// </summary>
+        private static void AfterOfflineRaidScreen(object[] __args)
+        {
+            try
+            {
+                if (!DeployScreenPlugin.EasePrewarmArt.Value) return;
+                if (!DeployScreenPlugin.BannersEnabled.Value) return;
+                if (__args == null || GameTypes.RaidSettings == null) return;
+
+                var mode = LoadingPerformance.Mode;
+                if (mode != LoadingScreenMode.Enhanced && mode != LoadingScreenMode.Staging) return;
+
+                string locationId = null;
+                foreach (var argument in __args)
+                {
+                    if (argument == null || !GameTypes.RaidSettings.IsInstanceOfType(argument)) continue;
+
+                    var location = GameTypes.RaidSettings_SelectedLocation.GetValue(argument, null);
+                    if (location != null) locationId = GameTypes.Location_Id.GetValue(location) as string;
+                    break;
+                }
+
+                if (string.IsNullOrEmpty(locationId)) return;
+
+                if (mode == LoadingScreenMode.Staging)
+                {
+                    // Staging shows one picture filling the screen, so decode that one and no more.
+                    var images = BannerArt.For(locationId);
+                    if (images == null || images.Count == 0) return;
+
+                    var height = Screen.height > 0 ? Screen.height : 1080;
+                    var aspect = Screen.width > 0 && Screen.height > 0
+                        ? (float)Screen.width / Screen.height
+                        : ScreenFit.StockAspect;
+
+                    var screenFit = new BannerFit
+                    {
+                        Width = Mathf.RoundToInt(height * aspect),
+                        Height = height,
+                    };
+
+                    BannerArt.Prewarm(locationId, screenFit, true, StagingArea.PictureIndex(locationId, images.Count));
+                    return;
+                }
+
+                // Enhanced draws every banner, so every picture is wanted.
+                BannerFit fit;
+                var measured = ScreenFit.TryCurrent(out fit);
+                BannerArt.Prewarm(locationId, fit, measured, -1);
+            }
+            catch (Exception error)
+            {
+                WarnOnce(error);
             }
         }
 
@@ -131,7 +199,7 @@ namespace DeployScreen.Client
         /// The size of the picture is chosen for this screen if a banner has already been measured
         /// at this resolution, and is the largest available if not.
         /// </summary>
-        private static bool BeforeTryCreateBanner(object __instance, ref Task __result)
+        private static bool BeforeTryCreateBanner(object __instance, object __0, ref Task __result)
         {
             try
             {
@@ -149,7 +217,7 @@ namespace DeployScreen.Client
                 var sprite = image.Sprite(fit, measured);
                 if (sprite == null) return true;
 
-                CreateBanner(__instance, image, sprite, index, progress.CaptionKeys);
+                CreateBanner(__instance, image, sprite, index, progress.CaptionKeys, VanillaCaptionId(__0));
 
                 // The caller awaits this; a completed task keeps its loop moving.
                 __result = Task.CompletedTask;
@@ -162,11 +230,39 @@ namespace DeployScreen.Client
             }
         }
 
-        private static void CreateBanner(object panel, BannerImage image, Sprite sprite, int index, bool captionKeys)
+        /// <summary>
+        /// The id on the LocationBanner this call was for, which is what the game's own captions
+        /// are filed under. TryCreateBanner's IL is explicit about the shape:
+        ///
+        ///     CreateBanner(banner.id + " Name", banner.id + " Description", sprite)
+        ///
+        /// Null when the field could not be resolved, which puts us back where 1.3.1 was.
+        /// </summary>
+        private static string VanillaCaptionId(object locationBanner)
+        {
+            if (locationBanner == null || GameTypes.LocationBanner_Id == null) return null;
+
+            try { return GameTypes.LocationBanner_Id.GetValue(locationBanner) as string; }
+            catch { return null; }
+        }
+
+        private static void CreateBanner(object panel, BannerImage image, Sprite sprite, int index,
+            bool captionKeys, string vanillaId)
         {
             // Intel captions are applied later, by the driver, once the banner exists.
             var name = string.Empty;
             var description = string.Empty;
+
+            // "Keep vanilla" used to mean "no caption at all" whenever custom art was on, because
+            // the banner id could not be resolved on the box this was written on. It can now, and
+            // the keys are simply the id with the game's two suffixes -- so a player can have this
+            // mod's pictures under BSG's own lore text, which is what the setting always promised.
+            if (DeployScreenPlugin.BannerCaptions.Value == CaptionSource.Vanilla
+                && !string.IsNullOrEmpty(vanillaId))
+            {
+                name = vanillaId + " Name";
+                description = vanillaId + " Description";
+            }
 
             if (DeployScreenPlugin.BannerCaptions.Value == CaptionSource.FileName)
             {

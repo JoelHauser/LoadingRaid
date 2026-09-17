@@ -352,14 +352,57 @@ namespace DeployScreen.Client
             // Rounded, then clamped: rounding down would shave a column off an image that is
             // already the banner's exact shape (765 * 460/460 comes out as 764.9999), and the clamp
             // plus integer centring keeps the rect inside the image either way.
+            // At least one pixel on each side. A very small source against a very wide shape
+            // rounds the short side to zero -- a 1x1 image cropped to 48:9 wants 0.19 of a pixel --
+            // and Sprite.Create throws on a zero-sized rect. One pixel is wrong-looking; none is a
+            // crash.
             if ((float)width / height > aspect)
             {
-                var croppedWidth = Math.Min(width, Mathf.RoundToInt(height * aspect));
+                var croppedWidth = Math.Max(1, Math.Min(width, Mathf.RoundToInt(height * aspect)));
                 return new Rect((width - croppedWidth) / 2, 0f, croppedWidth, height);
             }
 
-            var croppedHeight = Math.Min(height, Mathf.RoundToInt(width / aspect));
+            var croppedHeight = Math.Max(1, Math.Min(height, Mathf.RoundToInt(width / aspect)));
             return new Rect(0f, (height - croppedHeight) / 2, width, croppedHeight);
+        }
+
+        /// <summary>
+        /// Decodes this map's pictures now, while the raid is still being configured, so the decode
+        /// does not land in the middle of the load.
+        ///
+        /// Texture2D.LoadImage is a main-thread stall -- a 4K JPEG is tens of milliseconds of it --
+        /// and until now it happened inside MatchmakerBannersPanel.Show, which is to say while the
+        /// raid was loading and the frame budget was already the scarcest thing on the machine.
+        /// The offline raid screen is up for as long as it takes you to pick a time of day, so the
+        /// same work there costs nothing anyone will notice.
+        ///
+        /// Everything it decodes goes into the same cache the deploy screen reads, so this is
+        /// purely a matter of *when*, not of extra work. Cheap to call twice.
+        /// </summary>
+        internal static void Prewarm(string locationId, BannerFit fit, bool measured, int onlyIndex)
+        {
+            if (string.IsNullOrEmpty(locationId)) return;
+
+            try
+            {
+                var images = For(locationId);
+                if (images == null || images.Count == 0) return;
+
+                if (onlyIndex >= 0)
+                {
+                    if (onlyIndex < images.Count) images[onlyIndex].Sprite(fit, measured);
+                    return;
+                }
+
+                for (var i = 0; i < images.Count; i++) images[i].Sprite(fit, measured);
+            }
+            catch (Exception error)
+            {
+                // A picture that will not decode is already handled where it is used; there is
+                // nothing here worth interrupting the player's raid setup for.
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not pre-warm art for " + locationId + ": " + error.Message);
+            }
         }
 
         /// <summary>

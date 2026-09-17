@@ -89,6 +89,125 @@ namespace DeployScreen.Client
         internal static Type EnvironmentData;
         internal static FieldInfo EnvironmentData_Type;
 
+        // ----------------------------------------------------- environment state
+
+        /// <summary>
+        /// EnvironmentUI._currentEnvironmentUiType -- the environment that is actually live.
+        ///
+        /// This is the field that makes restoring possible. The player's choice lives in
+        /// GameSettingsGroup.EnvironmentUiType, and EnvironmentUI.Awake() binds to it: when the
+        /// setting changes, the binding calls SetEnvironmentAsync. Calling SetEnvironmentAsync
+        /// ourselves changes this field and the live scene but never touches the setting, so
+        /// nothing puts it back -- the override then outlives the deploy screen. Capturing this
+        /// before we change anything is what lets us undo it exactly.
+        /// </summary>
+        internal static FieldInfo EnvironmentUI_CurrentEnvType;
+
+        /// <summary>ShowEnvironment(bool) -- also what sets _lastVisibleStateEnvironment.</summary>
+        internal static MethodInfo EnvironmentUI_ShowEnvironment;
+
+        /// <summary>EnableOverlay(bool) -- the game's own readability scrim, alpha 0.4.</summary>
+        internal static MethodInfo EnvironmentUI_EnableOverlay;
+
+        /// <summary>
+        /// Comfort.Common.Singleton&lt;EFT.CustomizationSolver&gt; and
+        /// GetAvailableEnvironmentUIs(EPlayerSide) -- the environments the player has actually
+        /// unlocked, which is the list GetRandomEnvironment picks from. The _environments array
+        /// is only which scenes the build ships. Optional: unreadable means "do not block".
+        /// </summary>
+        internal static PropertyInfo CustomizationSolver_Instance;
+        internal static PropertyInfo CustomizationSolver_Instantiated;
+        internal static MethodInfo CustomizationSolver_GetAvailable;
+        internal static FieldInfo CustomizationEnvironment_Type;
+
+        // ------------------------------------------------------------- scene depth
+
+        /// <summary>EFT.UI.EnvironmentUIRoot -- the backdrop scene's own root.</summary>
+        internal static Type EnvironmentRoot;
+
+        /// <summary>Transform CameraContainer -- public, and the whole reason parallax is free.</summary>
+        internal static FieldInfo EnvRoot_CameraContainer;
+
+        /// <summary>Light[] MainScreenLights -- public; real lights in a real 3D scene.</summary>
+        internal static FieldInfo EnvRoot_MainScreenLights;
+
+        /// <summary>PlayerModelView.ModelPlayerPoser -> MenuPlayerPoser.</summary>
+        internal static PropertyInfo PlayerModelView_Poser;
+
+        /// <summary>MenuPlayerPoser.BottomShadow -- a public GameObject, the PMC's ground contact.</summary>
+        internal static FieldInfo MenuPoser_BottomShadow;
+
+        /// <summary>
+        /// MenuPlayerPoser.set_Patrol. The property is write-only -- there is no readable backing
+        /// field -- so what it was before cannot be recovered. That is why patrol is opt-in.
+        /// </summary>
+        internal static MethodInfo MenuPoser_SetPatrol;
+
+        // ---------------------------------------------------------- the staging area
+
+        /// <summary>GameObject[] MainScreenObjects -- the menu scene's own set dressing.</summary>
+        internal static FieldInfo EnvRoot_MainScreenObjects;
+
+        /// <summary>
+        /// LayersMaskController.WeaponPreview, a public static int.
+        ///
+        /// This is the layer the PMC is loaded onto -- PlayerModelView.Show passes it to
+        /// PlayerModelLoader.Load along with its own transform as the parent. The model is
+        /// therefore a UI-space preview drawn by its own camera, not an object in the backdrop's
+        /// 3D scene, and the two are composited.
+        ///
+        /// That is what makes lighting the character possible at all: a Light whose cullingMask is
+        /// just this layer falls on the PMC and on nothing else in the scene.
+        /// </summary>
+        internal static FieldInfo Layers_WeaponPreview;
+
+        /// <summary>
+        /// MatchmakerTimeHasCome._subCaption -- the line under the map name.
+        ///
+        /// Borrowed for intel rather than building a TextMeshPro object of our own, which would
+        /// mean referencing TMPro and guessing at a font and a position. Nothing in
+        /// MatchmakerTimeHasCome writes it (ChangeStatus and UpdateStatusText both write
+        /// _deployingText), so it can be set and put back.
+        /// </summary>
+        internal static FieldInfo Loading_SubCaption;
+
+        /// <summary>The staging area can be built: a backdrop camera and somewhere to put art.</summary>
+        internal static bool StagingReady { get; private set; }
+
+        // -------------------------------------------------------- vanilla captions
+
+        /// <summary>
+        /// JsonType.LocationSettings+Location+LocationBanner.id, and it is public.
+        ///
+        /// This is what 1.3.1 recorded as unresolvable, which is why "keep vanilla captions"
+        /// silently emptied them whenever custom art was on. TryCreateBanner's own IL is
+        /// unambiguous about what to do with it:
+        ///
+        ///     CreateBanner(banner.id + " Name", banner.id + " Description", sprite)
+        ///
+        /// So the caption keys are simply the id with those two suffixes, and passing them on
+        /// gives the player this mod's art with BSG's own text under it.
+        /// </summary>
+        internal static FieldInfo LocationBanner_Id;
+
+        // ------------------------------------------------------- this raid's weather
+
+        /// <summary>
+        /// RaidSettings.TimeAndWeatherSettings -- a public struct, settled before deploy, so the
+        /// staging area can be lit for the raid you are about to load rather than for the map in
+        /// the abstract. All of its fields are public.
+        /// </summary>
+        internal static FieldInfo RaidSettings_TimeAndWeather;
+
+        internal static FieldInfo Weather_HourOfDay;
+        internal static FieldInfo Weather_RainType;
+        internal static FieldInfo Weather_FogType;
+        internal static FieldInfo Weather_Cloudiness;
+        internal static FieldInfo Weather_WindType;
+
+        /// <summary>This raid's time and weather can be read.</summary>
+        internal static bool WeatherReady { get; private set; }
+
         // ----------------------------------------------------------- raid screens
 
         internal static Type OfflineRaidScreen;
@@ -104,7 +223,7 @@ namespace DeployScreen.Client
         internal static FieldInfo Loading_PlayerModel, Loading_Banners;
         internal static FieldInfo Environment_Current, Environment_Visible;
         internal static Type BackgroundImage;
-        internal static PropertyInfo Background_Color, Background_Raycast;
+        internal static PropertyInfo Background_Color, Background_Raycast, Background_Sprite;
 
         /// <summary>Custom banner art can be substituted.</summary>
         internal static bool BannersReady { get; private set; }
@@ -118,13 +237,27 @@ namespace DeployScreen.Client
         /// <summary>The backdrop can be switched.</summary>
         internal static bool EnvironmentReady { get; private set; }
 
+        /// <summary>
+        /// The live environment can be read back and put where it was found. Everything that
+        /// changes the backdrop is gated on this: without it we decline to change it at all,
+        /// because a change we cannot undo is the bug this exists to prevent.
+        /// </summary>
+        internal static bool EnvironmentRestoreReady { get; private set; }
+
+        /// <summary>The backdrop scene's camera and lights can be reached, so depth can run.</summary>
+        internal static bool DepthReady { get; private set; }
+
         internal static bool Resolve()
         {
             BannersReady = ResolveBanners();
             DriverReady = BannersReady && ResolveDriver();
             IntelReady = DriverReady && ResolveIntel();
             EnvironmentReady = ResolveEnvironment();
+            EnvironmentRestoreReady = EnvironmentReady && ResolveEnvironmentState();
+            DepthReady = ResolveDepth();
             ResolvePerformance();
+            StagingReady = ResolveStaging();
+            ResolveExtras();
 
             return BannersReady || EnvironmentReady || Loading_Show != null;
         }
@@ -157,6 +290,7 @@ namespace DeployScreen.Client
             {
                 Background_Color = AccessTools.Property(BackgroundImage, "color");
                 Background_Raycast = AccessTools.Property(BackgroundImage, "raycastTarget");
+                Background_Sprite = AccessTools.Property(BackgroundImage, "sprite");
             }
             if (Loading_Show == null) Missing("loading screen Show (performance modes and diagnostics unavailable)");
             if (Loading_Status == null) Missing("loading ChangeStatus (phase markers unavailable)");
@@ -349,6 +483,152 @@ namespace DeployScreen.Client
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// What is needed to read the live backdrop back and set it again. Every one of these is
+        /// required: a half-resolved restore is worse than none, because it would let us change
+        /// the environment without being able to put it back.
+        /// </summary>
+        private static bool ResolveEnvironmentState()
+        {
+            EnvironmentUI_CurrentEnvType = AccessTools.Field(EnvironmentUI, "_currentEnvironmentUiType");
+            EnvironmentUI_ShowEnvironment =
+                AccessTools.Method(EnvironmentUI, "ShowEnvironment", new[] { typeof(bool) });
+            EnvironmentUI_EnableOverlay =
+                AccessTools.Method(EnvironmentUI, "EnableOverlay", new[] { typeof(bool) });
+
+            // Optional, and fail-open: this only ever narrows what we are willing to ask for.
+            var solver = AccessTools.TypeByName("EFT.CustomizationSolver");
+            var singleton = AccessTools.TypeByName("Comfort.Common.Singleton`1");
+            if (solver != null && singleton != null)
+            {
+                try
+                {
+                    var closed = singleton.MakeGenericType(solver);
+                    const BindingFlags StaticPublic =
+                        BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy;
+
+                    CustomizationSolver_Instance = closed.GetProperty("Instance", StaticPublic);
+                    CustomizationSolver_Instantiated = closed.GetProperty("Instantiated", StaticPublic);
+                    CustomizationSolver_GetAvailable =
+                        AccessTools.Method(solver, "GetAvailableEnvironmentUIs");
+                }
+                catch
+                {
+                    // A generic that will not close is simply an availability check we do without.
+                    CustomizationSolver_Instance = null;
+                }
+            }
+
+            var customization = AccessTools.TypeByName("EFT.Customization.CustomizationEnvironmentUI");
+            if (customization != null)
+            {
+                CustomizationEnvironment_Type = AccessTools.Field(customization, "EnvironmentUIType")
+                    ?? AccessTools.Field(customization, "Type");
+            }
+
+            if (EnvironmentUI_CurrentEnvType == null)
+            {
+                return Missing("EnvironmentUI._currentEnvironmentUiType "
+                    + "(the backdrop will not be changed at all, since it could not be put back)");
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// The backdrop scene's camera and lights, and the PMC's poser. All optional in the sense
+        /// that each effect checks its own member -- but with no camera container there is no
+        /// parallax, which is most of the point, so that one gates the group.
+        /// </summary>
+        private static bool ResolveDepth()
+        {
+            EnvironmentRoot = AccessTools.TypeByName("EFT.UI.EnvironmentUIRoot");
+            if (EnvironmentRoot == null) return Missing("EFT.UI.EnvironmentUIRoot (scene depth is off)");
+
+            EnvRoot_CameraContainer = AccessTools.Field(EnvironmentRoot, "CameraContainer");
+            EnvRoot_MainScreenLights = AccessTools.Field(EnvironmentRoot, "MainScreenLights");
+
+            // The PMC. Its poser owns the ground shadow and the idle animation.
+            var view = AccessTools.TypeByName("EFT.UI.PlayerModelView");
+            if (view != null) PlayerModelView_Poser = AccessTools.Property(view, "ModelPlayerPoser");
+
+            var poser = AccessTools.TypeByName("MenuPlayerPoser");
+            if (poser != null)
+            {
+                MenuPoser_BottomShadow = AccessTools.Field(poser, "BottomShadow");
+                MenuPoser_SetPatrol = AccessTools.PropertySetter(poser, "Patrol");
+            }
+
+            if (EnvRoot_CameraContainer == null)
+            {
+                return Missing("EnvironmentUIRoot.CameraContainer (scene depth is off)");
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// What the staging area needs on top of depth: somewhere to hang art in the backdrop's
+        /// 3D space, the menu's own set dressing to get out of the way, and the PMC's layer so it
+        /// can be lit separately.
+        ///
+        /// The camera itself is not resolved here -- it is found at runtime the same way the game
+        /// finds it, CameraContainer.GetComponentInChildren&lt;Camera&gt;(), which is exactly what
+        /// EnvironmentUIRoot.SetCameraActive does.
+        /// </summary>
+        private static bool ResolveStaging()
+        {
+            if (!DepthReady) return false;
+
+            EnvRoot_MainScreenObjects = AccessTools.Field(EnvironmentRoot, "MainScreenObjects");
+
+            var layers = AccessTools.TypeByName("LayersMaskController");
+            if (layers != null) Layers_WeaponPreview = AccessTools.Field(layers, "WeaponPreview");
+
+            if (TimeHasCome != null) Loading_SubCaption = AccessTools.Field(TimeHasCome, "_subCaption");
+
+            // Only the camera is essential. Without the set dressing field the menu scene stays
+            // visible behind the art; without the layer the PMC simply is not relit; without the
+            // sub-caption the intel has nowhere to go. Each degrades on its own.
+            if (EnvRoot_MainScreenObjects == null) Missing("EnvironmentUIRoot.MainScreenObjects (the menu scene will stay visible behind the map)");
+            if (Layers_WeaponPreview == null) Missing("LayersMaskController.WeaponPreview (the character will not be relit)");
+            if (Loading_SubCaption == null) Missing("MatchmakerTimeHasCome._subCaption (intel has nowhere to go)");
+
+            return true;
+        }
+
+        /// <summary>
+        /// The banner id behind the game's own captions, and this raid's time and weather. Both
+        /// are optional and independent: without the id, "keep vanilla" captions fall back to
+        /// empty as they did before; without the weather, the grade stays per-map.
+        /// </summary>
+        private static void ResolveExtras()
+        {
+            var locationBanner = AccessTools.TypeByName("JsonType.LocationSettings+Location+LocationBanner");
+            if (locationBanner != null) LocationBanner_Id = AccessTools.Field(locationBanner, "id");
+            if (LocationBanner_Id == null) Missing("LocationBanner.id (the game's own banner captions cannot be kept)");
+
+            if (RaidSettings != null)
+                RaidSettings_TimeAndWeather = AccessTools.Field(RaidSettings, "TimeAndWeatherSettings");
+
+            var weather = AccessTools.TypeByName("EFT.TimeAndWeatherSettings");
+            if (weather != null)
+            {
+                Weather_HourOfDay = AccessTools.Field(weather, "HourOfDay");
+                Weather_RainType = AccessTools.Field(weather, "RainType");
+                Weather_FogType = AccessTools.Field(weather, "FogType");
+                Weather_Cloudiness = AccessTools.Field(weather, "CloudinessType");
+                Weather_WindType = AccessTools.Field(weather, "WindType");
+            }
+
+            WeatherReady = RaidSettings_TimeAndWeather != null
+                && Weather_HourOfDay != null
+                && Weather_FogType != null
+                && Weather_RainType != null;
+
+            if (!WeatherReady) Missing("RaidSettings.TimeAndWeatherSettings (the light will not follow the raid's time or weather)");
         }
 
         /// <summary>The Show overload that takes a RaidSettings, whatever else it takes.</summary>

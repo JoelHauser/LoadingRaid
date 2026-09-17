@@ -284,6 +284,357 @@ try {
 }
 catch { Check 'remembered-size checks ran' $false $_.Exception.GetBaseException().Message }
 
+# --------------------------------------------------------- aspect ratios
+
+# Every shape of monitor a player might have, plus the awkward ones. 32:9 and portrait are
+# not paranoia: super-ultrawides exist, and a rotated monitor is a real configuration.
+$aspects = @(
+    @{ n = '5:4  (1280x1024)';   a = 1280 / 1024 }
+    @{ n = '4:3  (1600x1200)';   a = 1600 / 1200 }
+    @{ n = '3:2  (2256x1504)';   a = 2256 / 1504 }
+    @{ n = '16:10 (2560x1600)';  a = 2560 / 1600 }
+    @{ n = '16:9 (1920x1080)';   a = 1920 / 1080 }
+    @{ n = '21:9 (3440x1440)';   a = 3440 / 1440 }
+    @{ n = '32:9 (5120x1440)';   a = 5120 / 1440 }
+    @{ n = '48:9 (7680x1440)';   a = 7680 / 1440 }
+    @{ n = '1:1  (1080x1080)';   a = 1.0 }
+    @{ n = '9:16 portrait';      a = 1080 / 1920 }
+)
+
+Write-Host "=== cover-cropping at every aspect ratio ===" -ForegroundColor Cyan
+
+try {
+    $coverRect = (TypeOf 'BannerArt').GetMethod('CoverRect', $static)
+
+    # Sources a player might actually drop in: their own screenshots, at every common shape.
+    $sources = @(
+        @(1920, 1080), @(2560, 1440), @(3840, 2160), @(3440, 1440),
+        @(5120, 1440), @(2560, 1600), @(1600, 1200), @(1080, 1920), @(765, 460), @(1, 1)
+    )
+
+    $bad = @()
+    $checked = 0
+    foreach ($shape in $aspects) {
+        foreach ($src in $sources) {
+            $w = $src[0]; $h = $src[1]
+            $r = $coverRect.Invoke($null, [object[]]@([int]$w, [int]$h, [float]$shape.a))
+            $checked++
+
+            # Inside the image: Sprite.Create refuses a rect that strays past the texture at all.
+            if ($r.x -lt 0 -or $r.y -lt 0 -or ($r.x + $r.width) -gt $w -or ($r.y + $r.height) -gt $h) {
+                $bad += "$($shape.n) from ${w}x${h}: rect escapes the image"
+                continue
+            }
+            if ($r.width -lt 1 -or $r.height -lt 1) { $bad += "$($shape.n) from ${w}x${h}: empty rect"; continue }
+
+            # Cover, not contain: one axis must still be the full source, or nothing was gained.
+            if ($r.width -ne $w -and $r.height -ne $h) {
+                $bad += "$($shape.n) from ${w}x${h}: cropped on both axes"
+                continue
+            }
+
+            # And the result has the shape that was asked for, to within a pixel of rounding.
+            $got = $r.width / $r.height
+            $tolerance = [Math]::Max(0.02, 2.0 / [Math]::Min($r.width, $r.height))
+            if ([Math]::Abs($got - $shape.a) / $shape.a -gt $tolerance) {
+                $bad += "$($shape.n) from ${w}x${h}: got $([Math]::Round($got,3)):1"
+            }
+        }
+    }
+    Check "crops stay inside the image and keep their shape ($checked combinations)" `
+        ($bad.Count -eq 0) ($bad | Select-Object -First 4) -join '; '
+}
+catch { Check 'aspect-ratio crop checks ran' $false $_.Exception.GetBaseException().Message }
+
+Write-Host "=== the staging planes cover the frame at every aspect ratio ===" -ForegroundColor Cyan
+
+# StagingArea.RequiredOverscan is a closed-form bound on how much bigger than the frustum each
+# art plane has to be. This checks that bound against the motion it is meant to cover, by
+# actually running SceneDepth's drift sines and asking, at each sampled moment, how much of the
+# plane the camera can see. A plane that is too small shows its own edge, and on a 4:3 or a
+# portrait screen a sideways drift is a far larger fraction of the frame than it is on 16:9 --
+# which is exactly why a single fixed number cannot be right.
+try {
+    $required = (TypeOf 'StagingArea').GetMethod('RequiredOverscan', $static)
+
+    $worst = @()
+    $combos = 0
+    foreach ($shape in $aspects) {
+        foreach ($drift in @(0.0, 0.05, 0.2, 0.5)) {
+            foreach ($dist in @(0.5, 3.0, 20.0)) {
+                foreach ($fov in @(25.0, 50.0, 80.0)) {
+                    foreach ($sway in @(0.0, 0.12, 1.5)) {
+                        $combos++
+                        $k = [float]$required.Invoke($null, [object[]]@(
+                            [float]$dist, [float]$fov, [float]$shape.a, [float]$drift, [float]$sway))
+
+                        $halfFov = $fov * 0.5 * [Math]::PI / 180
+                        $H = 2.0 * $dist * [Math]::Tan($halfFov)
+                        $W = $H * $shape.a
+
+                        # Sample the real motion rather than trusting the amplitudes twice.
+                        $needH = 0.0; $needW = 0.0
+                        for ($t = 0.0; $t -lt 400.0; $t += 0.37) {
+                            $dx = ([Math]::Sin($t*0.081)*0.7 + [Math]::Sin($t*0.143+1.7)*0.3) * $drift
+                            $dy = ([Math]::Sin($t*0.063+2.3)*0.6 + [Math]::Sin($t*0.117)*0.4) * $drift * 0.55
+                            $dz = [Math]::Sin($t*0.049+0.9) * $drift * 0.8
+                            $rx = [Math]::Sin($t*0.055+1.1) * $sway * 0.6
+                            $ry = [Math]::Sin($t*0.071) * $sway
+
+                            # Distance from the moved camera to the plane, which sits still.
+                            $d = $dist - $dz
+                            if ($d -le 0.01) { continue }
+                            $visH = 2.0 * $d * [Math]::Tan($halfFov)
+                            $visW = $visH * $shape.a
+
+                            $shiftY = [Math]::Abs($dy) + $d * [Math]::Tan($rx * [Math]::PI / 180)
+                            $shiftX = [Math]::Abs($dx) + $d * [Math]::Tan($ry * [Math]::PI / 180)
+
+                            $needH = [Math]::Max($needH, ($visH + 2*[Math]::Abs($shiftY)) / $H)
+                            $needW = [Math]::Max($needW, ($visW + 2*[Math]::Abs($shiftX)) / $W)
+                        }
+                        $need = [Math]::Max($needH, $needW)
+
+                        if ($k -lt $need - 0.0005) {
+                            $worst += "$($shape.n) drift=$drift dist=$dist fov=$fov sway=$sway needs $([Math]::Round($need,3)) got $([Math]::Round($k,3))"
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Check "the computed overscan always covers the drift ($combos combinations)" `
+        ($worst.Count -eq 0) (($worst | Select-Object -First 3) -join ' | ')
+
+    # A bound that is always enormous would be "correct" and useless -- it would shrink the art.
+    $k169 = [float]$required.Invoke($null, [object[]]@([float]3.0, [float]50.0, [float](16/9), [float]0.05, [float]0.12))
+    Check 'the default 16:9 case stays modest' ($k169 -lt 1.12) "got $([Math]::Round($k169,3))"
+
+    # The narrower the frame, the more a sideways drift costs. If this did not hold, the shape
+    # is not being taken into account at all.
+    $kWide = [float]$required.Invoke($null, [object[]]@([float]3.0, [float]50.0, [float]3.556, [float]0.5, [float]0.5))
+    $kNarrow = [float]$required.Invoke($null, [object[]]@([float]3.0, [float]50.0, [float]0.5625, [float]0.5, [float]0.5))
+    Check 'a portrait screen needs more overscan than a 32:9 one' ($kNarrow -gt $kWide) `
+        "portrait $([Math]::Round($kNarrow,3)) vs ultrawide $([Math]::Round($kWide,3))"
+
+    # Nothing moving means nothing to hide.
+    $kStill = [float]$required.Invoke($null, [object[]]@([float]3.0, [float]50.0, [float](16/9), [float]0.0, [float]0.0))
+    Check 'a still camera needs no overscan at all' ([Math]::Abs($kStill - 1.0) -lt 0.001) "got $kStill"
+
+    # Nonsense in, 1.0 out, rather than a NaN that would size a plane to nothing.
+    $kBad = [float]$required.Invoke($null, [object[]]@([float]0.0, [float]50.0, [float]1.778, [float]0.05, [float]0.1))
+    Check 'a zero distance degrades to 1.0 rather than NaN' `
+        (-not [double]::IsNaN($kBad) -and $kBad -eq 1.0) "got $kBad"
+}
+catch { Check 'staging overscan checks ran' $false $_.Exception.GetBaseException().Message }
+
+# ------------------------------------------------ the raid's own light
+
+# MapGrade.ForRaid bends a map's light to the raid being loaded. It is bounded arithmetic over
+# four inputs, so every combination can be checked here -- and it has to be, because a grade
+# that blacks the screen out or blows it white is only visible in game, at the worst moment.
+
+Write-Host "=== the light follows the raid, within bounds ===" -ForegroundColor Cyan
+
+try {
+    $gradeType = TypeOf 'MapGrade'
+    $forRaid = $gradeType.GetMethod('ForRaid', $static)
+    $weatherType = $asm.GetType('DeployScreen.Client.MapGrade+Weather', $true)
+
+    function NewWeather($hour, $rain, $fog, $cloud) {
+        $w = [Activator]::CreateInstance($weatherType)
+        # Fields are internal on a struct, so they are set through boxed reflection and the
+        # boxed copy is what gets passed back. (Setting them on the unboxed value silently
+        # writes to a temporary -- the same shape of trap as the internal-field read earlier.)
+        foreach ($pair in @(@('Known',$true), @('HourOfDay',[int]$hour), @('Rain',[int]$rain), @('Fog',[int]$fog), @('Cloudiness',[int]$cloud))) {
+            $weatherType.GetField($pair[0], $instance).SetValue($w, $pair[1])
+        }
+        return $w
+    }
+
+    $fExp = $asm.GetType('DeployScreen.Client.Grade', $true).GetField('Exposure', $instance)
+    $fKey = $asm.GetType('DeployScreen.Client.Grade', $true).GetField('Key', $instance)
+    $fRim = $asm.GetType('DeployScreen.Client.Grade', $true).GetField('Rim', $instance)
+
+    function GradeFor($map, $hour, $rain, $fog, $cloud) {
+        $w = NewWeather $hour $rain $fog $cloud
+        return $forRaid.Invoke($null, [object[]]@([string]$map, $w))
+    }
+
+    $maps = @('bigmap','woods','tarkovstreets','laboratory','lighthouse','shoreline')
+    $out = @()
+    $n = 0
+    foreach ($map in $maps) {
+        foreach ($hour in 0..23) {
+            foreach ($rain in @(0,2,4)) {
+                foreach ($fog in @(0,2,4)) {
+                    foreach ($cloud in @(0,3,5)) {
+                        $n++
+                        $g = GradeFor $map $hour $rain $fog $cloud
+                        $e = [float]$fExp.GetValue($g)
+                        if ([double]::IsNaN($e) -or $e -lt 0.25 -or $e -gt 1.6) {
+                            $out += "$map h=$hour r=$rain f=$fog c=$cloud exposure=$e"
+                            continue
+                        }
+                        foreach ($f in @($fKey, $fRim)) {
+                            $c = $f.GetValue($g)
+                            foreach ($ch in @($c.r, $c.g, $c.b)) {
+                                if ([double]::IsNaN($ch) -or $ch -lt 0 -or $ch -gt 1.0001) {
+                                    $out += "$map h=$hour r=$rain f=$fog c=$cloud channel=$ch"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Check "every time and weather stays in range ($n combinations)" ($out.Count -eq 0) `
+        (($out | Select-Object -First 3) -join ' | ')
+
+    # Night must actually be darker than noon, or the whole feature is inert.
+    $noon = [float]$fExp.GetValue((GradeFor 'woods' 13 0 0 0))
+    $night = [float]$fExp.GetValue((GradeFor 'woods' 2 0 0 0))
+    Check 'a night raid is darker than a midday one' ($night -lt $noon * 0.7) `
+        "noon $([Math]::Round($noon,3)) vs night $([Math]::Round($night,3))"
+
+    # ...and night should be cooler, since it drifts toward moonlight.
+    $noonKey = $fKey.GetValue((GradeFor 'tarkovstreets' 13 0 0 0))
+    $nightKey = $fKey.GetValue((GradeFor 'tarkovstreets' 2 0 0 0))
+    Check 'a night raid is cooler than a midday one' `
+        (($nightKey.b - $nightKey.r) -gt ($noonKey.b - $noonKey.r)) `
+        "noon b-r $([Math]::Round($noonKey.b - $noonKey.r,3)), night $([Math]::Round($nightKey.b - $nightKey.r,3))"
+
+    # Fog eats contrast: the key and the rim should end up closer together.
+    $clear = GradeFor 'shoreline' 12 0 0 0
+    $foggy = GradeFor 'shoreline' 12 0 4 0
+    function Gap($g) {
+        $k = $fKey.GetValue($g); $r = $fRim.GetValue($g)
+        return [Math]::Abs($k.r-$r.r) + [Math]::Abs($k.g-$r.g) + [Math]::Abs($k.b-$r.b)
+    }
+    Check 'heavy fog flattens the gap between key and rim' ((Gap $foggy) -lt (Gap $clear)) `
+        "clear $([Math]::Round((Gap $clear),3)) vs foggy $([Math]::Round((Gap $foggy),3))"
+
+    # Rain darkens.
+    $dry = [float]$fExp.GetValue((GradeFor 'bigmap' 12 0 0 0))
+    $wet = [float]$fExp.GetValue((GradeFor 'bigmap' 12 4 0 0))
+    Check 'a downpour is darker than a dry raid' ($wet -lt $dry) `
+        "dry $([Math]::Round($dry,3)) vs wet $([Math]::Round($wet,3))"
+
+    # Unknown weather must leave the map's own grade completely alone.
+    $unknown = [Activator]::CreateInstance($weatherType)
+    $untouched = $forRaid.Invoke($null, [object[]]@([string]'woods', $unknown))
+    $plain = $gradeType.GetMethod('For', $static).Invoke($null, [object[]]@([string]'woods'))
+    Check 'unknown weather leaves the map grade untouched' `
+        ([float]$fExp.GetValue($untouched) -eq [float]$fExp.GetValue($plain)) 'exposure moved'
+
+    # An hour outside 0..23 should wrap rather than fall off the daylight curve.
+    $wrapped = [float]$fExp.GetValue((GradeFor 'woods' 25 0 0 0))
+    $oneAm = [float]$fExp.GetValue((GradeFor 'woods' 1 0 0 0))
+    Check 'an out-of-range hour wraps' ([Math]::Abs($wrapped - $oneAm) -lt 0.001) `
+        "25:00 gave $([Math]::Round($wrapped,3)), 01:00 gave $([Math]::Round($oneAm,3))"
+}
+catch { Check 'raid light checks ran' $false $_.Exception.GetBaseException().Message }
+
+# ------------------------------------------------- backdrop table coverage
+
+# "Some maps have no background" was one of the reported faults. The table itself turned out
+# to cover every playable map, so this pins that down: if a future SPT adds a raid map and it
+# is not listed here, the mod now restores the player's own backdrop rather than leaving the
+# previous map's -- but the table should still be updated, and this is what says so.
+
+Write-Host "=== backdrop table covers every playable map ===" -ForegroundColor Cyan
+
+try {
+    $envMatch = TypeOf 'EnvironmentMatch'
+    $defaultsField = $envMatch.GetField('Defaults', $static)
+    $defaults = $defaultsField.GetValue($null)
+
+    Check 'the backdrop table is readable' ($defaults -ne $null -and $defaults.Count -gt 0) 'no table'
+
+    $locations = Join-Path $SPTPath 'SPT_Runtime\SPT_Data\database\locations'
+    if (Test-Path $locations) {
+        # ConvertFrom-Json cannot be used on this database: some files carry keys differing only
+        # by case, and PowerShell's parser is case-insensitive, so it throws. See CLAUDE.md.
+        Add-Type -AssemblyName System.Web.Extensions
+        $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        $ser.MaxJsonLength = [int]::MaxValue
+
+        $playable = New-Object System.Collections.Generic.List[string]
+        foreach ($dir in Get-ChildItem $locations -Directory) {
+            $base = Join-Path $dir.FullName 'base.json'
+            if (-not (Test-Path $base)) { continue }
+            $json = $ser.DeserializeObject([IO.File]::ReadAllText($base))
+            # Enabled and not Locked is what the player can actually deploy to; hideout,
+            # develop and Private Area are neither and have no business in the table.
+            if ($json['Enabled'] -eq $true -and $json['Locked'] -ne $true) {
+                $playable.Add([string]$json['Id'])
+            }
+        }
+
+        $missing = @()
+        foreach ($id in $playable) { if (-not $defaults.ContainsKey($id)) { $missing += $id } }
+
+        Check "every playable map ($($playable.Count)) has a backdrop" ($missing.Count -eq 0) `
+            "missing: $($missing -join ', ')"
+
+        # Location ids are not all lowercase (RezervBase, TarkovStreets), and the folder names
+        # are. The table is built with OrdinalIgnoreCase precisely so that cannot matter.
+        $mixed = @($playable | Where-Object { $_ -cne $_.ToLowerInvariant() })
+        Check 'mixed-case ids still resolve in the table' `
+            (@($mixed | Where-Object { -not $defaults.ContainsKey($_) }).Count -eq 0) `
+            "case-sensitive lookup: $($mixed -join ', ')"
+    }
+    else {
+        Write-Host "  SKIP  no location database under $locations"
+    }
+
+    # Every playable map should also have a light grade, or the staging area falls back to a
+    # neutral one and the destination stops reading as a place.
+    $gradeType = TypeOf 'MapGrade'
+    $gradesField = $gradeType.GetField('Grades', $static)
+    $grades = $gradesField.GetValue($null)
+
+    Check 'the map grade table is readable' ($grades -ne $null -and $grades.Count -gt 0) 'no table'
+
+    if ($playable -ne $null -and $playable.Count -gt 0) {
+        $ungraded = @()
+        foreach ($id in $playable) { if (-not $grades.ContainsKey($id)) { $ungraded += $id } }
+        Check "every playable map ($($playable.Count)) has a light grade" ($ungraded.Count -eq 0) `
+            "ungraded: $($ungraded -join ', ')"
+    }
+
+    # A grade whose exposure is zero would black the scene out; one far above 1 would blow it.
+    #
+    # Grade's fields are internal, so PowerShell's ordinary property access finds nothing on the
+    # boxed struct and quietly hands back $null -- which casts to 0 and fails every map. Read the
+    # field through reflection instead. (Same family as the $props.Count trap in CLAUDE.md: the
+    # wrong answer looked like real data.)
+    $gradeStruct = $grades.GetType().GetGenericArguments()[1]
+    $exposureField = $gradeStruct.GetField('Exposure', $instance)
+
+    Check 'the grade struct exposes Exposure' ($exposureField -ne $null) 'no such field'
+
+    if ($exposureField -ne $null) {
+        $badExposure = @()
+        foreach ($key in $grades.Keys) {
+            $e = [float]$exposureField.GetValue($grades[$key])
+            if ($e -le 0.2 -or $e -gt 1.6) { $badExposure += "$key=$e" }
+        }
+        Check 'every grade exposure is sane' ($badExposure.Count -eq 0) "$($badExposure -join ', ')"
+    }
+
+    # The two edition-themed backdrops look like a mistake behind a raid, which is why the
+    # table only ever uses Factory, Wood and Laboratory.
+    $themed = 0
+    foreach ($key in $defaults.Keys) {
+        $value = [int]$defaults[$key]
+        if ($value -eq 4 -or $value -eq 5) { $themed++ }   # TheUnheardEdition, Cyber
+    }
+    Check 'no map is sent to an edition-themed backdrop' ($themed -eq 0) "$themed do"
+}
+catch { Check 'backdrop coverage checks ran' $false $_.Exception.GetBaseException().Message }
+
 [AppDomain]::CurrentDomain.remove_AssemblyResolve($script:resolver)
 
 Write-Host ""

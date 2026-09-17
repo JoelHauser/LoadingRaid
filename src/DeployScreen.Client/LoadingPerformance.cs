@@ -17,6 +17,7 @@ namespace DeployScreen.Client
         private static LoadingPerformance _instance;
         private static bool _showHook, _statusHook, _startHook, _playerHook, _bannerHook;
         private string _folder, _runId, _metadata, _presentation;
+        private string _easeMetadata;
         private object _screen, _banners;
         private LoadingScreenMode _mode;
         private LoadTrace _trace;
@@ -28,6 +29,18 @@ namespace DeployScreen.Client
         private int _gc0, _gc1, _gc2;
         private Process _process;
         private MinimalScreen _minimal;
+        private SceneDepth _depth;
+        private StagingArea _staging;
+        private LoadEase _ease;
+
+        /// <summary>
+        /// The map and the session this raid, kept from the Show arguments. The staging area needs
+        /// the Location to build intel from and the session to reach the profile's quest list --
+        /// the same two things the banner panel's own Show is handed.
+        /// </summary>
+        private object _location, _session;
+        private string _mapId;
+        private MapGrade.Weather _weather;
 
         internal static LoadingScreenMode Mode
         {
@@ -85,6 +98,14 @@ namespace DeployScreen.Client
             try
             {
                 if (_instance == null || !_instance._active || !ReferenceEquals(_instance._screen, __instance)) return;
+
+                // Easing is about what the machine is doing, not about what the screen looks like,
+                // so it applies in every mode -- Vanilla included, where it is the only thing this
+                // mod is doing at all.
+                _instance._ease = new LoadEase();
+                _instance._ease.Begin(__instance as Component);
+                _instance.Mark("ease: " + _instance._ease.Description);
+
                 if (_instance._mode == LoadingScreenMode.Minimal)
                 {
                     _instance._minimal = new MinimalScreen();
@@ -92,6 +113,30 @@ namespace DeployScreen.Client
                         _instance._previewSkipped, _instance._bannersSkipped);
                     _instance._presentation = _instance._minimal.Metadata;
                     _instance.Mark("minimal: " + _instance._minimal.Description);
+                }
+                else if (_instance._mode == LoadingScreenMode.Staging)
+                {
+                    // Order matters: the staging area hangs the art and hides the menu furniture,
+                    // then depth drifts the camera across it. Depth alone on the stock scene is
+                    // the Enhanced look; it is the two together that read as a place.
+                    _instance._staging = new StagingArea();
+                    _instance._staging.Begin(__instance as Component, _instance._mapId,
+                        _instance._location, _instance._session, _instance._weather);
+                    _instance._presentation = _instance._staging.Metadata;
+                    _instance.Mark("staging: " + _instance._staging.Description);
+
+                    _instance._depth = new SceneDepth();
+                    _instance._depth.Begin(__instance as Component);
+                    if (_instance._depth.Running) _instance.Mark("depth: " + _instance._depth.Description);
+                }
+                else if (_instance._mode == LoadingScreenMode.Enhanced)
+                {
+                    // Depth rides this class's lifecycle on purpose: every way the deploy screen
+                    // can end -- cancelled, raid started, timed out, Show threw, plugin destroyed
+                    // -- already funnels through Restore(), so the effects cannot outlive it.
+                    _instance._depth = new SceneDepth();
+                    _instance._depth.Begin(__instance as Component);
+                    if (_instance._depth.Running) _instance.Mark("depth: " + _instance._depth.Description);
                 }
             }
             catch (Exception e) { if (_instance != null) _instance.Warn(e); }
@@ -160,6 +205,7 @@ namespace DeployScreen.Client
             _previewSkipped = false;
             _bannersSkipped = false;
             _presentation = null;
+            _easeMetadata = null;
 
             // Every raid gets its own warning budget. Kept for the session, the first failure
             // silences every later one, and reports that stop appearing leave no log line at all.
@@ -175,15 +221,33 @@ namespace DeployScreen.Client
                 if (lifetime == null) lifetime = component.gameObject.AddComponent<LoadingScreenLifetime>();
                 lifetime.Screen = screen;
             }
-            if (!DeployScreenPlugin.RecordLoading.Value) return;
-
-            var map = "unknown";
+            // Pulled out before the diagnostics gate: the staging area needs these whether or not
+            // loading is being recorded, and Show's own arguments are the only place they appear.
+            // MatchmakerTimeHasCome.Show(IEftSession, RaidSettings, MatchmakerPlayersController),
+            // so the session is simply the argument that is not one of the other two.
+            _location = null;
+            _session = null;
+            _weather = default(MapGrade.Weather);
+            _mapId = null;
             foreach (var arg in args)
             {
-                if (arg == null || GameTypes.RaidSettings == null || !GameTypes.RaidSettings.IsInstanceOfType(arg)) continue;
-                var location = GameTypes.RaidSettings_SelectedLocation?.GetValue(arg, null);
-                if (location != null) map = GameTypes.Location_Id?.GetValue(location) as string ?? map;
+                if (arg == null) continue;
+                if (GameTypes.RaidSettings != null && GameTypes.RaidSettings.IsInstanceOfType(arg))
+                {
+                    _location = GameTypes.RaidSettings_SelectedLocation?.GetValue(arg, null);
+                    if (_location != null) _mapId = GameTypes.Location_Id?.GetValue(_location) as string;
+
+                    // Time of day and weather are settled before deploy, so the staging area can
+                    // be lit for this raid rather than for the map in general.
+                    _weather = MapGrade.ReadWeather(arg);
+                    continue;
+                }
+                if (_session == null && !(arg is Component)) _session = arg;
             }
+
+            if (!DeployScreenPlugin.RecordLoading.Value) return;
+
+            var map = _mapId ?? "unknown";
             _runId = DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
             _trace = new LoadTrace(Application.isFocused);
             _gc0 = GC.CollectionCount(0); _gc1 = GC.CollectionCount(1); _gc2 = GC.CollectionCount(2);
@@ -219,8 +283,24 @@ namespace DeployScreen.Client
         {
             get
             {
+                if (_mode == LoadingScreenMode.Staging)
+                {
+                    if (_staging != null) return _staging.Metadata;
+                    return _presentation ?? StagingArea.MetadataFor(false, 0, false, false, "unknown");
+                }
+
                 if (_minimal != null) return _minimal.Metadata;
                 return _presentation ?? MinimalScreen.MetadataFor(_previewSkipped, _bannersSkipped, false, 0);
+            }
+        }
+
+        /// <summary>What the load easing actually applied, for the report.</summary>
+        private string Easing
+        {
+            get
+            {
+                if (_ease != null) return _ease.Metadata;
+                return _easeMetadata ?? LoadEase.MetadataFor();
             }
         }
 
@@ -232,6 +312,8 @@ namespace DeployScreen.Client
                 var now = _clock.Elapsed.TotalSeconds;
                 _trace?.Frame(now, Application.isFocused);
                 if (_started) { Finish("first-update-after-game-started", false); return; }
+                _depth?.Tick(now);
+                _staging?.Tick(now);
                 if (_closedAt >= 0 && now - _closedAt >= 30) { Finish("screen-closed-without-confirmed-start", false); return; }
                 if (now >= 1800) { Finish("capture-timeout", false); return; }
                 _minimal?.Tick(now);
@@ -269,7 +351,7 @@ namespace DeployScreen.Client
                 {
                     if (finalFrame) trace.Frame(_clock.Elapsed.TotalSeconds, Application.isFocused);
                     SampleMemory();
-                    var metadata = _metadata + Presentation
+                    var metadata = _metadata + Presentation + Easing
                         + ",\"outcome\":" + LoadTrace.Quote(outcome)
                         + ",\"managedStartBytes\":" + _managedStart + ",\"managedSampledPeakBytes\":" + _managedPeak
                         + ",\"workingSetStartBytes\":" + _workingStart + ",\"workingSetSampledPeakBytes\":" + _workingPeak
@@ -310,6 +392,37 @@ namespace DeployScreen.Client
             }
             catch (Exception e) { Warn(e); }
             _minimal = null;
+
+            try { _depth?.Restore(); }
+            catch (Exception e) { Warn(e); }
+            _depth = null;
+
+            // After depth, so the camera is back at rest before the planes hung off it go away.
+            if (_staging != null) _presentation = _staging.Metadata;
+            try { _staging?.Restore(); }
+            catch (Exception e) { Warn(e); }
+            _staging = null;
+
+            // Last, and always: a frame-rate cap or a loading priority left behind would follow
+            // the player out of the menu and into everything else they do.
+            if (_ease != null) _easeMetadata = _ease.Metadata;
+            try { _ease?.Restore(); }
+            catch (Exception e) { Warn(e); }
+            _ease = null;
+
+            _location = null;
+            _session = null;
+
+            // Putting the backdrop back is itself a scene load. Doing that the instant the raid
+            // starts would drop it straight onto the frames the map load needs, for a menu nobody
+            // is looking at -- so when the raid did start the restore is owed rather than run, and
+            // settles when the menu next shows its environment.
+            try
+            {
+                if (_started) EnvironmentState.RestoreWhenMenuReturns();
+                else EnvironmentState.Restore();
+            }
+            catch (Exception e) { Warn(e); }
         }
 
         private void Fail(Exception e) { Warn(e); Finish("diagnostic-error"); }
