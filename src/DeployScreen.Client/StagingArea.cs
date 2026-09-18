@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
@@ -1493,6 +1493,7 @@ namespace DeployScreen.Client
                     + skipped + " that are");
 
                 ReportPreviewLayer(view);
+                ReportShadowComponents(view);
 
                 // A projector is how a blob shadow is usually done, it is not a Renderer, and so
                 // nothing above would have found one.
@@ -1578,7 +1579,15 @@ namespace DeployScreen.Client
                               + " " + camera.targetTexture.format));
 
                     ReportFields(camera, "PrismEffects");
+
+                    // The last two components on this camera nobody has opened. A name in a log
+                    // is what every round of this has been short of, and these are the only two
+                    // left unread.
+                    ReportFields(camera, "Undithering");
+                    ReportFields(camera, "LightSwitcherOverkill");
+
                     ReportPreviewEmptiness(camera);
+                    ReportRenderTextureAuthors(camera);
                 }
 
                 // 3. Lights from anywhere that can see the preview's layer. The ones under the
@@ -1835,7 +1844,15 @@ namespace DeployScreen.Client
                 if (camera == null) return;
 
                 var mask = camera.cullingMask;
-                var mine = Describe(view.gameObject);
+
+                // Describe wraps a path in quotes, so the prefix to test against is the path
+                // with its closing quote turned back into a separator. Comparing against the
+                // quoted form is the bug this had: 'A/B' is not a prefix of 'A/B/C' -- the
+                // quote sits where the slash goes -- so every one of the character's own 174
+                // renderers would have been counted as coming from outside the preview, and the
+                // one number this probe exists to print would have been nonsense.
+                var self = Describe(view.gameObject);
+                var mine = self.Substring(0, self.Length - 1) + "/";
                 var found = 0;
 
                 foreach (var renderer in UnityEngine.Object.FindObjectsOfType<Renderer>())
@@ -1845,7 +1862,7 @@ namespace DeployScreen.Client
                     if ((mask & (1 << renderer.gameObject.layer)) == 0) continue;
 
                     var path = Describe(renderer.gameObject);
-                    if (path.StartsWith(mine, StringComparison.Ordinal)) continue;
+                    if (path == self || path.StartsWith(mine, StringComparison.Ordinal)) continue;
 
                     found++;
 
@@ -1875,6 +1892,140 @@ namespace DeployScreen.Client
             {
                 DeployScreenPlugin.Log.LogWarning(
                     "[DeployScreen] could not sweep the preview layer: " + error.Message);
+            }
+        }
+
+        /// <summary>
+        /// Every camera in the game that writes into the preview's render texture.
+        ///
+        /// The fourth scope this hunt has been lost to, and the widest one yet. Every sweep in
+        /// this file -- components, renderers, effects, fields -- starts at PlayerModelView and
+        /// works down, and the one sweep that broadened, ReportPreviewLayer, broadened to the
+        /// layer. None of them ever asked the question a render texture actually invites: a
+        /// texture is a destination, and more than one camera can write to it.
+        ///
+        /// That would fit everything the alpha map shows and everything that has been ruled out.
+        /// A second camera drawing the same character into the same target with a dark material
+        /// and an offset produces exactly the band in the picture, and it is invisible to every
+        /// probe run so far: the renderers it draws are the character's own renderers, so a
+        /// renderer sweep sees nothing unusual; it is not post-processing, so switching the post
+        /// stack off changes nothing; and it is not under PlayerModelView, so no component sweep
+        /// ever reached it.
+        ///
+        /// FindObjectsOfTypeAll rather than FindObjectsOfType on purpose. A camera that renders
+        /// on demand, by calling Render() itself rather than by being ticked, is disabled the
+        /// rest of the time, and that is the ordinary way to drive exactly this kind of effect.
+        /// FindObjectsOfType would skip it. The scene check drops prefabs and assets, which
+        /// FindObjectsOfTypeAll also returns and which draw nothing.
+        /// </summary>
+        private static void ReportRenderTextureAuthors(Camera preview)
+        {
+            try
+            {
+                var target = preview.targetTexture;
+                if (target == null) return;
+
+                var found = 0;
+
+                foreach (var camera in Resources.FindObjectsOfTypeAll<Camera>())
+                {
+                    if (camera == null || camera == preview) continue;
+                    if (!camera.gameObject.scene.IsValid()) continue;
+                    if (camera.targetTexture != target) continue;
+
+                    found++;
+
+                    var effects = new StringBuilder();
+
+                    foreach (var component in camera.GetComponents<Component>())
+                    {
+                        if (component == null || component is Camera) continue;
+
+                        var behaviour = component as Behaviour;
+                        Pair(effects, component.GetType().Name, behaviour == null ? "-" : behaviour.enabled.ToString());
+                    }
+
+                    // depth and clearFlags are the two that say which way round the pass goes: a
+                    // lower depth draws first and is therefore behind, and a camera that does not
+                    // clear is adding to what is already in the target rather than replacing it.
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] also writes the preview render: " + Describe(camera.gameObject)
+                        + " depth=" + camera.depth + " clears=" + camera.clearFlags + " " + camera.backgroundColor
+                        + " mask=0x" + camera.cullingMask.ToString("X8")
+                        + " on=" + camera.enabled + "/" + camera.gameObject.activeInHierarchy
+                        + " components: " + (effects.Length == 0 ? "none" : effects.ToString()));
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] " + found + " other camera(s) write into the preview's "
+                    + target.width + "x" + target.height + " " + target.format + " target");
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not sweep the preview's render texture: " + error.Message);
+            }
+        }
+
+        /// <summary>
+        /// Everything scene-wide that calls itself a shadow, and where it sits.
+        ///
+        /// The MaskAndShadow under the preview camera is not the one drawing the band. That is
+        /// not a guess: TakeCastShadow finds it, logs its fields, and zeroes every field with
+        /// "shadow" in the name -- ShadowShift, ShadowStrength, ShadowBlurIterations, all of
+        /// them -- and the band survives. Yet the band in the picture is a blurred silhouette of
+        /// the man and his rifle offset up and to the right, which is what that component's own
+        /// numbers describe: a shift sampling left and down, four blur iterations, half strength.
+        ///
+        /// A mechanism that matches on an instance that provably is not it means there is another
+        /// instance. TakeCastShadow only ever looks at cameras under PlayerModelView, so a second
+        /// one anywhere else has never been in scope.
+        ///
+        /// Matched on the type name rather than a fixed list, because the point is to find the
+        /// one that has not been named yet, and printed with the side of the preview boundary it
+        /// falls on, because that is what is worth knowing at a glance.
+        /// </summary>
+        private static void ReportShadowComponents(Transform view)
+        {
+            try
+            {
+                var self = Describe(view.gameObject);
+                var mine = self.Substring(0, self.Length - 1) + "/";
+                var found = 0;
+
+                foreach (var behaviour in Resources.FindObjectsOfTypeAll<Behaviour>())
+                {
+                    if (behaviour == null) continue;
+                    if (!behaviour.gameObject.scene.IsValid()) continue;
+
+                    var name = behaviour.GetType().Name;
+                    if (name.IndexOf("Shadow", StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                    found++;
+
+                    if (found > 40) continue;
+
+                    var path = Describe(behaviour.gameObject);
+                    var side = path == self || path.StartsWith(mine, StringComparison.Ordinal)
+                        ? " (inside the preview)" : " (outside)";
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] shadow component " + name + " on " + path + side
+                        + " on=" + behaviour.enabled + "/" + behaviour.gameObject.activeInHierarchy);
+
+                    // The fields as well for the type that matches the picture, so a second
+                    // instance can be compared against the first without another raid.
+                    if (name == "MaskAndShadow") ReportFieldsOn(behaviour);
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] " + found + " component(s) scene-wide with " + "'shadow'"
+                    + " in the type name");
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not sweep for shadow components: " + error.Message);
             }
         }
 

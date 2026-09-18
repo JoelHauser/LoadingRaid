@@ -1506,6 +1506,37 @@ at 4s and again at 12s, and has been every time it has been looked at.
 | The backdrop scene | scene-wide sweep of every renderer the backdrop camera can see in front of the art: one dust particle system |
 | Menu camera ambient occlusion | switched off, confirmed `AmbientOcclusion=False` at both samples, shape unchanged |
 
+#### Ruled out since: the geometry of the question
+
+The player asked the obvious thing -- is a light pointed at the PMC casting his shadow onto the
+backdrop? It cannot be, and the reason is worth keeping because it constrains everything else.
+
+**The backdrop and the character are two separate renders.** The backdrop is a real 3D scene
+(`EnvironmentUIRoot`) drawn by its own camera straight to the canvas. The PMC is drawn by a second
+camera, on the WeaponPreview layer, into a render texture, which a `RawImage` then lays over the
+backdrop. Nothing in the preview's render exists in the backdrop's render, so no light on the
+character can put a shadow on that treeline.
+
+`ReportPreviewEmptiness` had already settled it empirically -- the band is *inside* the preview
+render texture. If it were on the backdrop, that texture would be transparent there. It only reads
+as being on the backdrop because it is part-transparent: what you see is the trees darkened
+*through* it.
+
+So the receiver, whatever it is, is inside the preview render. That is not a narrowing of the hunt,
+it is the whole shape of it.
+
+#### What the picture says about the mechanism
+
+The band is a blurred silhouette of the man **and his rifle**, offset right and slightly up, with no
+ground contact -- it floats. That is a drop shadow, and it is `MaskAndShadow`'s own numbers exactly:
+`ShadowShift=(-0.03,-0.01)` samples left and down, which puts the shadow right and up;
+`ShadowBlurIterations=4` gives that softness; `ShadowStrength=0.5` gives the half alpha.
+
+And `TakeCastShadow` zeroes every one of those fields on that instance, logs that it did, and the
+band survives. **A mechanism that matches, on an instance that provably is not it, means there is
+another instance** -- or another camera doing the same job. `TakeCastShadow` only ever walks cameras
+under `PlayerModelView`, so a second one anywhere else has never been in scope.
+
 #### The next thing to look at, already built and not yet run
 
 `ReportPreviewLayer`. It is in the tree, behind **Report the screen layout**, and has never been run
@@ -1533,6 +1564,47 @@ the preview camera renders N renderer(s) from outside PlayerModelView on mask 0x
   and friends; something about how that shader writes alpha into an ARGB32 target would be the
   place to start, along with `Undithering` and `LightSwitcherOverkill`, the two components on that
   camera nobody has opened.
+
+#### Three more probes, added in the same build, so one raid answers all of it
+
+**`ReportRenderTextureAuthors` -- the widest scope yet, and the one I would bet on.** Every sweep in
+this file starts at `PlayerModelView` and works down; the one that broadened, `ReportPreviewLayer`,
+broadened to the *layer*. None ever asked the question a render texture actually invites: a texture
+is a **destination**, and more than one camera can write to it. Nothing in the codebase has ever
+enumerated cameras globally -- every `targetTexture` read is scoped to the preview subtree.
+
+A second camera drawing the same character into the same target with a dark material and an offset
+produces exactly the band in the picture, and it is invisible to every probe run so far: the
+renderers it draws are the character's own, so renderer sweeps see nothing odd; it is not
+post-processing, so the post toggles do nothing; and it is not under `PlayerModelView`, so no
+component sweep reached it. Uses `FindObjectsOfTypeAll` on purpose -- a camera driven by an explicit
+`Render()` call is *disabled* the rest of the time, which is the ordinary way to do this effect, and
+`FindObjectsOfType` would skip it.
+
+```
+also writes the preview render: <path> depth=... clears=... mask=0x... components: ...
+N other camera(s) write into the preview's WxH ARGB32 target
+```
+
+`depth` and `clearFlags` say which way round the pass goes: lower depth draws first and is therefore
+behind, and a camera that does not clear is adding to the target rather than replacing it.
+
+**`ReportShadowComponents`** -- everything scene-wide whose type name contains "shadow", printed
+with which side of the preview boundary it falls on, and full fields for any second `MaskAndShadow`.
+
+**`Undithering` and `LightSwitcherOverkill`** are now read by `ReportFields` on the preview camera.
+
+#### A bug in `ReportPreviewLayer`, found before it ever ran
+
+The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
+`path.StartsWith(mine)` with both sides quoted: `'A/B'` is **not** a prefix of `'A/B/C'`, because the
+closing quote sits exactly where the separator goes. Every one of the character's own 174 renderers
+would have been reported as coming from outside the preview, and `N` -- the one number the probe
+exists to print -- would have been nonsense. Fixed by comparing against the path with its closing
+quote turned back into a `/`, plus an equality check for the root.
+
+Worth recording as the fourth instance of the same class of mistake in this hunt: the probe was
+right about *where* to look and wrong in a detail that would have cost the raid anyway.
 
 #### Three probe bugs, because they each cost a raid
 
@@ -1695,8 +1767,13 @@ screen whose middle is empty left the frame reading as an afterthought.
 **The dark shape behind the PMC.** The big one, and the reason the session ended where it did. Full
 write-up, everything ruled out and the next step, is in **THE DARK SHAPE BEHIND THE PMC -- START
 HERE** above. Short version: it is inside the preview render texture, it is not post-processing, and
-the sweep that has never been run is `ReportPreviewLayer` -- every renderer on the preview camera's
-layer from **outside** `PlayerModelView`.
+it cannot be a shadow on the backdrop because the backdrop is a different camera's render.
+
+Four probes are now built and waiting on one raid with **Report the screen layout** on:
+`ReportPreviewLayer` (renderers on the preview camera's layer from outside `PlayerModelView`, and
+its prefix bug fixed), `ReportRenderTextureAuthors` (**the new one, and the best bet** -- other
+cameras writing into the same render texture), `ReportShadowComponents` (scene-wide, by type name),
+and the fields of `Undithering` and `LightSwitcherOverkill`.
 
 **Names on the countdown were already wrong.** `Player Name Panel/Name` is in the dump this was
 written from and is not in the running build: the first run logged `not found: Player Name
