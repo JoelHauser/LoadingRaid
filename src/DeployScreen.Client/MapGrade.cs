@@ -95,6 +95,7 @@ namespace DeployScreen.Client
         {
             internal bool Known;
             internal int HourOfDay;
+            internal bool HourFromClock;
             internal int Rain;        // ERainType     NoRain .. Shower
             internal int Fog;         // EFogType      NoFog  .. Continuous
             internal int Cloudiness;  // ECloudiness   Clear  .. Thundercloud
@@ -212,7 +213,13 @@ namespace DeployScreen.Client
                 var settings = GameTypes.RaidSettings_TimeAndWeather.GetValue(raidSettings);
                 if (settings == null) return weather;
 
-                weather.HourOfDay = Convert.ToInt32(GameTypes.Weather_HourOfDay.GetValue(settings));
+                // -1 is the game's "this raid has no time set", which is every PvE raid the
+                // player has not given one. Taken literally it wraps to 23:00 and lights the
+                // whole screen for midnight whatever the hour really is, so fall back to the
+                // clock -- what 1.5.0 did -- and say in the log which of the two it was.
+                var hour = Convert.ToInt32(GameTypes.Weather_HourOfDay.GetValue(settings));
+                weather.HourFromClock = hour < 0 || hour > 23;
+                weather.HourOfDay = weather.HourFromClock ? DateTime.Now.Hour : hour;
                 weather.Rain = Convert.ToInt32(GameTypes.Weather_RainType.GetValue(settings));
                 weather.Fog = Convert.ToInt32(GameTypes.Weather_FogType.GetValue(settings));
 
@@ -233,7 +240,8 @@ namespace DeployScreen.Client
         {
             if (!weather.Known) return "conditions unknown";
 
-            var parts = weather.HourOfDay.ToString("00") + ":00";
+            var parts = weather.HourOfDay.ToString("00") + ":00"
+                + (weather.HourFromClock ? " (from the clock; the raid has no time set)" : "");
             if (weather.Fog > 0) parts += ", fog " + weather.Fog;
             if (weather.Rain > 0) parts += ", rain " + weather.Rain;
             if (weather.Cloudiness > 0) parts += ", cloud " + weather.Cloudiness;

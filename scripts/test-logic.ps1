@@ -74,6 +74,48 @@ function Check($label, $ok, $detail) {
     else { $script:fail++; Write-Host "  FAIL  $label  -- $detail" -ForegroundColor Red }
 }
 
+# ------------------------------------------------------- config keys BepInEx accepts
+#
+# BepInEx's ConfigDefinition rejects  =  newline  tab  \  "  '  [  ]  in a section or key
+# name, and it throws while the plugin's Awake is still running. Nothing catches that, and
+# with WriteUnityLog off -- the default on an SPT install -- the stack trace does not even
+# reach LogOutput.log: the plugin loads, installs no patches, logs nothing and the game just
+# looks unmodded. 1.6.0 shipped "Follow the raid's weather" and was inert on every launch.
+#
+# Source text rather than reflection on purpose: the keys are literals inside Awake, and
+# reading them back off a built assembly would mean running the very code that throws.
+
+Write-Host ""
+Write-Host "=== config keys are ones BepInEx will accept ===" -ForegroundColor Cyan
+
+$badChars = @('=', "`n", "`t", '\', '"', "'", '[', ']')
+
+function ConfigNameIsLegal($name) {
+    foreach ($c in $badChars) { if ($name.Contains($c)) { return $false } }
+    return $true
+}
+
+# The check has to fail on the string that got us here, or it is not checking anything.
+Check 'the guard rejects an apostrophe' (-not (ConfigNameIsLegal "Follow the raid's weather")) 'it did not'
+Check 'the guard accepts a plain key' (ConfigNameIsLegal 'Follow the raid weather') 'it did not'
+
+$binds = 0
+$illegal = @()
+foreach ($file in Get-ChildItem -Path (Join-Path $root 'src\DeployScreen.Client') -Filter *.cs) {
+    $text = Get-Content -Raw -Path $file.FullName
+    $pattern = 'Config\.Bind[^(]*\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"'
+    foreach ($m in [regex]::Matches($text, $pattern)) {
+        $binds++
+        $section = $m.Groups[1].Value
+        $key = $m.Groups[2].Value
+        if (-not (ConfigNameIsLegal $section)) { $illegal += "$($file.Name): section '$section'" }
+        if (-not (ConfigNameIsLegal $key)) { $illegal += "$($file.Name): key '$key'" }
+    }
+}
+
+Check 'the binds were found at all' ($binds -ge 20) "only $binds found -- has Config.Bind been reshaped?"
+Check "all $binds config names are legal" ($illegal.Count -eq 0) ($illegal -join '; ')
+
 # ------------------------------------------------------------ image headers
 
 $tryRead = (TypeOf 'ImageHeader').GetMethod('TryReadSize', $static)

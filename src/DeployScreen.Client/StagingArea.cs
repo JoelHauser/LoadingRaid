@@ -51,6 +51,9 @@ namespace DeployScreen.Client
         private readonly List<GameObject> _hidden = new List<GameObject>();
 
         private Component _screen;
+        private Camera _camera;
+        private Transform _planeRoot;
+        private Transform _playerModel;
         private Component _subCaption;
         private PropertyInfo _subCaptionText;
         private string _subCaptionWas;
@@ -111,6 +114,13 @@ namespace DeployScreen.Client
 
                 var camera = BackdropCamera(root);
                 if (camera == null) return;
+
+                // Kept so Hide can refuse to switch off anything the staging area itself
+                // needs. MainScreenObjects is the game's own list and what is in it cannot be
+                // known from outside the game.
+                _camera = camera;
+                _planeRoot = root.transform;
+                _playerModel = PlayerModelTransform(screen);
 
                 // The map says what the place looks like; the raid says what it looks like today.
                 if (!DeployScreenPlugin.StagingFollowWeather.Value) weather = default(MapGrade.Weather);
@@ -409,6 +419,16 @@ namespace DeployScreen.Client
             if (GameTypes.Background_Color != null) GameTypes.Background_Color.SetValue(image, colour, null);
             if (GameTypes.Background_Raycast != null) GameTypes.Background_Raycast.SetValue(image, false, null);
 
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] plane " + name + ": " + width.ToString("0.00") + "x"
+                + height.ToString("0.00") + "u at " + distance.ToString("0.00") + "u on layer "
+                + go.layer + " (" + LayerMask.LayerToName(go.layer) + "), camera '" + camera.name
+                + "' mask 0x" + camera.cullingMask.ToString("X8") + ", clip "
+                + camera.nearClipPlane.ToString("0.00") + "-" + camera.farClipPlane.ToString("0.0")
+                + ", sprite " + (sprite == null || sprite.texture == null ? "none"
+                    : sprite.texture.width + "x" + sprite.texture.height)
+                + ", parent " + Describe(root.gameObject));
+
             // The layer has to be set again: AddComponent does not change it, but a Canvas added
             // to a fresh GameObject can re-parent nothing, so this is belt and braces for the
             // children an Image may create.
@@ -529,8 +549,61 @@ namespace DeployScreen.Client
                 if (_screen.transform.IsChildOf(target.transform)) return;
             }
 
+            // Nor anything the staging area is standing on. An entry in MainScreenObjects can
+            // be an ancestor of the backdrop camera, of the planes, or of the character, and
+            // switching one of those off takes the whole composite down with it -- silently,
+            // because the character's animator then throws from inside the game's own Dispose
+            // on teardown, where nothing here can catch it.
+            if (Keeps(target, _camera == null ? null : _camera.transform, "the backdrop camera")) return;
+            if (Keeps(target, _planeRoot, "the art planes")) return;
+            if (Keeps(target, _playerModel, "the character")) return;
+
+            DeployScreenPlugin.Log.LogInfo("[DeployScreen] menu scene: hiding " + Describe(target));
+
             target.SetActive(false);
             _hidden.Add(target);
+        }
+
+        /// <summary>
+        /// Whether <paramref name="target"/> is an ancestor of something staging needs. Said
+        /// once per object so a list of what the game put in MainScreenObjects ends up in the
+        /// log, where the next person can read it without a decompiler.
+        /// </summary>
+        private static bool Keeps(GameObject target, Transform needed, string what)
+        {
+            if (needed == null || target == null) return false;
+            if (!needed.IsChildOf(target.transform)) return false;
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] menu scene: left " + Describe(target) + " alone -- it holds "
+                + what + ".");
+            return true;
+        }
+
+        /// <summary>A path, not a name: two objects called 'Root' are not the same object.</summary>
+        private static string Describe(GameObject target)
+        {
+            if (target == null) return "'(null)'";
+
+            var path = target.name;
+            for (var t = target.transform.parent; t != null; t = t.parent) path = t.name + "/" + path;
+            return "'" + path + "'";
+        }
+
+        /// <summary>The character on the deploy screen, so it is never hidden out from under the game.</summary>
+        private static Transform PlayerModelTransform(Component screen)
+        {
+            if (screen == null || GameTypes.Loading_PlayerModel == null) return null;
+
+            try
+            {
+                var view = GameTypes.Loading_PlayerModel.GetValue(screen) as Component;
+                return view == null ? null : view.transform;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         // ------------------------------------------------------------------ intel

@@ -71,7 +71,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.6.0";
+        public const string PluginVersion = "1.6.1";
 
         internal static ManualLogSource Log;
 
@@ -398,7 +398,7 @@ namespace DeployScreen.Client
 
             StagingFollowWeather = Config.Bind(
                 "Staging area",
-                "Follow the raid's weather",
+                "Follow the raid weather",
                 true,
                 "Light the screen for the raid you are actually loading, not just for the map.\n"
                 + "Time of day, fog, rain and cloud are all settled before you deploy, so a 03:00 "

@@ -24,7 +24,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.6.0.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.6.1.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```

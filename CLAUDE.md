@@ -918,6 +918,94 @@ question with no runtime evidence either way; that is what the diagnostics exist
 checks against the patched assembly, 0 warnings, references still clean. **Still never run in the
 game.**
 
+## 1.6.1: the first raid the staging area ever survived
+
+1.6.0 never ran. Not "ran and looked wrong" -- never reached the end of `Awake` on any launch,
+for anyone, from the moment it shipped.
+
+```
+ArgumentException: Cannot use any of the following characters in section and key names:
+= \n \t \ " ' [ ]
+  at BepInEx.Configuration.ConfigDefinition.CheckInvalidConfigChars
+  at DeployScreen.Client.DeployScreenPlugin.Awake ()
+```
+
+The key was `"Follow the raid's weather"`. BepInEx rejects an apostrophe in a config key, and it
+throws from inside `Config.Bind`, part-way through `Awake`, after the early binds and before a
+single Harmony patch is installed. The mod loads, patches nothing, logs nothing, and the game
+looks completely unmodded.
+
+**Why this was invisible.** An SPT install has `[Logging.Disk] WriteUnityLog = false`, so the
+stack trace never reaches `LogOutput.log`. What is there is a `Loading [Deploy Screen 1.6.0]` line
+with none of the plugin's own lines after it, which reads like a mod that ran and did nothing. The
+trace is in Unity's log instead:
+
+    C:\Users\<user>\AppData\LocalLow\Battlestate Games\EscapeFromTarkov\Player.log
+
+Read that before concluding a client mod "ran but looks wrong". Second tell, for pinpointing where
+it threw: BepInEx rewrites `BepInEx\config\<guid>.cfg` on every `Bind`, in bind order, so the last
+entry in the file is the last bind that succeeded and the crash is in the next one.
+
+`scripts\test-logic.ps1` now rejects the whole character class in any `Config.Bind` section or key
+across `src\DeployScreen.Client\*.cs`, and fails on `"Follow the raid's weather"` as a self-test so
+the check cannot quietly stop checking. It reads source text rather than the built assembly on
+purpose -- reflecting the keys off the DLL would mean running the code that throws -- and it runs
+first, before anything that needs the assembly to load.
+
+### What the live raid measured
+
+Everything below is from the game, not from reasoning about it. The staging area works.
+
+```
+plane DeployScreen Map: 23.98x10.04u at 7.80u on layer 25 (Menu Environment),
+  camera 'MainMenuCamera' mask 0x02000000, clip 0.05-1000.0, sprite 3440x1440,
+  parent 'Environment UI/EnvironmentUISceneTue'
+```
+
+- The backdrop camera is `MainMenuCamera`, and its culling mask `0x02000000` is bit 25 -- layer 25,
+  `Menu Environment`. `VisibleLayer` picks it correctly off the root.
+- The plane geometry checks out: 23.98 x 10.04u at 7.8u works back to a 60 degree vertical FOV at
+  2.39:1, which is the screen. Overscan sat at the 1.12 floor, and the art lands within a few per
+  cent of 1:1 -- confirmed three ways against a test image (title cap height, horizon position,
+  skyline block height).
+- `EnvironmentUIRoot.MainScreenObjects` **hid nothing**. The only object switched off in a real
+  raid was `Menu UI/UI/Matchmaker Time Has Come/Banner Panel`. The long-standing worry about what
+  hiding that array leaves behind -- a floor, or a void -- did not arise, because on this build in
+  this state the array yields nothing to hide. The guards added for it never fired.
+- The outer ~6% on each side is trim. Art with anything important near an edge loses it, which is
+  worth saying in the banners README rather than letting people find out.
+
+`Hide` now refuses to switch off anything holding the backdrop camera, the art planes or the
+character, and logs the full transform path of everything it hides or spares. Cheap, and it is what
+turned the array question from a guess into a fact.
+
+### The hour that was never there
+
+`conditions=-01:00` in the first live log. EFT writes `-1` into `HourOfDay` for "this raid has no
+time set", which is every PvE raid the player has not given an explicit time. `MapGrade.Read` took
+it literally, `Mathf.Repeat(-1, 24)` made it 23, and the whole screen was graded for midnight --
+visibly, as a blue cast over everything. 1.5.0 had a clock fallback for exactly this and 1.6.0 lost
+it. Restored: anything outside 0-23 falls back to `DateTime.Now.Hour`, and the log says which of
+the two it used.
+
+### Still open
+
+Sixteen `NullReferenceException`s at raid teardown, zero the day before:
+
+```
+at UnityEngine.Animator.SetBool
+at AnimationControllerParametersTable.SetBoltCatch
+at EFT.Player+FirearmController.Destroy ()
+at EFT.LocalPlayer.Dispose ()
+```
+
+The staging area's hiding was the obvious suspect and has been ruled out -- it hid one banner panel
+and nothing else. Needs another raid's `Player.log` to say whether it is even reproducible.
+
+`scripts\test-logic.ps1` cannot run past the image-header section under Windows PowerShell 5.1 on
+this machine: the DLL binds `String.TrimEnd()` against Unity's mscorlib, which has the parameterless
+overload, and .NET Framework 4.8 does not. Pre-existing, not from 1.6.1. It needs PowerShell 7.
+
 ## The hitching on the deploy screen -- what it actually is
 
 The user reports heavy hitching while waiting to get into a raid, and guessed it was the game
