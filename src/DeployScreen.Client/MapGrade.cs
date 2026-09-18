@@ -41,6 +41,14 @@ namespace DeployScreen.Client
     {
         private struct Lit { internal Light Light; internal Color Colour; }
 
+        /// <summary>A light belonging to the game's character preview, as it was found.</summary>
+        private struct Studio
+        {
+            internal Light Light;
+            internal Color Colour;
+            internal LightShadows Shadows;
+        }
+
         /// <summary>
         /// Light per map. Only Factory, Wood and Laboratory backdrops exist as scenes, but the
         /// *light* can say far more than three things, and it is the light that carries the place.
@@ -278,6 +286,7 @@ namespace DeployScreen.Client
         // ------------------------------------------------------------------ state
 
         private Lit[] _sceneLights;
+        private Studio[] _studio;
         private GameObject _rig;
         private bool _warnedOnce;
 
@@ -289,8 +298,67 @@ namespace DeployScreen.Client
             get
             {
                 return "scene-lights=" + (_sceneLights == null ? 0 : _sceneLights.Length)
-                    + "; character-lights=" + (_rig != null);
+                    + "; character-lights=" + (_rig != null)
+                    + "; studio-lights=" + (_studio == null ? 0 : _studio.Length);
             }
+        }
+
+        /// <summary>
+        /// Brings the game's own character rig into the same day as the picture behind it.
+        ///
+        /// The preview lights a PMC for a menu: four fixed studio lights -- key, fill, hair and a
+        /// down light -- that are right for a dim backdrop and wrong for a photograph taken at a
+        /// particular hour in particular weather. Left alone the character reads as a cut-out
+        /// standing in front of a screen, which is exactly what it is.
+        ///
+        /// Two changes, both put back afterwards:
+        ///
+        ///   1. **Shadows off.** The rig casts the character's shadow onto the preview's own
+        ///      catcher surface. Over a dark menu scene nobody sees it; over a photograph it is a
+        ///      grey halo hanging behind the character with nothing to fall on.
+        ///   2. **Pulled toward the destination.** Each light is lerped toward the map's key
+        ///      colour by the grade strength, so a sunlit Customs warms the rig and a foggy Woods
+        ///      cools it, and the light on the character agrees with the light in the picture.
+        ///
+        /// Intensities are left alone. They are balanced against each other for a face, and this
+        /// is about colour agreement, not exposure.
+        /// </summary>
+        internal void TakeCharacterRig(Component screen, Grade grade, float strength)
+        {
+            if (screen == null || GameTypes.Loading_PlayerModel == null) return;
+
+            try
+            {
+                var view = GameTypes.Loading_PlayerModel.GetValue(screen) as Component;
+                if (view == null) return;
+
+                var lights = view.GetComponentsInChildren<Light>(true);
+                if (lights == null || lights.Length == 0) return;
+
+                var taken = new Studio[lights.Length];
+                var count = 0;
+
+                foreach (var light in lights)
+                {
+                    if (light == null) continue;
+
+                    taken[count++] = new Studio
+                    {
+                        Light = light,
+                        Colour = light.color,
+                        Shadows = light.shadows,
+                    };
+
+                    light.shadows = LightShadows.None;
+                    light.color = Color.Lerp(light.color, grade.Key, Mathf.Clamp01(strength));
+                }
+
+                if (count == 0) return;
+
+                _studio = new Studio[count];
+                Array.Copy(taken, _studio, count);
+            }
+            catch (Exception error) { WarnOnce(error); }
         }
 
         // ------------------------------------------------------------------ apply
@@ -409,6 +477,22 @@ namespace DeployScreen.Client
             catch (Exception error) { WarnOnce(error); }
 
             _sceneLights = null;
+
+            try
+            {
+                if (_studio != null)
+                {
+                    foreach (var one in _studio)
+                    {
+                        if (one.Light == null) continue;
+                        one.Light.color = one.Colour;
+                        one.Light.shadows = one.Shadows;
+                    }
+                }
+            }
+            catch (Exception error) { WarnOnce(error); }
+
+            _studio = null;
 
             try
             {

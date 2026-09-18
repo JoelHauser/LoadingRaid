@@ -33,7 +33,8 @@ param(
     [string]$SPTPath = "C:\HUH",
     [int]$PerMap = 5,
     [string[]]$Maps,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$KeepPng
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,6 +52,12 @@ $locations = [ordered]@{
     'shoreline'    = 'Shoreline'
     'tarkovstreets'= 'Streets of Tarkov'
     'woods'        = 'Woods'
+
+    # Same place, different location id, and the game reports the id. Without these the
+    # high-level Ground Zero and night Factory fall through to _default, and if that is
+    # empty they get the stock banners while every other map has art.
+    'sandbox_high'   = 'Ground Zero'
+    'factory4_night' = 'Factory'
 }
 
 $banners = Join-Path $SPTPath 'BepInEx\plugins\DeployScreen\banners'
@@ -69,6 +76,40 @@ function Wanted($title, $w, $h) {
     if ($aspect -lt 1.55 -or $aspect -gt 2.6) { return $false }
     if ($title -match $reject) { return $false }
     return $true
+}
+
+function ToJpeg($path) {
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $target = Join-Path (Split-Path $path -Parent) ([IO.Path]::GetFileNameWithoutExtension($path) + '.jpg')
+
+        $source = [System.Drawing.Bitmap]::FromFile($path)
+
+        # Drawn onto an opaque surface first: a PNG with an alpha channel throws a bare
+        # "generic error" out of GDI+ when saved straight to JPEG.
+        $flat = New-Object System.Drawing.Bitmap($source.Width, $source.Height,
+                                                 [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+        $canvas = [System.Drawing.Graphics]::FromImage($flat)
+        $canvas.DrawImage($source, 0, 0, $source.Width, $source.Height)
+        $canvas.Dispose()
+        $source.Dispose()
+
+        $codec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() |
+                 Where-Object { $_.MimeType -eq 'image/jpeg' }
+        $settings = New-Object System.Drawing.Imaging.EncoderParameters(1)
+        $settings.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter(
+            [System.Drawing.Imaging.Encoder]::Quality, 92L)
+
+        $flat.Save($target, $codec, $settings)
+        $flat.Dispose()
+
+        Remove-Item -LiteralPath $path -Force
+        return $target
+    }
+    catch {
+        Write-Host "  keep  $(Split-Path $path -Leaf) as PNG: $($_.Exception.Message)" -ForegroundColor Yellow
+        return $path
+    }
 }
 
 function CleanName($title) {
@@ -150,6 +191,13 @@ foreach ($id in $wanted) {
 
         try {
             Invoke-WebRequest -Uri $url -Headers @{ 'User-Agent' = $agent } -OutFile $file -TimeoutSec 120
+
+            # A 1920x1080 wiki PNG is around 3.8 MB and Unity decodes it on the deploy screen, on
+            # the frame the raid is already loading. Five per map, first time each map is seen,
+            # measurably stalls the load -- 48 stalls and 48s of stutter on the first Customs run,
+            # against 15 and 5.5s on the second. The same picture as JPEG is about 500 KB and
+            # decodes in a fraction of the time, for no visible loss behind a character.
+            if (-not $KeepPng -and $file -like '*.png') { $file = ToJpeg $file }
             Write-Host ("  got   {0}  {1}x{2}" -f (Split-Path $file -Leaf), $one.Width, $one.Height) -ForegroundColor Green
             $grabbed++
         }

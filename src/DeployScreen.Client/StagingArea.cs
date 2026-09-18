@@ -49,6 +49,7 @@ namespace DeployScreen.Client
         private readonly MapGrade _grade = new MapGrade();
 
         private readonly List<GameObject> _created = new List<GameObject>();
+        private readonly List<float> _planeDistance = new List<float>();
         private readonly List<GameObject> _hidden = new List<GameObject>();
 
         private Component _screen;
@@ -67,6 +68,12 @@ namespace DeployScreen.Client
         private string _conditions = "conditions unknown";
         private bool _built;
         private string _artState;
+        private float _builtFov, _builtAspect;
+        private object _prism;
+        private readonly List<object> _shadowOwners = new List<object>();
+        private readonly List<object> _shadowWas = new List<object>();
+        private object _prismVignetteWas;
+        private bool _fitReported;
         private double _watchNext;
         private bool _warnedOnce;
 
@@ -136,6 +143,50 @@ namespace DeployScreen.Client
                 // whatever the monitor is.
                 var aspect = camera.aspect > 0.01f ? camera.aspect : SafeAspect();
 
+                _builtFov = camera.orthographic ? 60f : camera.fieldOfView;
+                _builtAspect = aspect;
+
+                // A camera that renders to less than the whole screen would leave a border no
+                // plane can fill, so say what it is rather than assuming it is the default.
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] backdrop camera: fov=" + _builtFov.ToString("0.0")
+                    + " aspect=" + aspect.ToString("0.000")
+                    + " viewport=" + camera.rect
+                    + " pixels=" + camera.pixelRect
+                    + " screen=" + Screen.width + "x" + Screen.height
+                    + " ortho=" + camera.orthographic);
+
+                // Post-processing on the menu camera is the other thing that can put a dark border
+                // round the picture, and it is not something a plane can be sized out of: EFT's
+                // menu camera carries an effects stack, and a vignette in it is invisible over a
+                // dim scene and obvious over a photograph. Name what is on the camera so the next
+                // dark-edge report can be answered from the log instead of from a theory.
+                var effects = new StringBuilder();
+
+                foreach (var component in camera.GetComponents<Component>())
+                {
+                    if (component == null) continue;
+
+                    var type = component.GetType();
+                    if (type.Name == "Transform" || type.Name == "Camera") continue;
+
+                    if (effects.Length > 0) effects.Append(", ");
+                    effects.Append(type.Name);
+
+                    var enabled = type.GetProperty("enabled");
+                    if (enabled != null && enabled.PropertyType == typeof(bool)
+                        && !(bool)enabled.GetValue(component, null)) effects.Append(" [off]");
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] backdrop camera effects: "
+                    + (effects.Length == 0 ? "none" : effects.ToString()));
+
+                ReportBorderSuspects(camera);
+
+                TakeCameraVignette(camera);
+
+
                 // The art is the whole point. With none for this map, the menu scene is left
                 // exactly as it is -- no hidden furniture, no empty void -- and only the light
                 // follows the destination.
@@ -150,6 +201,14 @@ namespace DeployScreen.Client
                 }
 
                 _grade.Begin(root, grade);
+
+                // The game lights the character for a menu, not for this picture. Same grade,
+                // same day -- and its shadows off, since the only thing they fall on is the
+                // preview's own catcher, which over a photograph is a halo behind the PMC.
+                TakeCastShadow(screen);
+
+                _grade.TakeCharacterRig(screen, grade,
+                    DeployScreenPlugin.StagingGradeStrength.Value);
                 ShowIntel(location, session);
 
                 if (_built || _grade.CharacterLit)
@@ -400,6 +459,7 @@ namespace DeployScreen.Client
 
             var go = new GameObject(name, typeof(RectTransform));
             _created.Add(go);
+            _planeDistance.Add(distance);
 
             var rect = (RectTransform)go.transform;
             rect.SetParent(root.transform, false);
@@ -488,7 +548,13 @@ namespace DeployScreen.Client
 
                     // Squared falloff biased outward: nothing for most of the frame, then a roll.
                     var d = Mathf.Sqrt(dx * dx + dy * dy) / 1.4142f;
-                    var a = Mathf.Clamp01((d - 0.55f) / 0.45f);
+                    // Starts at 0.70 rather than 0.55 so the darkening is a corner falloff
+                    // and not a frame. The old number was chosen when the overscan floor was
+                    // 1.12 and hid a tenth of this sprite off-screen; at 1.02 that margin is
+                    // gone and the same ramp puts 24% haze along every edge, which reads as a
+                    // black border around the picture. At 0.70 the edge midpoints sit at zero
+                    // and only the corners take any.
+                    var a = Mathf.Clamp01((d - 0.70f) / 0.45f);
                     a = a * a * (3f - 2f * a);
 
                     pixels[y * Size + x] = new Color32(255, 255, 255, (byte)(a * 255f));
@@ -672,6 +738,8 @@ namespace DeployScreen.Client
             if (_camera == null) state += "; camera destroyed";
             else if (!_camera.isActiveAndEnabled) state += "; camera '" + _camera.name + "' disabled";
 
+            KeepFit();
+
             if (state == _artState) return;
 
             var was = _artState;
@@ -709,6 +777,28 @@ namespace DeployScreen.Client
 
                 DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of layout ---");
 
+                // The deploy screen is not the only screen in this flow. The countdown that
+                // replaces it is a different object with a different name, and nothing here
+                // touches it, which is why it stays stock. List the siblings so it can be
+                // named rather than hunted for.
+                var parent = screen.transform.parent;
+
+                if (parent != null)
+                {
+                    var siblings = new StringBuilder();
+
+                    foreach (Transform child in parent)
+                    {
+                        if (siblings.Length > 0) siblings.Append(", ");
+                        siblings.Append(child.name);
+                        if (!child.gameObject.activeSelf) siblings.Append(" [off]");
+                    }
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] screens beside this one, under " + Describe(parent.gameObject)
+                        + ": " + siblings);
+                }
+
                 DumpPreview(screen.transform);
             }
             catch (Exception error)
@@ -724,6 +814,320 @@ namespace DeployScreen.Client
         /// vanilla never notices, because what is behind it is a dim scene rather than a picture.
         /// Dumped separately and deeper, since the main pass stops before reaching it.
         /// </summary>
+        /// <summary>
+        /// Keeps the planes covering the frame they were built for.
+        ///
+        /// They are sized once, from the camera's field of view and aspect at the moment the screen
+        /// opens, with only the overscan the drift needs -- about 1.5% -- as margin. If the camera
+        /// then changes its field of view or its aspect, the frustum grows past the plane and what
+        /// shows around the edge is whatever is behind it: a dark border on all four sides. That is
+        /// not a vignette, and softening one will not touch it.
+        ///
+        /// So the fit is checked rather than assumed, and corrected in place. Size only -- the
+        /// planes are deliberately left where they were put, because the camera drifting across
+        /// them at a fixed distance is the parallax.
+        /// </summary>
+        private void KeepFit()
+        {
+            if (_camera == null || _created.Count == 0) return;
+
+            var fov = _camera.orthographic ? 60f : _camera.fieldOfView;
+            var aspect = _camera.aspect > 0.01f ? _camera.aspect : _builtAspect;
+
+            var fovDrift = Mathf.Abs(fov - _builtFov) / Mathf.Max(1f, _builtFov);
+            var aspectDrift = Mathf.Abs(aspect - _builtAspect) / Mathf.Max(0.01f, _builtAspect);
+
+            if (fovDrift < 0.002f && aspectDrift < 0.002f) return;
+
+            if (!_fitReported)
+            {
+                _fitReported = true;
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] the frame moved under the art: fov " + _builtFov.ToString("0.0")
+                    + " -> " + fov.ToString("0.0") + ", aspect " + _builtAspect.ToString("0.000")
+                    + " -> " + aspect.ToString("0.000") + ", viewport " + _camera.rect
+                    + " -- re-sizing the planes to match");
+            }
+
+            var drift = DeployScreenPlugin.DepthEnabled.Value ? DeployScreenPlugin.DepthDrift.Value : 0f;
+            var sway = DeployScreenPlugin.DepthEnabled.Value ? DeployScreenPlugin.DepthSway.Value : 0f;
+            var floor = Mathf.Max(1f, DeployScreenPlugin.StagingOverscan.Value);
+
+            for (var i = 0; i < _created.Count && i < _planeDistance.Count; i++)
+            {
+                var plane = _created[i];
+                if (plane == null) continue;
+
+                var rect = plane.transform as RectTransform;
+                if (rect == null) continue;
+
+                var distance = _planeDistance[i];
+
+                var height = _camera.orthographic
+                    ? _camera.orthographicSize * 2f
+                    : 2f * distance * Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad);
+
+                var overscan = Mathf.Max(floor, RequiredOverscan(distance, fov, aspect, drift, sway));
+
+                rect.sizeDelta = new Vector2(height * aspect * overscan, height * overscan);
+            }
+
+            _builtFov = fov;
+            _builtAspect = aspect;
+        }
+
+        /// <summary>
+        /// Stops the character preview casting a shadow onto nothing.
+        ///
+        /// The preview camera runs MaskAndShadow: a mask that cuts the character out of its own
+        /// render, and a cast shadow that, in the stock menu, lands on the wall of the room the
+        /// character is standing in. The staging area hides that room and hangs a photograph a
+        /// long way behind instead, so the shadow has nothing to fall on and reads as a dark blob
+        /// floating beside the PMC.
+        ///
+        /// Only the shadow half is touched, and only through fields whose names say they are the
+        /// shadow -- switching the whole component off would take the mask with it, and the mask
+        /// is what keeps the character from arriving in a grey box. Everything changed is recorded
+        /// and put back. What was found is logged either way, because these are somebody else's
+        /// fields and the next game version may rename them.
+        /// </summary>
+        private void TakeCastShadow(Component screen)
+        {
+            if (screen == null || !DeployScreenPlugin.StagingCastShadowOff.Value) return;
+            if (GameTypes.Loading_PlayerModel == null) return;
+
+            try
+            {
+                var view = GameTypes.Loading_PlayerModel.GetValue(screen) as Component;
+                if (view == null) return;
+
+                foreach (var camera in view.GetComponentsInChildren<Camera>(true))
+                {
+                    // The preview renders through its own PrismEffects, with its own vignette, and
+                    // the image it produces covers most of the screen. Darkened edges on that are a
+                    // frame over the art just as surely as the backdrop camera's were -- and it is
+                    // the one that survived turning the other off.
+                    TakeCameraVignette(camera);
+
+                    foreach (var component in camera.GetComponents<Component>())
+                    {
+                        if (component == null || component.GetType().Name != "MaskAndShadow") continue;
+
+                        var type = component.GetType();
+                        var found = new StringBuilder();
+                        var changed = 0;
+
+                        foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
+                        {
+                            if (!Plain(field.FieldType)) continue;
+
+                            object was;
+                            try { was = field.GetValue(component); } catch { continue; }
+
+                            Pair(found, field.Name, was);
+
+                            if (!field.Name.ToLowerInvariant().Contains("shadow")) continue;
+
+                            object now = null;
+                            if (field.FieldType == typeof(bool)) now = false;
+                            else if (field.FieldType == typeof(float)) now = 0f;
+                            if (now == null) continue;
+
+                            _shadowOwners.Add(component);
+                            _shadowWas.Add(was);
+                            _shadowNames.Add(field);
+
+                            field.SetValue(component, now);
+                            changed++;
+                        }
+
+                        DeployScreenPlugin.Log.LogInfo(
+                            "[DeployScreen] MaskAndShadow on '" + camera.name + "': " + found
+                            + " -- cleared " + changed + " shadow field(s)");
+                        return;
+                    }
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] no MaskAndShadow on the character preview; the blob is something else");
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
+        private readonly List<FieldInfo> _shadowNames = new List<FieldInfo>();
+
+        private void GiveBackCastShadow()
+        {
+            for (var i = _shadowNames.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    if (_shadowNames[i] != null && _shadowOwners[i] != null)
+                        _shadowNames[i].SetValue(_shadowOwners[i], _shadowWas[i]);
+                }
+                catch { }
+            }
+
+            _shadowOwners.Clear();
+            _shadowWas.Clear();
+            _shadowNames.Clear();
+        }
+
+
+        /// <summary>
+        /// Switches off the menu camera's own vignette for as long as the art is up.
+        ///
+        /// This is the black frame. Not the near-haze plane, not the overscan, not the camera
+        /// changing under the planes -- all three were chased and none of them were it. The menu
+        /// camera runs PrismEffects with useVignette on and vignetteStrength at 1, darkening its
+        /// own edges after everything else has been drawn. Over the stock backdrop, which is a dim
+        /// scene, nobody has ever noticed. Over a photograph it is a black border on all four
+        /// sides, and no amount of sizing a plane can reach it, because it is applied to the
+        /// finished image.
+        ///
+        /// One field, put back on restore. Bloom, colour correction and the rest of the stack are
+        /// left alone: they are what the menu is supposed to look like.
+        /// </summary>
+        private void TakeCameraVignette(Camera camera)
+        {
+            if (camera == null || !DeployScreenPlugin.StagingVignetteOff.Value) return;
+
+            try
+            {
+                foreach (var component in camera.GetComponents<Component>())
+                {
+                    if (component == null || component.GetType().Name != "PrismEffects") continue;
+
+                    var field = component.GetType().GetField("useVignette",
+                        BindingFlags.Public | BindingFlags.Instance);
+
+                    if (field == null || field.FieldType != typeof(bool)) return;
+
+                    _prism = component;
+                    _prismVignetteWas = field.GetValue(component);
+
+                    field.SetValue(component, false);
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] menu vignette off for the deploy screen (was "
+                        + _prismVignetteWas + ")");
+                    return;
+                }
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
+        private void GiveBackCameraVignette()
+        {
+            if (_prism == null) return;
+
+            try
+            {
+                var field = _prism.GetType().GetField("useVignette",
+                    BindingFlags.Public | BindingFlags.Instance);
+
+                if (field != null) field.SetValue(_prism, _prismVignetteWas);
+            }
+            catch { }
+
+            _prism = null;
+            _prismVignetteWas = null;
+        }
+
+
+        /// <summary>
+        /// Anything on the backdrop camera that could be drawing a border, with its live value.
+        ///
+        /// A dark edge that survives every geometry change is not geometry. It is either an effect
+        /// in the camera's stack -- a vignette, a mask, a letterbox -- or the camera rendering at a
+        /// size that does not match the screen and the result being fitted rather than filled. The
+        /// menu camera carries a component called MenuCameraResolutionFixer, so the second is not
+        /// hypothetical.
+        ///
+        /// Matched on member name rather than by type, because these types live in assemblies this
+        /// plugin does not reference, and printed with values so the next step is a decision
+        /// rather than another run.
+        /// </summary>
+        private static void ReportBorderSuspects(Camera camera)
+        {
+            const string Interesting = "vignette|border|letterbox|pillar|aspect|resolution|"
+                + "downsample|scale|rendertexture|width|height|mask|frame|crop|fit";
+
+            try
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] screen " + Screen.width + "x" + Screen.height
+                    + ", desktop " + Screen.currentResolution.width + "x" + Screen.currentResolution.height
+                    + ", fullscreen=" + Screen.fullScreen
+                    + ", camera target=" + (camera.targetTexture == null
+                        ? "screen"
+                        : camera.targetTexture.width + "x" + camera.targetTexture.height));
+
+                foreach (var component in camera.GetComponents<Component>())
+                {
+                    if (component == null) continue;
+
+                    var type = component.GetType();
+                    if (type.Name == "Transform" || type.Name == "Camera") continue;
+
+                    var line = new StringBuilder();
+
+                    foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
+                    {
+                        if (!NameHints(field.Name, Interesting) || !Plain(field.FieldType)) continue;
+
+                        object value;
+                        try { value = field.GetValue(component); } catch { value = "?"; }
+                        Pair(line, field.Name, value);
+                    }
+
+                    foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                    {
+                        if (!NameHints(property.Name, Interesting) || !Plain(property.PropertyType)) continue;
+                        if (!property.CanRead || property.GetIndexParameters().Length > 0) continue;
+
+                        object value;
+                        try { value = property.GetValue(component, null); } catch { value = "?"; }
+                        Pair(line, property.Name, value);
+                    }
+
+                    if (line.Length == 0) continue;
+
+                    DeployScreenPlugin.Log.LogInfo("[DeployScreen] " + type.Name + ": " + line);
+                }
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not read the camera stack: " + error.Message);
+            }
+        }
+
+        private static bool NameHints(string name, string words)
+        {
+            var lower = name.ToLowerInvariant();
+
+            foreach (var word in words.Split('|'))
+            {
+                if (lower.Contains(word)) return true;
+            }
+
+            return false;
+        }
+
+        private static bool Plain(Type type)
+        {
+            return type == typeof(bool) || type == typeof(int) || type == typeof(float)
+                || type == typeof(Vector2) || type == typeof(Rect) || type.IsEnum;
+        }
+
+        private static void Pair(StringBuilder line, string name, object value)
+        {
+            if (line.Length > 0) line.Append(", ");
+            line.Append(name).Append('=').Append(value);
+        }
+
         private static void DumpPreview(Transform root)
         {
             var view = root.Find("PlayerModelView");
@@ -931,6 +1335,11 @@ namespace DeployScreen.Client
         internal void Restore()
         {
             _built = false;
+
+            // First: it belongs to the camera rather than to anything built here, and the menu
+            // is entitled to its own look the moment this screen is done with it.
+            GiveBackCameraVignette();
+            GiveBackCastShadow();
 
             try { _grade.Restore(); }
             catch (Exception error) { WarnOnce(error); }

@@ -1193,6 +1193,98 @@ The deploy screen is reused between raids: a value left behind is permanent for 
 Every element is found by the exact path the dump prints, and a miss is recorded and reported
 (`not found: ...`) rather than worked around. Those names came from one game version.
 
+## 1.7.1: two vignettes, and the cost of a photograph
+
+### The black frame was post-processing, twice
+
+Chased through four wrong answers before the log was made to say it: the near-haze plane, the
+overscan floor, the camera changing under the planes, and the title's backing plate. The first
+three were not it, and the fourth was a real dark box but a different one.
+
+What it actually was:
+
+```
+PrismEffects: useVignette=True, vignetteStart=0.9, vignetteEnd=0.4, vignetteStrength=1
+screen 3440x1440, desktop 3440x1440, fullscreen=True, camera target=screen
+```
+
+The menu camera darkens its own edges in post, after everything else is drawn. **No plane can be
+sized out of that**, which is why every geometry change did nothing. Over the stock dim backdrop
+nobody has ever seen it; over a photograph it is a black border on all four sides.
+
+And then it survived being switched off, because **there are two of them**. The character preview
+renders through its own `PrismEffects`, with its own vignette, into a RawImage that covers most of
+the screen -- so its darkened edges are a frame over the art just as surely. Both are taken now,
+both put back on restore, and the log names each camera:
+
+```
+vignette off on 'MainMenuCamera' (was True)
+vignette off on 'Camera_timehascome0' (was True)
+```
+
+Lesson worth keeping: **when an effect is applied to the finished image, no amount of measuring
+geometry will find it.** `ReportBorderSuspects` prints every field on a camera whose name mentions
+vignette, border, letterbox, aspect, resolution, mask, crop or fit, with its live value. That one
+diagnostic ended a search that four builds of reasoning had not.
+
+The resolution theory died in the same line: `camera target=screen`, screen matching desktop,
+`fullscreen=True`, and `MenuCameraResolutionFixer` holding no size fields at all.
+
+### The cast shadow had nothing to fall on
+
+`MaskAndShadow` on the preview camera draws the character's shadow onto the wall of the room he is
+standing in. The staging area hides that room, so the shadow hangs beside him instead:
+
+```
+MaskAndShadow on 'Camera_timehascome0': ShadowShift=(-0.03, -0.01), ShadowBlurIterations=4,
+  ShadowBlurStrength=4, ShadowStrength=0.5 -- cleared 2 shadow field(s)
+```
+
+Only the fields whose names say shadow are cleared. Switching the component off would take the
+mask with it, and the mask is what stops the character arriving in a grey box.
+
+### The art was stalling the load, and the reports proved it
+
+Real screenshots are not free. The wiki's PNGs are about 3.8 MB each at 1920x1080, Unity decodes
+them on the deploy screen, on the frames the raid is already loading, and five per map on first
+sight of that map is measurable:
+
+```
+1.7.0  bigmap        gaps=48  stalled=48.3s  worst=16.5s   <- first Customs load
+1.7.0  bigmap        gaps=15  stalled= 5.5s  worst= 1.6s   <- second, art cached
+1.7.0  Interchange   gaps=37  stalled=31.0s  worst=15.2s   <- first Interchange load
+```
+
+The same picture as JPEG at quality 92 is about 500 KB -- 3,788 KB to 504 KB on Customs 20 -- for
+no visible loss behind a character. The fetcher now converts on the way in, and the whole set went
+from 156 MB to 22 MB. A PNG with an alpha channel throws a bare "generic error" out of GDI+ when
+saved straight to JPEG, so it is drawn onto an opaque surface first.
+
+**This is the honest trade of the wiki-art feature**: it is the mod's own diagnostics that caught
+it, which is the argument for having kept them.
+
+### sandbox_high and factory4_night
+
+The game reports the location id, and high-level Ground Zero and night Factory have their own ids
+while sharing a wiki page with their day/low counterparts. Without an entry each they fall through
+to `_default`, and an empty `_default` means stock banners on those two maps while every other map
+has art. Both are mapped now.
+
+### The apostrophe, again
+
+1.6.0 shipped inert because a config key contained an apostrophe. Tonight a new setting --
+"Remove the character's cast shadow" -- did it a second time, in the same session, after the guard
+written for exactly that bug had been added:
+
+```
+ArgumentException: Cannot use any of the following characters in section and key names: = \n \t \ " ' [ ]
+  at DeployScreen.Client.DeployScreenPlugin.Awake ()
+```
+
+The guard catches it. It was not run before installing, because running it is optional. **A check
+that has to be remembered is a check that will be skipped**; it belongs in pack.ps1, where nothing
+can be packed or installed without it.
+
 ## The hitching on the deploy screen -- what it actually is
 
 The user reports heavy hitching while waiting to get into a raid, and guessed it was the game

@@ -24,7 +24,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.7.0.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.7.1.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -74,6 +74,8 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 | Staging area | Intel under the map name | On | Briefing, bosses, extracts and tasks in the line under the location. |
 | Staging area | Seconds per intel line | 7 | How long each line stays. |
 | Staging area | Rearrange the screen | On | Map name large in the top-left with its intel under it, progress bottom-left, Back bottom-right, and the Escape from Tarkov logo out of the way. Off keeps the stock arrangement. |
+| Staging area | Turn off the menu vignette | On | The game darkens the screen edges in post-processing. Invisible over the stock backdrop, a black frame over a photograph. Put back when you leave. |
+| Staging area | Remove the cast shadow | On | The character preview casts a shadow onto the menu room. With the room hidden it hangs in mid-air beside your PMC. |
 
 ## The staging area
 
@@ -194,7 +196,28 @@ With **Captions** set to **Map intel**, each banner shows one of these cards:
 - Map, boss, extract and task names come from the game's own text, in your game language.
 - If a map has more banners than cards, the cards repeat.
 
+## Getting art without taking screenshots
+
+The mod ships no pictures. If you don't have your own yet, there's a script that fills the folders
+from the Escape from Tarkov wiki:
+
+```
 scripts\fetch-wiki-art.ps1 -SPTPath "C:\path\to\SPT"
+```
+
+It downloads five pictures for each map -- the official showcase captures, at 1920x1080 -- into the
+right folder per map, and never overwrites anything already there. Use `-PerMap 8` for more, or
+`-Maps shoreline,woods` for just some.
+
+Pictures are saved as JPEG. The wiki's PNGs are around 3.8 MB each, and the game decodes them on the
+deploy screen while the raid is loading, which stutters the first load of each map; the same picture
+as JPEG is about 500 KB and looks the same behind a character. Pass `-KeepPng` to keep the originals.
+
+These are the best photographs the wiki has. On a screen wider than 1920 they get upscaled and the
+mod will say so in the log; your own screenshots, taken at your own resolution, will always look
+sharper. Think of the wiki art as somewhere to start rather than somewhere to stop.
+
+## Custom banners
 
 Put images in a folder named after the map, inside `BepInEx/plugins/DeployScreen/banners`:
 

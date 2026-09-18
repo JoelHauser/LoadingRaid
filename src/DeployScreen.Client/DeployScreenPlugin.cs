@@ -71,7 +71,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.7.0";
+        public const string PluginVersion = "1.7.1";
 
         internal static ManualLogSource Log;
 
@@ -84,6 +84,8 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> MatchEnvironment;
         internal static ConfigEntry<bool> DepthEnabled;
         internal static ConfigEntry<bool> StagingRearrange;
+        internal static ConfigEntry<bool> StagingVignetteOff;
+        internal static ConfigEntry<bool> StagingCastShadowOff;
         internal static ConfigEntry<float> DepthDrift;
         internal static ConfigEntry<float> DepthSway;
         internal static ConfigEntry<float> DepthLight;
@@ -341,7 +343,7 @@ namespace DeployScreen.Client
             StagingVignette = Config.Bind(
                 "Staging area",
                 "Near haze",
-                0.55f,
+                0.30f,
                 new ConfigDescription(
                     "How dark the near plane's frame is. This plane exists mainly to sit at a "
                     + "different depth from the map so the two shear against each other; the "
@@ -409,6 +411,25 @@ namespace DeployScreen.Client
                 + "Time of day, fog, rain and cloud are all settled before you deploy, so a 03:00 "
                 + "foggy Woods can look like one and a clear midday Streets like another. Off "
                 + "keeps the map's own fixed look whatever the conditions.");
+
+            StagingCastShadowOff = Config.Bind(
+                "Staging area",
+                "Remove the cast shadow",
+                true,
+                "The character preview renders a cast shadow through the game's MaskAndShadow "
+                + "component. In the stock menu it falls on the room's wall and looks right. With "
+                + "the room hidden and a photograph behind instead, it has nothing to fall on and "
+                + "hangs in mid-air as a dark blob beside your PMC. Off keeps the shadow.");
+
+            StagingVignetteOff = Config.Bind(
+                "Staging area",
+                "Turn off the menu vignette",
+                true,
+                "The menu camera darkens its own edges through the game's post-processing "
+                + "(PrismEffects, vignette strength 1). Over the stock dim backdrop you never see "
+                + "it; over a photograph it is a black frame around all four sides. This switches "
+                + "that one effect off while the deploy screen is up and puts it back afterwards. "
+                + "It does not touch bloom, colour or anything else in the stack.");
 
             StagingRearrange = Config.Bind(
                 "Staging area",

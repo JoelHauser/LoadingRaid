@@ -99,6 +99,13 @@ namespace DeployScreen.Client
 
                 // The destination, named where a place names itself.
                 Place(Find(root, "Location Name Panel"), TopLeft, TopLeft, new Vector2(side, -top));
+                // The panel ships with a backing plate sized for a 24pt label tucked into the
+                // corner -- 184x29, fixed, no fitter. Promote the label to a 44pt title and that
+                // plate stays the size it was, sitting behind the first few letters as a dark box.
+                // It exists to keep a small label readable over the backdrop; the scrim does that
+                // job now for everything in the corner.
+                Hide(Find(root, "Location Name Panel/Background"));
+
                 Resize(Find(root, "Location Name Panel/Name"), 44f);
 
                 // A place names itself in capitals, spaced, the way a title card does.
