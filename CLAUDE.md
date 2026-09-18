@@ -1537,74 +1537,86 @@ band survives. **A mechanism that matches, on an instance that provably is not i
 another instance** -- or another camera doing the same job. `TakeCastShadow` only ever walks cameras
 under `PlayerModelView`, so a second one anywhere else has never been in scope.
 
-#### The next thing to look at, already built and not yet run
+#### The raid of 2026-09-18 18:02Z: all three sweeps came back empty
 
-`ReportPreviewLayer`. It is in the tree, behind **Report the screen layout**, and has never been run
-in game -- the session ended before a raid with it installed.
+| sweep | answer |
+| --- | --- |
+| `ReportPreviewLayer` | **0** renderers on mask `0x00080000` from outside `PlayerModelView` |
+| `ReportRenderTextureAuthors` | **0** other cameras write into the 5420x2464 ARGB32 target |
+| `ReportShadowComponents` | 8 `MaskAndShadow` scene-wide; 7 on inactive objects, 1 inside the preview and already zeroed by `TakeCastShadow` |
 
-It exists because **every renderer sweep in this file walked `PlayerModelView` and stopped**, three
-separate times, and that is the wrong shape of question. A camera does not render a subtree, it
-renders a **layer**. The preview camera's culling mask is `0x00080000`, one layer, WeaponPreview.
-Anything on that layer anywhere in any loaded scene is drawn into the preview exactly as if it were
-part of the character, and no sweep ever looked outside the subtree. The backdrop camera got that
-treatment and came back clean; the preview camera never did.
+The 7 outside all carry the stock `ShadowShift=(-0.05,-0.01)` -- 5% of width, close to the offset
+the band sits at, which is why the mechanism kept looking right -- and every one of them hangs off
+a `PlayerModelView` belonging to a screen that is not up: the login side-selection panels, the
+reconnection screen, the accept screen, the side-selection PMC and Scav. All report
+`enabled=False` and `activeInHierarchy=False`. They draw nothing. **`MaskAndShadow` is finished as
+a suspect**, and so is external geometry, and so is a second camera.
 
-So the next log lines to read are:
+What is left is that the band is drawn into that texture by the one camera that owns it, out of
+the character's own 69 renderers. Nothing else contributes a pixel to it.
 
-```
-on the preview layer, outside the preview: <path> layer=Weapon Preview size=... material=...
-the preview camera renders N renderer(s) from outside PlayerModelView on mask 0x00080000
-```
+#### The correction that matters: post-processing was never ruled out
 
-- **N greater than 0** -- that list contains it. Given the band's shape, expect a dark duplicate of
-  the character on that layer. Hide it the way `TakeBootShadow` hides the boot shadows, from `Tick`
-  and not from `Begin`.
-- **N is 0** -- the band is the character's own meshes rendering with partial alpha, and the hunt
-  moves to their materials. The 174 renderers are all `p0/Reflective/Bumped Specular SMap_Decal`
-  and friends; something about how that shader writes alpha into an ARGB32 target would be the
-  place to start, along with `Undithering` and `LightSwitcherOverkill`, the two components on that
-  camera nobody has opened.
-
-#### Three more probes, added in the same build, so one raid answers all of it
-
-**`ReportRenderTextureAuthors` -- the widest scope yet, and the one I would bet on.** Every sweep in
-this file starts at `PlayerModelView` and works down; the one that broadened, `ReportPreviewLayer`,
-broadened to the *layer*. None ever asked the question a render texture actually invites: a texture
-is a **destination**, and more than one camera can write to it. Nothing in the codebase has ever
-enumerated cameras globally -- every `targetTexture` read is scoped to the preview subtree.
-
-A second camera drawing the same character into the same target with a dark material and an offset
-produces exactly the band in the picture, and it is invisible to every probe run so far: the
-renderers it draws are the character's own, so renderer sweeps see nothing odd; it is not
-post-processing, so the post toggles do nothing; and it is not under `PlayerModelView`, so no
-component sweep reached it. Uses `FindObjectsOfTypeAll` on purpose -- a camera driven by an explicit
-`Render()` call is *disabled* the rest of the time, which is the ordinary way to do this effect, and
-`FindObjectsOfType` would skip it.
+The table above says the whole preview post stack was switched off and the shape was unchanged, and
+calls that the important one. It was wrong, and `Simplified()` is where it went wrong. That method
+is the list deciding what gets switched off, and it has only ever held `AmbientOcclusion`,
+`MaskAndShadow`, `PrismEffects`, `Bloom`, `DesaturateEffect`, `ChromaticAberration`,
+`CameraMotionBlur` and `Antialiasing`. Here is what is actually on the preview camera, from this
+raid:
 
 ```
-also writes the preview render: <path> depth=... clears=... mask=0x... components: ...
-N other camera(s) write into the preview's WxH ARGB32 target
+Undithering=True, LightSwitcherOverkill=True, Antialiasing=True, MaskAndShadow=False,
+PrismEffects=True, AmbientOcclusion=False, StreamingController=True
 ```
 
-`depth` and `clearFlags` say which way round the pass goes: lower depth draws first and is therefore
-behind, and a camera that does not clear is adding to the target rather than replacing it.
+`Undithering` and `LightSwitcherOverkill` are both enabled, are on nobody's list, and have never
+once been switched off. `Undithering` reports `useTriangleBlit=True` -- a tent-filter blit, which is
+a neighbour-sampling pass, which is exactly the kind of thing that drags alpha sideways out of a
+silhouette. Ruling out "post-processing" while two of its passes were still running is the same
+mistake as the three subtree sweeps, one level up.
 
-**`ReportShadowComponents`** -- everything scene-wide whose type name contains "shadow", printed
-with which side of the preview boundary it falls on, and full fields for any second `MaskAndShadow`.
+Also worth recording so the numbers are not misread later: this raid ran with **Turn off the
+preview post-processing = false**, so `Antialiasing` and `PrismEffects` were both on for it. Its
+alpha map -- 217 solid, 143 part-transparent -- is the stock stack, not a simplified one.
 
-**`Undithering` and `LightSwitcherOverkill`** are now read by `ReportFields` on the preview camera.
+#### `ReportPreviewBisect`, and why measuring beats looking
+
+Every verdict in this hunt has been a person looking at a screenshot and judging the shape
+unchanged. That is how `MaskAndShadow` survived three rounds, and how post-processing was ruled out
+without being tested. The alpha map already produces a number; the bisect uses it instead of an
+eye.
+
+For each enabled `Behaviour` on the preview camera: disable it, `camera.Render()` by hand, count the
+part-transparent cells, put it back. Then all of them off at once. One raid, one table:
+
+```
+bisect, everything on: 217 solid, 143 part-transparent
+bisect, without Undithering: ... (-N)
+bisect, without LightSwitcherOverkill: ...
+bisect, without Antialiasing: ...
+bisect, without PrismEffects: ...
+bisect, without StreamingController: ...
+bisect, without any effect: ...
+```
+
+- **One line collapses the count** -- that effect draws the band, and the fix is to add its name to
+  `Simplified()`, which already records and restores everything it switches off.
+- **"without any effect" stays near 143** -- no effect is involved, and the band is the character's
+  own 69 renderers writing partial alpha into an ARGB32 target. The hunt moves to their materials,
+  which is the one branch this probe cannot close by itself.
+
+`camera.Render()` is a full render into the camera's own target with image effects included, so
+each variant is measured the way the screen would have shown it. Every state goes back in a
+`finally` and the camera is rendered once more afterwards, because this runs on a live screen with
+the player looking at it.
 
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
-`path.StartsWith(mine)` with both sides quoted: `'A/B'` is **not** a prefix of `'A/B/C'`, because the
-closing quote sits exactly where the separator goes. Every one of the character's own 174 renderers
-would have been reported as coming from outside the preview, and `N` -- the one number the probe
-exists to print -- would have been nonsense. Fixed by comparing against the path with its closing
-quote turned back into a `/`, plus an equality check for the root.
-
-Worth recording as the fourth instance of the same class of mistake in this hunt: the probe was
-right about *where* to look and wrong in a detail that would have cost the raid anyway.
+`path.StartsWith(mine)` with both sides quoted: `'A/B'` is **not** a prefix of `'A/B/C'`, because
+the closing quote sits exactly where the separator goes. Every one of the character's own renderers
+would have been reported as coming from outside the preview, and the 0 above would have been a
+number in the hundreds. Fixed before the raid, which is what makes that 0 worth trusting.
 
 #### Three probe bugs, because they each cost a raid
 
@@ -1769,11 +1781,14 @@ write-up, everything ruled out and the next step, is in **THE DARK SHAPE BEHIND 
 HERE** above. Short version: it is inside the preview render texture, it is not post-processing, and
 it cannot be a shadow on the backdrop because the backdrop is a different camera's render.
 
-Four probes are now built and waiting on one raid with **Report the screen layout** on:
-`ReportPreviewLayer` (renderers on the preview camera's layer from outside `PlayerModelView`, and
-its prefix bug fixed), `ReportRenderTextureAuthors` (**the new one, and the best bet** -- other
-cameras writing into the same render texture), `ReportShadowComponents` (scene-wide, by type name),
-and the fields of `Undithering` and `LightSwitcherOverkill`.
+Those four probes have now run. All three sweeps came back **0** -- no external geometry on the
+layer, no second camera on the target, no live `MaskAndShadow` anywhere -- which leaves the band
+being drawn by the one camera that owns the texture, out of the character's own renderers. The
+correction that came out of it is the useful part: **post-processing was never actually ruled out**,
+because `Simplified()` has never contained `Undithering` or `LightSwitcherOverkill` and both are
+enabled on that camera. `ReportPreviewBisect` is built and waiting on the next raid; it disables
+each effect in turn, re-renders, and counts the part-transparent cells, so the answer is a table
+rather than an opinion.
 
 **Names on the countdown were already wrong.** `Player Name Panel/Name` is in the dump this was
 written from and is not in the running build: the first run logged `not found: Player Name
@@ -1781,8 +1796,12 @@ Panel/Name` and left the corner stock. `LabelsUnder` now sorts a panel's labels 
 takes the big one and the next, which survives a rename where a path does not. The names it finds
 are logged, so the next build's are not hunted for.
 
-**Back does not return to the menu.** The abort fires -- the report ends `cancel-requested` -- but
-there is no `loading-screen-disabled` event at all, so the screen never closes. `ScreenLayout` is
+**Back does not return to the menu.** Confirmed again on 2026-09-18: the abort fires, the report
+ends `cancel-requested`, and there is no `loading-screen-disabled` line anywhere in the log, so
+`ScreenClosed` never runs and the screen is never disabled. The player describes the symptom as
+"it reverts back to the default loading screen", and that is exactly what the two facts predict
+together: `Finish` restores the staging in its `finally`, which takes the art down, while the
+screen object itself stays up -- so what is left on screen is the stock deploy screen. `ScreenLayout` is
 the prime suspect: it re-anchors `Back Button Panel`, which carries a HorizontalLayoutGroup, a
 ContentSizeFitter and a LayoutElement, and hides four objects the game may expect. One run with
 **Rearrange the screen = false** splits it.

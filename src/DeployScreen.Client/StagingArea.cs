@@ -1588,6 +1588,7 @@ namespace DeployScreen.Client
 
                     ReportPreviewEmptiness(camera);
                     ReportRenderTextureAuthors(camera);
+                    ReportPreviewBisect(camera);
                 }
 
                 // 3. Lights from anywhere that can see the preview's layer. The ones under the
@@ -2050,24 +2051,11 @@ namespace DeployScreen.Client
             var target = camera.targetTexture;
             if (target == null) return;
 
-            const int Wide = 78;
-            const int Tall = 30;
-
-            var was = RenderTexture.active;
-            RenderTexture small = null;
-            Texture2D read = null;
+            var pixels = SamplePreview(target);
+            if (pixels == null) return;
 
             try
             {
-                small = RenderTexture.GetTemporary(Wide, Tall, 0, RenderTextureFormat.ARGB32);
-                Graphics.Blit(target, small);
-
-                RenderTexture.active = small;
-                read = new Texture2D(Wide, Tall, TextureFormat.RGBA32, false);
-                read.ReadPixels(new Rect(0f, 0f, Wide, Tall), 0, 0, false);
-                read.Apply(false, false);
-
-                var pixels = read.GetPixels32();
 
                 DeployScreenPlugin.Log.LogInfo(
                     "[DeployScreen] preview render, alpha map ("
@@ -2079,13 +2067,13 @@ namespace DeployScreen.Client
 
                 // Top row first: texture rows run bottom-up and a map printed that way is upside
                 // down, which is exactly the kind of small confusion this is meant to remove.
-                for (var y = Tall - 1; y >= 0; y--)
+                for (var y = MapTall - 1; y >= 0; y--)
                 {
-                    var row = new StringBuilder(Wide);
+                    var row = new StringBuilder(MapWide);
 
-                    for (var x = 0; x < Wide; x++)
+                    for (var x = 0; x < MapWide; x++)
                     {
-                        var a = pixels[y * Wide + x].a / 255f;
+                        var a = pixels[y * MapWide + x].a / 255f;
 
                         if (a >= 0.90f) { row.Append('#'); solid++; }
                         else if (a >= 0.50f) { row.Append('*'); partial++; }
@@ -2105,13 +2093,174 @@ namespace DeployScreen.Client
             catch (Exception error)
             {
                 DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] could not print the preview render: " + error.Message);
+            }
+        }
+
+        private const int MapWide = 78;
+        private const int MapTall = 30;
+
+        /// <summary>
+        /// The preview render downscaled on the GPU to the size of a paragraph and read back.
+        /// A kilobyte off the card rather than the fifty megabytes the full target would be, and
+        /// the downscale is what makes a soft band show up as a run of cells rather than noise.
+        /// </summary>
+        private static Color32[] SamplePreview(RenderTexture target)
+        {
+            if (target == null) return null;
+
+            var was = RenderTexture.active;
+            RenderTexture small = null;
+            Texture2D read = null;
+
+            try
+            {
+                small = RenderTexture.GetTemporary(MapWide, MapTall, 0, RenderTextureFormat.ARGB32);
+                Graphics.Blit(target, small);
+
+                RenderTexture.active = small;
+                read = new Texture2D(MapWide, MapTall, TextureFormat.RGBA32, false);
+                read.ReadPixels(new Rect(0f, 0f, MapWide, MapTall), 0, 0, false);
+                read.Apply(false, false);
+
+                return read.GetPixels32();
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogInfo(
                     "[DeployScreen] could not read the preview render: " + error.Message);
+                return null;
             }
             finally
             {
                 RenderTexture.active = was;
                 if (small != null) RenderTexture.ReleaseTemporary(small);
                 if (read != null) UnityEngine.Object.Destroy(read);
+            }
+        }
+
+        /// <summary>The same sample as the map, counted instead of drawn.</summary>
+        private static bool CountPreview(RenderTexture target, out int solid, out int partial)
+        {
+            solid = 0;
+            partial = 0;
+
+            var pixels = SamplePreview(target);
+            if (pixels == null) return false;
+
+            foreach (var pixel in pixels)
+            {
+                var a = pixel.a / 255f;
+
+                if (a >= 0.90f) solid++;
+                else if (a >= 0.02f) partial++;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Which effect on the preview camera draws the band, settled by removing them one at a
+        /// time and measuring rather than by looking.
+        ///
+        /// Two things forced this. The first is that "it is not post-processing" was never true.
+        /// The run that established it switched off Antialiasing, PrismEffects and
+        /// AmbientOcclusion -- and Simplified(), the list that decides what goes off, has never
+        /// contained Undithering or LightSwitcherOverkill, both of which sit on this camera and
+        /// are both enabled. Two image effects were ruled out without ever being switched off.
+        ///
+        /// The second is that every verdict in this hunt has been a person looking at a
+        /// screenshot and saying the shape was unchanged. The alpha map gives a number instead --
+        /// how many cells are part-transparent -- and a number can be compared across variants
+        /// within one raid without anyone having to decide what "unchanged" means.
+        ///
+        /// So: measure, then for each effect disable it, render the camera by hand, measure
+        /// again, put it back. The effect whose removal collapses the part-transparent count is
+        /// the one drawing the band. The last line disables all of them at once; if the count
+        /// survives that, no effect is involved and the band is the character's own materials,
+        /// which is the other half of the answer and costs nothing extra to get.
+        ///
+        /// camera.Render() is a full render into the camera's own target, image effects included,
+        /// so each variant is measured the way the screen would have shown it. Every state goes
+        /// back in a finally, and the camera is rendered once more afterwards, because this runs
+        /// on a live screen with the player looking at it.
+        /// </summary>
+        private static void ReportPreviewBisect(Camera camera)
+        {
+            var target = camera.targetTexture;
+            if (target == null) return;
+
+            var effects = new List<Behaviour>();
+
+            foreach (var component in camera.GetComponents<Component>())
+            {
+                if (component == null || component is Camera) continue;
+
+                var behaviour = component as Behaviour;
+                if (behaviour != null && behaviour.enabled) effects.Add(behaviour);
+            }
+
+            if (effects.Count == 0) return;
+
+            var state = new bool[effects.Count];
+            for (var i = 0; i < effects.Count; i++) state[i] = effects[i].enabled;
+
+            try
+            {
+                int solid, partial;
+
+                camera.Render();
+                if (!CountPreview(target, out solid, out partial)) return;
+
+                var baseline = partial;
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] bisect, everything on: " + solid + " solid, "
+                    + partial + " part-transparent");
+
+                foreach (var one in effects)
+                {
+                    one.enabled = false;
+                    camera.Render();
+                    var got = CountPreview(target, out solid, out partial);
+                    one.enabled = true;
+
+                    if (!got) continue;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] bisect, without " + one.GetType().Name + ": "
+                        + solid + " solid, " + partial + " part-transparent ("
+                        + (partial - baseline).ToString("+0;-0;0") + ")");
+                }
+
+                foreach (var one in effects) one.enabled = false;
+
+                camera.Render();
+
+                if (CountPreview(target, out solid, out partial))
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] bisect, without any effect: " + solid + " solid, "
+                        + partial + " part-transparent ("
+                        + (partial - baseline).ToString("+0;-0;0")
+                        + "). Still near the baseline means the band is not an effect at all and"
+                        + " the character's own materials are what is left.");
+                }
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not bisect the preview effects: " + error.Message);
+            }
+            finally
+            {
+                for (var i = 0; i < effects.Count; i++)
+                {
+                    try { if (effects[i] != null) effects[i].enabled = state[i]; }
+                    catch { }
+                }
+
+                try { camera.Render(); } catch { }
             }
         }
 
