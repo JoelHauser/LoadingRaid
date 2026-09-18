@@ -1595,6 +1595,7 @@ namespace DeployScreen.Client
                     ReportPreviewBisect(camera);
                     ReportRendererBisect(camera, view);
                     ReportAlphaProfile(camera);
+                    ReportPlateauOwner(camera, view);
                 }
 
                 // 3. Lights from anywhere that can see the preview's layer. The ones under the
@@ -2672,6 +2673,20 @@ namespace DeployScreen.Client
 
                 DeployScreenPlugin.Log.LogInfo(
                     "[DeployScreen] alpha right of the silhouette, 0-255: " + out_);
+
+                // What colour the half-transparent part is, which decides what it does to the
+                // picture underneath: black at half alpha darkens the backdrop by half, and that
+                // is the complaint. Sampled inside the plateau rather than at its edge.
+                var inside = right + 64;
+
+                if (inside < pixels.Length)
+                {
+                    var p = pixels[inside];
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] the plateau at x=" + inside + " is rgba "
+                        + p.r + "," + p.g + "," + p.b + "," + p.a);
+                }
                 DeployScreenPlugin.Log.LogInfo(
                     "[DeployScreen] alpha left of the silhouette, 0-255: " + back);
             }
@@ -2685,6 +2700,164 @@ namespace DeployScreen.Client
                 RenderTexture.active = was;
                 if (line != null) UnityEngine.Object.Destroy(line);
             }
+        }
+
+        /// <summary>
+        /// Which renderer draws the half-transparent plateau, measured on the plateau itself.
+        ///
+        /// The profile settled that it is real: alpha sits at exactly 127 -- half -- for more than
+        /// a hundred pixels to the right of the silhouette and reaches zero somewhere before 512,
+        /// while the left side is down to 1 within two pixels. The target reports mips=False, so
+        /// this is not the downscale smearing anything; it is in the render.
+        ///
+        /// A flat 127 is the shape of the answer. A blur produces a gradient, and this is a
+        /// plateau -- something is filling a region with a constant half alpha, on one side only.
+        ///
+        /// The group bisect could not name it because it counted cells on the coarse map, where a
+        /// plateau and an ordinary soft edge both read as ":" and the signal was buried in the
+        /// character's own outline. So this counts the plateau directly -- pixels on the widest row
+        /// holding a middling alpha -- and takes the renderers one at a time rather than in shader
+        /// families, because 42 renders of a menu that is already stalling is a cheap way to stop
+        /// guessing.
+        /// </summary>
+        private static void ReportPlateauOwner(Camera camera, Transform view)
+        {
+            var target = camera.targetTexture;
+            if (target == null) return;
+
+            var coarse = SamplePreview(target);
+            if (coarse == null) return;
+
+            var best = -1;
+            var most = 0;
+
+            for (var y = 0; y < MapTall; y++)
+            {
+                var count = 0;
+
+                for (var x = 0; x < MapWide; x++)
+                {
+                    if (coarse[y * MapWide + x].a >= 230) count++;
+                }
+
+                if (count <= most) continue;
+
+                most = count;
+                best = y;
+            }
+
+            if (best < 0) return;
+
+            var row = (int)((best + 0.5f) * target.height / MapTall);
+            if (row < 0) row = 0;
+            if (row > target.height - 1) row = target.height - 1;
+
+            var renderers = new List<Renderer>();
+
+            foreach (var renderer in view.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null || !renderer.enabled) continue;
+                if (!renderer.gameObject.activeInHierarchy) continue;
+
+                renderers.Add(renderer);
+            }
+
+            if (renderers.Count == 0) return;
+
+            try
+            {
+                camera.Render();
+
+                var baseline = Plateau(target, row);
+                if (baseline < 0) return;
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] plateau on row " + row + ": " + baseline
+                    + " pixel(s) at a middling alpha, across " + renderers.Count + " renderer(s)");
+
+                foreach (var renderer in renderers)
+                {
+                    renderer.enabled = false;
+                    camera.Render();
+                    var now = Plateau(target, row);
+                    renderer.enabled = true;
+
+                    if (now < 0 || baseline - now < 16) continue;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] plateau, without " + Describe(renderer.gameObject)
+                        + " (" + Shader(renderer) + "): " + now + " ("
+                        + (now - baseline).ToString("+0;-0;0") + ")");
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] plateau: every renderer whose removal took at least 16 pixels"
+                    + " off it is above. Nothing listed means no single renderer owns it.");
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not find the plateau's owner: " + error.Message);
+            }
+            finally
+            {
+                foreach (var renderer in renderers)
+                {
+                    try { if (renderer != null) renderer.enabled = true; }
+                    catch { }
+                }
+
+                try { camera.Render(); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// How many pixels on one row hold an alpha that is neither the character nor the empty
+        /// surround. 80 to 180 brackets the 127 the profile found while excluding both ends.
+        /// </summary>
+        private static int Plateau(RenderTexture target, int row)
+        {
+            var was = RenderTexture.active;
+            Texture2D line = null;
+
+            try
+            {
+                RenderTexture.active = target;
+                line = new Texture2D(target.width, 1, TextureFormat.RGBA32, false);
+                line.ReadPixels(new Rect(0f, row, target.width, 1f), 0, 0, false);
+                line.Apply(false, false);
+
+                var count = 0;
+
+                foreach (var pixel in line.GetPixels32())
+                {
+                    if (pixel.a >= 80 && pixel.a <= 180) count++;
+                }
+
+                return count;
+            }
+            catch
+            {
+                return -1;
+            }
+            finally
+            {
+                RenderTexture.active = was;
+                if (line != null) UnityEngine.Object.Destroy(line);
+            }
+        }
+
+        /// <summary>The first shader a renderer draws with, for a log line.</summary>
+        private static string Shader(Renderer renderer)
+        {
+            foreach (var material in renderer.sharedMaterials)
+            {
+                if (material == null || material.shader == null) continue;
+
+                return material.shader.name;
+            }
+
+            return "none";
         }
 
         /// <summary>

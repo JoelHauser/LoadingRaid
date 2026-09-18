@@ -1804,6 +1804,67 @@ Fixed twice over: every component is printed whatever it is, and `ListenForPress
 properties and fields. Every click event in every UI library derives from it whatever it is named,
 so this finds the game's button where looking for `onClick` did not.
 
+#### The profile ran: the halo is real, and it is a flat half
+
+```
+preview target: 5420x2464 ARGB32 mips=False filter=Bilinear aa=1
+alpha profile, row 616 of 2464: solid from x=1837 to x=2843
+alpha right of the silhouette, 0-255: +1=164, +2=128, +4=127, +8=127, +16=127,
+                                      +32=127, +64=127, +128=127, +256=35, +512=0
+alpha left  of the silhouette, 0-255: -1=73, -2=1, -4=1, -8=1, -16=1, -32=0, ...
+```
+
+**`mips=False`.** The downscale was not lying and the measurement was sound -- the worry that four
+sessions had been spent on an artefact of the probe was unfounded, and it was worth one probe to
+retire it.
+
+The band is real, and the number that matters is **127**. Alpha sits at exactly half for more than a
+hundred pixels to the right of the silhouette, falls to 35 by +256 and 0 by +512, while the left
+side is down to 1 within two pixels. Perfectly one-sided.
+
+**A flat 127 is not a blur.** A blur gives a gradient; this is a plateau. Something fills a region
+with a constant half alpha on one side of the character, and half alpha in black over the backdrop
+is a 50% darkening, which is exactly the complaint. 0.5 is also, for the record, `ShadowStrength` --
+though that component is disabled, zeroed, and cleared by the effect bisect, so the number is a
+coincidence worth noting and not a lead.
+
+`ReportPlateauOwner` measures the plateau itself -- pixels on the widest row holding a middling
+alpha -- and takes the renderers **one at a time**, all 42 of them. The group bisect could not name
+it because it counted cells on the coarse map, where a plateau and an ordinary soft edge both read
+as `:` and the signal sat inside the character's own outline. `ReportAlphaProfile` also now prints
+the plateau's colour, because black at half alpha and white at half alpha do opposite things to the
+picture underneath.
+
+#### Back works. It always did, once it is there to click
+
+```
+back: '...Back Button Panel/BackButton' active=False corners (2764.27, 115.20) to (3030.93, 171.73)
+back: component DefaultUIButton enabled=True
+back: listening on DefaultUIButton.OnClick
+back: DefaultUIButton.OnMouseOver fired
+loading report (cancel-requested)
+back: DefaultUIButton.OnClick fired
+```
+
+The press lands, the abort fires, and it happened **twice** in that session -- two
+`cancel-requested` reports, two raids cancelled, so the player got back to the menu both times.
+`cancel-requested` is logged before our listener because the Harmony patch on `AbortMatching` runs
+ahead of a listener added afterwards; that ordering is not a bug.
+
+**`active=False` is the find.** At the 4s probe the BackButton GameObject is inactive -- the game
+brings it up later in the screen's life. That is the whole of "I clicked Back and nothing
+happened": there was nothing there yet. It is stock behaviour, not ours. `ScreenLayout` only
+`Place`s `Back Button Panel`; the four things it hides are `CaptionsHolder/MainCaption`, `Logo`,
+`Location Name Panel/Background` and `Loader`, and the back button is not among them.
+
+What is still wrong is narrower than it looked. **`loading-screen-disabled` is still never logged**,
+yet the screen plainly does close -- a second raid was started after the first cancel. So the screen
+closes by a path that never disables the object `LoadingPerformance.OnDisable` is watching, our
+`ScreenClosed` never runs, and the restore happens only through `Finish`'s `finally`. That is what
+puts the stock deploy screen on screen for a moment on the way out, which is what the player
+described as reverting to the default loading screen. The hook is on the wrong object; finding the
+right one is the fix.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
@@ -1986,11 +2047,16 @@ actually been tested, `Undithering` and `LightSwitcherOverkill` included.
 band -- removing the eight decal renderers takes 173 of 208 solid cells but only 41 of 135 part
 cells, so the part-transparent region does not scale with how much character is present.
 
-Which is where the hunt turns on itself. Every conclusion so far rests on a 78x30 downscale of a
-5420x2464 render, and **nobody has ever checked whether that downscale is telling the truth**.
-`ReportAlphaProfile` reads one row at native width and prints the falloff on both sides. If it drops
-to zero within a pixel or two, the band is an artefact of the probe, four sessions have been spent
-on it, and the dust in front of the backdrop becomes the only candidate left.
+`ReportAlphaProfile` has since checked the instrument and cleared it: `mips=False`, and the band is
+real. Alpha holds at **exactly 127** for more than a hundred pixels to the right of the silhouette
+and is down to 1 within two pixels on the left. A flat half, one-sided -- a fill, not a blur, and a
+half-alpha black over the backdrop is the 50% darkening being complained about. `ReportPlateauOwner`
+now measures that plateau directly and hides the 42 renderers one at a time to name the one that
+draws it.
+
+Back is answered: the press lands and the abort fires, and the reason it sometimes does nothing is
+that the button is `active=False` for the first seconds of the screen. What remains is that
+`ScreenClosed` never runs -- see **Back works** above.
 
 **Names on the countdown were already wrong.** `Player Name Panel/Name` is in the dump this was
 written from and is not in the running build: the first run logged `not found: Player Name
