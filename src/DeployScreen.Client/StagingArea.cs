@@ -1422,6 +1422,10 @@ namespace DeployScreen.Client
             ReportPreviewDarkness(view);
             ReportBackdrop();
 
+            // Once, not at every sample: the press listener would otherwise be added twice and
+            // report one click as two.
+            if (_darknessReports == 1) ReportBackButton(screen);
+
             DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of darkness ---");
         }
 
@@ -1589,6 +1593,7 @@ namespace DeployScreen.Client
                     ReportPreviewEmptiness(camera);
                     ReportRenderTextureAuthors(camera);
                     ReportPreviewBisect(camera);
+                    ReportRendererBisect(camera, view);
                 }
 
                 // 3. Lights from anywhere that can see the preview's layer. The ones under the
@@ -2261,6 +2266,243 @@ namespace DeployScreen.Client
                 }
 
                 try { camera.Render(); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Which of the character's own renderers put the band in the alpha, grouped by the shader
+        /// they draw with.
+        ///
+        /// ReportPreviewBisect answered the question it was built for, and the answer was none of
+        /// them: every effect on the preview camera off, one at a time and then all at once, moved
+        /// the part-transparent count by at most one cell out of 135. So no image effect draws the
+        /// band. Nothing on the layer draws into the target from outside, no second camera writes
+        /// to it, and MaskAndShadow is dead. What is left is the geometry pass, which is the 69
+        /// renderers that are the character.
+        ///
+        /// Grouped by shader rather than taken one at a time, and that is the whole point. If one
+        /// renderer were responsible, hiding it would show as a large drop -- but a band that
+        /// follows the entire silhouette is far more likely to be how a whole family of materials
+        /// writes alpha into an ARGB32 target, and in that case each renderer on its own moves the
+        /// count by a cell or two and nothing stands out of the noise. A shader group moves it by
+        /// everything that family is responsible for at once.
+        ///
+        /// The last line is the one to read first. With every character renderer off the target
+        /// should be empty; anything still part-transparent there is drawn by something that is
+        /// not the character and was not found by any sweep so far.
+        /// </summary>
+        private static void ReportRendererBisect(Camera camera, Transform view)
+        {
+            var target = camera.targetTexture;
+            if (target == null) return;
+
+            var groups = new Dictionary<string, List<Renderer>>();
+            var all = new List<Renderer>();
+
+            foreach (var renderer in view.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null || !renderer.enabled) continue;
+                if (!renderer.gameObject.activeInHierarchy) continue;
+
+                var shader = "none";
+
+                foreach (var material in renderer.sharedMaterials)
+                {
+                    if (material == null || material.shader == null) continue;
+                    shader = material.shader.name;
+                    break;
+                }
+
+                List<Renderer> group;
+                if (!groups.TryGetValue(shader, out group)) groups[shader] = group = new List<Renderer>();
+
+                group.Add(renderer);
+                all.Add(renderer);
+            }
+
+            if (all.Count == 0) return;
+
+            try
+            {
+                int solid, partial;
+
+                camera.Render();
+                if (!CountPreview(target, out solid, out partial)) return;
+
+                var baseline = partial;
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] renderers, all " + all.Count + " on: " + solid + " solid, "
+                    + partial + " part-transparent");
+
+                foreach (var pair in groups)
+                {
+                    foreach (var renderer in pair.Value) renderer.enabled = false;
+
+                    camera.Render();
+                    var got = CountPreview(target, out solid, out partial);
+
+                    foreach (var renderer in pair.Value) renderer.enabled = true;
+
+                    if (!got) continue;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] renderers, without " + pair.Value.Count + "x " + pair.Key
+                        + ": " + solid + " solid, " + partial + " part-transparent ("
+                        + (partial - baseline).ToString("+0;-0;0") + ")");
+                }
+
+                foreach (var renderer in all) renderer.enabled = false;
+
+                camera.Render();
+
+                if (CountPreview(target, out solid, out partial))
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] renderers, without the character at all: " + solid
+                        + " solid, " + partial + " part-transparent. Anything left here is drawn"
+                        + " into the target by something that is not the character.");
+                }
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not bisect the preview renderers: " + error.Message);
+            }
+            finally
+            {
+                foreach (var renderer in all)
+                {
+                    try { if (renderer != null) renderer.enabled = true; }
+                    catch { }
+                }
+
+                try { camera.Render(); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Why Back does nothing, asked of the button rather than of the screen around it.
+        ///
+        /// Two raids, two different failures. With Rearrange the screen on, the click reached the
+        /// game: the report ended cancel-requested, and what failed after that was the screen
+        /// never closing. With it off, nothing fired at all -- no abort, no report, and the raid
+        /// went ahead. Rearranging is therefore not what breaks the abort, and the question splits
+        /// in two: does the click reach the button, and does the button's handler do anything.
+        ///
+        /// A listener on onClick answers the first half the moment it is pressed. The rest is
+        /// everything that can eat a UI click without leaving a trace: the rect the button
+        /// occupies in screen pixels, whether it is active and interactable, and every CanvasGroup
+        /// above it -- one with blocksRaycasts off, or alpha at zero, anywhere up the chain, takes
+        /// the click silently and leaves the button looking perfectly normal on screen. That is
+        /// the classic cause of exactly this symptom and nothing has looked for it yet.
+        ///
+        /// Through reflection because this project references the engine's UIModule and not the
+        /// game's UI library, which is the same rule the rest of the file keeps.
+        /// </summary>
+        private static void ReportBackButton(Component screen)
+        {
+            try
+            {
+                Transform button = null;
+
+                foreach (var candidate in screen.GetComponentsInChildren<Transform>(true))
+                {
+                    if (candidate == null || candidate.name != "BackButton") continue;
+
+                    button = candidate;
+                    break;
+                }
+
+                if (button == null)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back: nothing called BackButton under the screen");
+                    return;
+                }
+
+                var rect = button as RectTransform;
+
+                if (rect != null)
+                {
+                    var corners = new Vector3[4];
+                    rect.GetWorldCorners(corners);
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back: " + Describe(button.gameObject)
+                        + " active=" + button.gameObject.activeInHierarchy
+                        + " corners " + corners[0] + " to " + corners[2]
+                        + " on a " + UnityEngine.Screen.width + "x" + UnityEngine.Screen.height
+                        + " screen");
+                }
+
+                // Anything on the button that can refuse a click. Found by having an interactable
+                // property rather than by type, because Button and Selectable live in the UI
+                // library this assembly does not reference.
+                foreach (var component in button.GetComponents<Component>())
+                {
+                    if (component == null) continue;
+
+                    var type = component.GetType();
+                    var interactable = type.GetProperty("interactable");
+                    if (interactable == null) continue;
+
+                    var behaviour = component as Behaviour;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back: " + type.Name
+                        + " enabled=" + (behaviour == null ? "-" : behaviour.enabled.ToString())
+                        + " interactable=" + interactable.GetValue(component, null));
+
+                    ListenForPress(component, type);
+                }
+
+                for (var t = button; t != null; t = t.parent)
+                {
+                    var group = t.GetComponent<CanvasGroup>();
+                    if (group == null) continue;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back: CanvasGroup on " + Describe(t.gameObject)
+                        + " alpha=" + group.alpha.ToString("0.00")
+                        + " interactable=" + group.interactable
+                        + " blocksRaycasts=" + group.blocksRaycasts);
+                }
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not read the back button: " + error.Message);
+            }
+        }
+
+        /// <summary>A line in the log the moment the button is actually pressed, or nothing.</summary>
+        private static void ListenForPress(Component button, Type type)
+        {
+            try
+            {
+                var property = type.GetProperty("onClick");
+                if (property == null) return;
+
+                var click = property.GetValue(button, null);
+                if (click == null) return;
+
+                var add = click.GetType().GetMethod("AddListener");
+                if (add == null) return;
+
+                add.Invoke(click, new object[]
+                {
+                    new UnityEngine.Events.UnityAction(() => DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back: the button fired"))
+                });
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] back: listening on " + type.Name + ".onClick");
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] back: could not listen for the press: " + error.Message);
             }
         }
 

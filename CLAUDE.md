@@ -1610,6 +1610,104 @@ each variant is measured the way the screen would have shown it. Every state goe
 `finally` and the camera is rendered once more afterwards, because this runs on a live screen with
 the player looking at it.
 
+#### The bisect ran, twice in one session, and it is none of them
+
+`WatchForPreview` samples at 4s and 12s, so one raid produces two tables. Both agree:
+
+```
+bisect, everything on:             208 solid, 135 part-transparent
+bisect, without Undithering:       208 solid, 135 part-transparent  (0)
+bisect, without LightSwitcherOverkill: 208 solid, 135 part-transparent  (0)
+bisect, without Antialiasing:      208 solid, 135 part-transparent  (0)
+bisect, without PrismEffects:      208 solid, 135 part-transparent  (0)
+bisect, without StreamingController: 208 solid, 135 part-transparent (0)
+bisect, without any effect:        208 solid, 135 part-transparent  (0)
+```
+
+The second sample, on a different frame with a different weapon loaded, reads 188/126 and moves by
+one cell when `Antialiasing` goes -- which is the proof the measurement is live rather than stuck,
+and also the size of the largest effect any of them has.
+
+**So post-processing really is ruled out now, and this time it was tested.** Every effect on the
+camera, individually and all together, leaves the band exactly where it is. Combined with the three
+sweeps that came back 0, the band is in the **geometry pass**: it is drawn by the character's own
+renderers into the camera's own target, and nothing else is involved.
+
+#### `ReportRendererBisect`, grouped by shader
+
+The same technique one level down. If a single renderer were responsible, hiding it would show as a
+large drop -- but a band that follows the entire silhouette is far more likely to be how a whole
+family of materials writes alpha into an ARGB32 target, and in that case each renderer on its own
+moves the count by a cell or two and nothing stands out of the noise. So the renderers are grouped
+by shader and a whole family goes dark at once.
+
+The last line is the one to read first:
+
+```
+renderers, without the character at all: N solid, M part-transparent
+```
+
+With every character renderer off, that target should be empty. **Anything still part-transparent
+there is drawn by something that is not the character** -- and would mean the three sweeps missed
+it, which is worth knowing before another round is spent on materials.
+
+#### WTT Menu Overhaul: ruled out for the band, not implicated in Back
+
+`MoxoPixel-MenuOverhaul 1.3.0` (sp-mod.com/mod/1775, WTT - Menu Overhaul, MoxoPixel and
+GrooveypenguinX; GUID `com.moxopixel.menuoverhaul`). It is in every log of this hunt, and it warns
+constantly while the deploy screen is up:
+
+```
+[Layout] EnvironmentUISceneFactory GameObject not found in Environment UI.
+[Layout] UpdateLayoutElements - Could not find environment objects.
+[Layout] DisableCameraMovement - Essential EnvironmentObjects not found.
+```
+
+Those are real and they are ours: the staging area reports `scene-objects-hidden=2`, and
+MenuOverhaul is looking for the menu environment while we have it hidden. Worth knowing, harmless
+so far, and it would explain any complaint that the main menu looks wrong after a cancelled raid.
+
+Scanned for what it touches -- the assembly has no reference to `TimeHasCome`, `BackButton`,
+`Abort`, `WeaponPreview` or `MaskAndShadow`. What it does have is
+`AddPlayerModel - Failed to create clonedPlayerModelView`: it **clones a PlayerModelView onto the
+main menu screen**, which is the one thing that could plausibly have put a second character render
+in play.
+
+It did not. `ReportRenderTextureAuthors` found no other camera on our target, `ReportPreviewLayer`
+found nothing on the layer from outside, and the scene-wide `MaskAndShadow` sweep turned up eight,
+all on stock paths, none belonging to a clone. Its player model draws into its own texture on its
+own screen. **MenuOverhaul is not what darkens the PMC**, and it does not patch the back button
+either.
+
+#### Back: two different failures, and rearranging is not the cause
+
+| run | Rearrange the screen | what happened |
+| --- | --- | --- |
+| 18:02Z | `true` | `cancel-requested` fired, no `loading-screen-disabled`, screen stayed up showing the stock deploy screen |
+| 18:10Z | `false` | **nothing fired at all** -- no abort, no report, and the raid went ahead |
+
+That kills the standing theory. `ScreenLayout` was the prime suspect because it re-anchors
+`Back Button Panel` and hides four objects the game may expect -- but with it switched off the
+button gets *worse*, not better. Rearranging is not what breaks the abort.
+
+Note also from the layout dump, in both runs: `Back Button Panel @0,40 0x0`, with its child
+`BackButton @0,0 200x42`. The panel measures **zero by zero** while the button inside it is a normal
+size, and the panel carries a HorizontalLayoutGroup, a ContentSizeFitter and a LayoutElement. That
+is stock state, unchanged by anything this mod does, but it is the kind of thing that decides
+whether a click lands.
+
+So `ReportBackButton`, which asks the button instead of the screen: it adds a listener to `onClick`
+that logs the instant the button is pressed, and prints the rect it occupies in screen pixels,
+whether it is active and interactable, and **every CanvasGroup above it** -- one with
+`blocksRaycasts` off, or `alpha` at zero, anywhere up the chain, swallows the click silently and
+leaves the button looking perfectly normal. Nothing has looked for that yet, and it is the classic
+cause of this exact symptom.
+
+- **`back: the button fired` appears, no abort follows** -- the click lands and the game's own
+  handler is what does nothing.
+- **It never appears** -- the click is not reaching the button, and the rect and CanvasGroup lines
+  printed beside it say why.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
@@ -1781,14 +1879,16 @@ write-up, everything ruled out and the next step, is in **THE DARK SHAPE BEHIND 
 HERE** above. Short version: it is inside the preview render texture, it is not post-processing, and
 it cannot be a shadow on the backdrop because the backdrop is a different camera's render.
 
-Those four probes have now run. All three sweeps came back **0** -- no external geometry on the
-layer, no second camera on the target, no live `MaskAndShadow` anywhere -- which leaves the band
-being drawn by the one camera that owns the texture, out of the character's own renderers. The
-correction that came out of it is the useful part: **post-processing was never actually ruled out**,
-because `Simplified()` has never contained `Undithering` or `LightSwitcherOverkill` and both are
-enabled on that camera. `ReportPreviewBisect` is built and waiting on the next raid; it disables
-each effect in turn, re-renders, and counts the part-transparent cells, so the answer is a table
-rather than an opinion.
+Six probes have now run. The three sweeps came back **0** -- no external geometry on the layer, no
+second camera on the target, no live `MaskAndShadow` anywhere -- and `ReportPreviewBisect` came back
+**0** as well: every effect on the preview camera off, one at a time and then all at once, moves the
+part-transparent count by at most one cell. Post-processing is ruled out properly this time, having
+actually been tested, `Undithering` and `LightSwitcherOverkill` included.
+
+That leaves the geometry pass and nothing else, so `ReportRendererBisect` is built and waiting: the
+character's renderers grouped by shader, each family hidden in turn, and one last pass with the
+character gone entirely. If anything is still part-transparent in that last pass, something outside
+all six probes is drawing into the target and the hunt restarts wider.
 
 **Names on the countdown were already wrong.** `Player Name Panel/Name` is in the dump this was
 written from and is not in the running build: the first run logged `not found: Player Name
@@ -1796,9 +1896,11 @@ Panel/Name` and left the corner stock. `LabelsUnder` now sorts a panel's labels 
 takes the big one and the next, which survives a rename where a path does not. The names it finds
 are logged, so the next build's are not hunted for.
 
-**Back does not return to the menu.** Confirmed again on 2026-09-18: the abort fires, the report
-ends `cancel-requested`, and there is no `loading-screen-disabled` line anywhere in the log, so
-`ScreenClosed` never runs and the screen is never disabled. The player describes the symptom as
+**Back does not return to the menu.** Confirmed on 2026-09-18 with `Rearrange the screen` on: the
+abort fires, the report ends `cancel-requested`, and there is no `loading-screen-disabled` line
+anywhere in the log, so `ScreenClosed` never runs and the screen is never disabled. With
+rearranging **off** the button does not even fire, which rules `ScreenLayout` out as the cause --
+see the table in **Back: two different failures** above. The player describes the symptom as
 "it reverts back to the default loading screen", and that is exactly what the two facts predict
 together: `Finish` restores the staging in its `finally`, which takes the art down, while the
 screen object itself stays up -- so what is left on screen is the stock deploy screen. `ScreenLayout` is
