@@ -1708,6 +1708,102 @@ cause of this exact symptom.
 - **It never appears** -- the click is not reaching the button, and the rect and CanvasGroup lines
   printed beside it say why.
 
+#### The renderer bisect ran: the target holds the character and nothing else
+
+```
+renderers, all 42 on:                                  208 solid, 135 part-transparent
+renderers, without 8x p0/Reflective/Bumped Specular SMap_Decal:  35 solid,  94  (-41)
+renderers, without 23x p0/Reflective/Bumped Specular SMap:      198 solid, 119  (-16)
+renderers, without 7x p0/Reflective/Specular:                   208 solid, 135   (0)
+renderers, without 1x CW FX/BackLens / OpticSight / OpticLens:  208 solid, 135   (0)
+renderers, without 1x none:                                     208 solid, 135   (0)
+renderers, without the character at all:                          0 solid,   0
+```
+
+The last line is the important one. **With the character gone the target is completely empty** --
+0 and 0, on both samples. So nothing whatsoever is drawn into that render texture except the
+character, which closes the last door the six probes left open.
+
+And no shader family owns the band. Removing the eight decal renderers takes 173 of the 208 solid
+cells but only 41 of the 135 part-transparent ones, so 94 part cells survive on 35 solid: the
+part-transparent region does not scale with how much character is present, and it is not one
+family's doing. Hiding things one group at a time cannot separate them any further, because each
+group occludes the others.
+
+#### The measurement itself has never been checked
+
+Which is the thing to fix before spending another raid. Every conclusion in this hunt rests on the
+alpha map, and the alpha map is a **78x30 downscale of a 5420x2464 render** made with
+`Graphics.Blit`. That is a 69x minification, and Blit samples with the source texture's own
+`filterMode`. If the target carries mipmaps, or is filtered trilinear, then "a soft band four or
+five cells wide" may be the downscale smearing the silhouette rather than anything in the render.
+
+Four sessions have been spent on a shape only ever seen through that lens, and nothing has checked
+whether the lens is flat. The asymmetry is the tell that it might not be: the map shows four cells
+of falloff on the right and one on the left, and a symmetric filter cannot produce that -- but
+neither can it be dismissed without looking.
+
+`ReportAlphaProfile` reads **one row of the target at native width**, straight off the card. It
+takes the row the coarse map says is widest, finds the outermost solid pixel on it, and prints the
+alpha at fixed distances outward, both sides, along with the target's `useMipMap`, `filterMode` and
+`antiAliasing`.
+
+```
+preview target: 5420x2464 ARGB32 mips=... filter=... aa=...
+alpha profile, row N of 2464: solid from x=... to x=...
+alpha right of the silhouette, 0-255: +1=..., +2=..., +4=... +512=...
+alpha left of the silhouette, 0-255: -1=..., -2=..., -4=... -512=...
+```
+
+- **Drops 255 to 0 within a pixel or two, both sides** -- there is no halo, the band is the
+  downscale, and four sessions have been chasing an artefact of the probe. The dark shape on screen
+  is then something else entirely, and the dust in front of the backdrop is the only candidate left
+  standing (see below).
+- **Holds a middling value for hundreds of pixels** -- the halo is real, it is about 280 pixels wide
+  in this target, and it is the character's own materials writing alpha, which is where the hunt
+  goes next.
+
+#### The dust, which every backdrop sweep found and dismissed
+
+`ReportBackdrop` has reported the same single line every run:
+
+```
+in front of the art at 7.80u: 1 renderer(s) the backdrop camera can see
+  3.13u 'Environment UI/Common/!dust' size=(10.85, 3.33, 12.02) shader=Custom/LocalDustParticlesLighted
+```
+
+A lit particle volume 10.85 by 3.33 by 12.02 units across, sitting at about 3.1u with the backdrop
+art at 7.8u -- so it is between the camera and the picture, and it fills a large part of the frame.
+Its distance changes between samples (3.13u, then 3.31u) because `SceneDepth` is drifting the
+camera through it, which would read as the shape moving.
+
+Three sweeps have found it and moved on, because the question each time was "is there geometry
+casting a shadow" and a particle system is not that. But the shape in the player's screenshot is a
+soft grey mass with no hard edge, over a bright sky, which is what a lit dust volume looks like.
+If the alpha profile comes back flat, this is the first thing to test.
+
+#### The back-button probe attached nothing, and why
+
+```
+back: 'Menu UI/UI/Matchmaker Time Has Come/Back Button Panel/BackButton' active=True
+      corners (2764.27, 115.20, 0.00) to (3030.93, 189.33, 0.00) on a 3440x1440 screen
+back: CanvasGroup on 'Menu UI/UI/Matchmaker Time Has Come' alpha=1.00 interactable=True blocksRaycasts=True
+```
+
+Two real answers in there: the button **is** on screen, bottom right, at a sane size, and the only
+CanvasGroup above it is fully permissive -- so nothing is swallowing the click that way.
+
+But no `listening on` line and no component lines, because the loop skipped any component without
+an `interactable` property, on the assumption that a button is a Unity `Button`. This one is not.
+From the layout dump it is `DefaultUIButton | DefaultUIButtonAnimation | TweenAnimatedButton |
+HorizontalLayoutGroup | ContentSizeFitter | LayoutElement`, and none of those matched, so nothing
+was hooked and the raid answered nothing about the press.
+
+Fixed twice over: every component is printed whatever it is, and `ListenForPress` now matches on
+**`UnityEventBase`**, the engine's own base class in CoreModule, across public and private
+properties and fields. Every click event in every UI library derives from it whatever it is named,
+so this finds the game's button where looking for `onClick` did not.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
@@ -1885,10 +1981,16 @@ second camera on the target, no live `MaskAndShadow` anywhere -- and `ReportPrev
 part-transparent count by at most one cell. Post-processing is ruled out properly this time, having
 actually been tested, `Undithering` and `LightSwitcherOverkill` included.
 
-That leaves the geometry pass and nothing else, so `ReportRendererBisect` is built and waiting: the
-character's renderers grouped by shader, each family hidden in turn, and one last pass with the
-character gone entirely. If anything is still part-transparent in that last pass, something outside
-all six probes is drawing into the target and the hunt restarts wider.
+`ReportRendererBisect` has now run too. With every character renderer off the target is **0 solid,
+0 part-transparent**: nothing but the character is ever drawn into it. And no shader family owns the
+band -- removing the eight decal renderers takes 173 of 208 solid cells but only 41 of 135 part
+cells, so the part-transparent region does not scale with how much character is present.
+
+Which is where the hunt turns on itself. Every conclusion so far rests on a 78x30 downscale of a
+5420x2464 render, and **nobody has ever checked whether that downscale is telling the truth**.
+`ReportAlphaProfile` reads one row at native width and prints the falloff on both sides. If it drops
+to zero within a pixel or two, the band is an artefact of the probe, four sessions have been spent
+on it, and the dust in front of the backdrop becomes the only candidate left.
 
 **Names on the countdown were already wrong.** `Player Name Panel/Name` is in the dump this was
 written from and is not in the running build: the first run logged `not found: Player Name

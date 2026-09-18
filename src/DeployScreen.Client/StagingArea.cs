@@ -1594,6 +1594,7 @@ namespace DeployScreen.Client
                     ReportRenderTextureAuthors(camera);
                     ReportPreviewBisect(camera);
                     ReportRendererBisect(camera, view);
+                    ReportAlphaProfile(camera);
                 }
 
                 // 3. Lights from anywhere that can see the preview's layer. The ones under the
@@ -2436,23 +2437,32 @@ namespace DeployScreen.Client
                         + " screen");
                 }
 
-                // Anything on the button that can refuse a click. Found by having an interactable
-                // property rather than by type, because Button and Selectable live in the UI
-                // library this assembly does not reference.
+                // Every component on the button, printed whatever it is. The first version of
+                // this skipped any component without an "interactable" property, on the
+                // assumption that a button is a Unity Button -- and this one is not. It is
+                // DefaultUIButton, DefaultUIButtonAnimation and TweenAnimatedButton, none of
+                // which matched, so the loop attached nothing and the raid it was built for
+                // answered nothing. Print first, filter never.
                 foreach (var component in button.GetComponents<Component>())
                 {
                     if (component == null) continue;
 
                     var type = component.GetType();
-                    var interactable = type.GetProperty("interactable");
-                    if (interactable == null) continue;
-
                     var behaviour = component as Behaviour;
+                    var extra = new StringBuilder();
+
+                    var interactable = type.GetProperty("interactable");
+
+                    if (interactable != null)
+                    {
+                        try { Pair(extra, "interactable", interactable.GetValue(component, null)); }
+                        catch { }
+                    }
 
                     DeployScreenPlugin.Log.LogInfo(
-                        "[DeployScreen] back: " + type.Name
+                        "[DeployScreen] back: component " + type.Name
                         + " enabled=" + (behaviour == null ? "-" : behaviour.enabled.ToString())
-                        + " interactable=" + interactable.GetValue(component, null));
+                        + (extra.Length == 0 ? "" : " " + extra));
 
                     ListenForPress(component, type);
                 }
@@ -2476,33 +2486,204 @@ namespace DeployScreen.Client
             }
         }
 
-        /// <summary>A line in the log the moment the button is actually pressed, or nothing.</summary>
+        /// <summary>
+        /// A line in the log the moment the button is actually pressed.
+        ///
+        /// Matched on the base type rather than on the name "onClick", which is what the first
+        /// version did and why it found nothing. UnityEventBase lives in the engine's own
+        /// CoreModule, which this project references, and every click event in every UI library
+        /// derives from it -- Unity's Button, the game's DefaultUIButton, whatever a mod adds --
+        /// whether it is called onClick, OnClick or something else entirely. Private fields are
+        /// included because a game button usually keeps its event in one.
+        /// </summary>
         private static void ListenForPress(Component button, Type type)
         {
+            const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
+            foreach (var property in type.GetProperties(Any))
+            {
+                if (!ClickEvent(property.PropertyType) || !property.CanRead) continue;
+                if (property.GetIndexParameters().Length > 0) continue;
+
+                object held = null;
+                try { held = property.GetValue(button, null); } catch { }
+
+                Listen(held, type.Name + "." + property.Name);
+            }
+
+            foreach (var field in type.GetFields(Any))
+            {
+                if (!ClickEvent(field.FieldType)) continue;
+
+                object held = null;
+                try { held = field.GetValue(button); } catch { }
+
+                Listen(held, type.Name + "." + field.Name);
+            }
+        }
+
+        private static bool ClickEvent(Type type)
+        {
+            return type != null && typeof(UnityEngine.Events.UnityEventBase).IsAssignableFrom(type);
+        }
+
+        /// <summary>
+        /// AddListener is looked up with the no-argument UnityAction overload specifically. A
+        /// UnityEvent that carries a value has a different one, this finds nothing for it, and
+        /// skipping it is right: a click is the event with no argument.
+        /// </summary>
+        private static void Listen(object raised, string what)
+        {
+            if (raised == null) return;
+
             try
             {
-                var property = type.GetProperty("onClick");
-                if (property == null) return;
+                var add = raised.GetType().GetMethod(
+                    "AddListener", new[] { typeof(UnityEngine.Events.UnityAction) });
 
-                var click = property.GetValue(button, null);
-                if (click == null) return;
-
-                var add = click.GetType().GetMethod("AddListener");
                 if (add == null) return;
 
-                add.Invoke(click, new object[]
+                add.Invoke(raised, new object[]
                 {
                     new UnityEngine.Events.UnityAction(() => DeployScreenPlugin.Log.LogInfo(
-                        "[DeployScreen] back: the button fired"))
+                        "[DeployScreen] back: " + what + " fired"))
                 });
 
-                DeployScreenPlugin.Log.LogInfo(
-                    "[DeployScreen] back: listening on " + type.Name + ".onClick");
+                DeployScreenPlugin.Log.LogInfo("[DeployScreen] back: listening on " + what);
             }
             catch (Exception error)
             {
                 DeployScreenPlugin.Log.LogInfo(
-                    "[DeployScreen] back: could not listen for the press: " + error.Message);
+                    "[DeployScreen] back: could not listen on " + what + ": " + error.Message);
+            }
+        }
+
+        /// <summary>
+        /// How the alpha actually falls off beside the character, read at full resolution.
+        ///
+        /// Everything in this hunt rests on the alpha map, and the alpha map is a 78x30 downscale
+        /// of a 5420x2464 render made with Graphics.Blit. That is a 69x minification, and Blit
+        /// samples with the source texture's own filterMode -- so if this target carries mipmaps,
+        /// or is filtered trilinear, the "soft band four or five cells wide" could be the
+        /// downscale spreading the silhouette rather than anything in the render at all. Four
+        /// sessions have been spent on a shape that has only ever been seen through that lens,
+        /// and no probe has checked whether the lens is flat.
+        ///
+        /// So: one row of the target, at native width, straight off the card. Find the row with
+        /// the most solid cells in the coarse map, find the outermost solid pixel on it, and print
+        /// the alpha at fixed distances outward from there. A silhouette with nothing beside it
+        /// drops from 255 to 0 within a pixel or two. A real halo holds a middling value for
+        /// hundreds of pixels, and the band is about 280 pixels wide in this target, so the two
+        /// cases are not close.
+        ///
+        /// Both sides are printed because the band is asymmetric in the map -- four cells right,
+        /// one cell left -- and if that asymmetry is real it is a strong clue on its own, while if
+        /// both sides come back identical the asymmetry was the measurement.
+        /// </summary>
+        private static void ReportAlphaProfile(Camera camera)
+        {
+            var target = camera.targetTexture;
+            if (target == null) return;
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] preview target: " + target.width + "x" + target.height
+                + " " + target.format + " mips=" + target.useMipMap
+                + " filter=" + target.filterMode + " aa=" + target.antiAliasing);
+
+            var coarse = SamplePreview(target);
+            if (coarse == null) return;
+
+            var best = -1;
+            var most = 0;
+
+            for (var y = 0; y < MapTall; y++)
+            {
+                var count = 0;
+
+                for (var x = 0; x < MapWide; x++)
+                {
+                    if (coarse[y * MapWide + x].a >= 230) count++;
+                }
+
+                if (count <= most) continue;
+
+                most = count;
+                best = y;
+            }
+
+            if (best < 0)
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] alpha profile: nothing solid in the render to measure from");
+                return;
+            }
+
+            var row = (int)((best + 0.5f) * target.height / MapTall);
+            if (row < 0) row = 0;
+            if (row > target.height - 1) row = target.height - 1;
+
+            var was = RenderTexture.active;
+            Texture2D line = null;
+
+            try
+            {
+                RenderTexture.active = target;
+                line = new Texture2D(target.width, 1, TextureFormat.RGBA32, false);
+                line.ReadPixels(new Rect(0f, row, target.width, 1f), 0, 0, false);
+                line.Apply(false, false);
+
+                var pixels = line.GetPixels32();
+
+                var left = -1;
+                var right = -1;
+
+                for (var x = 0; x < pixels.Length; x++)
+                {
+                    if (pixels[x].a < 230) continue;
+
+                    if (left < 0) left = x;
+                    right = x;
+                }
+
+                if (left < 0)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] alpha profile: row " + row + " has no solid pixel");
+                    return;
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] alpha profile, row " + row + " of " + target.height
+                    + ": solid from x=" + left + " to x=" + right
+                    + " (the map said this row was the widest)");
+
+                var steps = new[] { 1, 2, 4, 8, 16, 32, 64, 128, 256, 512 };
+                var out_ = new StringBuilder();
+                var back = new StringBuilder();
+
+                foreach (var step in steps)
+                {
+                    var rx = right + step;
+                    var lx = left - step;
+
+                    Pair(out_, "+" + step, rx < pixels.Length ? pixels[rx].a.ToString() : "-");
+                    Pair(back, "-" + step, lx >= 0 ? pixels[lx].a.ToString() : "-");
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] alpha right of the silhouette, 0-255: " + out_);
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] alpha left of the silhouette, 0-255: " + back);
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not read the alpha profile: " + error.Message);
+            }
+            finally
+            {
+                RenderTexture.active = was;
+                if (line != null) UnityEngine.Object.Destroy(line);
             }
         }
 
