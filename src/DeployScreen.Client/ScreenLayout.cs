@@ -29,8 +29,11 @@ namespace DeployScreen.Client
         private const float TopMargin = 0.09f;
         private const float BottomMargin = 0.08f;
 
-        /// <summary>Canvas pixels of menu task bar to keep clear along the bottom edge.</summary>
-        private const float TaskBarHeight = 64f;
+        /// <summary>How far past this screen's own edges a scrim is stretched, in canvas units.</summary>
+        private const float Overhang = 2000f;
+
+        /// <summary>How far past the top or bottom edge a scrim is stretched, in canvas units.</summary>
+        private const float EdgeOverhang = 140f;
 
         private struct Placed
         {
@@ -351,14 +354,25 @@ namespace DeployScreen.Client
             rect.SetParent(root, false);
             rect.anchorMin = top ? new Vector2(0f, 1f - fraction) : new Vector2(0f, 0f);
             rect.anchorMax = top ? new Vector2(1f, 1f) : new Vector2(1f, fraction);
-            rect.offsetMin = Vector2.zero;
-            rect.offsetMax = Vector2.zero;
 
-            // The task bar along the bottom of the menu -- hideout, traders, and whatever tabs
-            // other mods have added to it -- is not part of this screen and is drawn under it.
-            // A scrim that runs to the very bottom edge therefore dims someone else's UI, which
-            // reads as that mod being broken. Lift the band clear of it.
-            if (!top) rect.offsetMin = new Vector2(0f, TaskBarHeight);
+            // Anchored 0..1 of THIS screen, not of the screen. The deploy screen's own rect is
+            // narrower than the canvas -- measured at x 440..3000 on a 3440 wide display -- so a
+            // scrim that fills it stops 440px short on each side and draws two hard vertical
+            // edges over the art. That is the border. Overhang far enough that no width can
+            // reach the ends: the gradient runs vertically, so stretching it sideways costs
+            // nothing and shows nothing.
+            // Vertically too, and for the same reason: this screen's rect does not reach the
+            // bottom of the display either -- it was measured starting 21px up -- so a scrim
+            // flush with it still leaves a line with bright art beneath. Past the edge, the
+            // darkest end of the gradient falls off-screen and what is left runs out of frame
+            // with nothing to draw an edge against.
+            rect.offsetMin = new Vector2(-Overhang, top ? 0f : -EdgeOverhang);
+            rect.offsetMax = new Vector2(Overhang, top ? EdgeOverhang : 0f);
+
+            // Runs to the very bottom edge on purpose. Stopping short of the task bar leaves a
+            // hard horizontal line where the gradient ends and the bright art starts again, which
+            // is worse than the dimming it was avoiding -- and the task bar is drawn over this, so
+            // it keeps its own brightness either way.
             rect.localScale = Vector3.one;
 
             // First sibling: UI draws in hierarchy order, so this lands over the backdrop and

@@ -71,7 +71,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.7.1";
+        public const string PluginVersion = "1.7.2";
 
         internal static ManualLogSource Log;
 
@@ -84,8 +84,10 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> MatchEnvironment;
         internal static ConfigEntry<bool> DepthEnabled;
         internal static ConfigEntry<bool> StagingRearrange;
+        internal static ConfigEntry<bool> ReportLayout;
         internal static ConfigEntry<bool> StagingVignetteOff;
         internal static ConfigEntry<bool> StagingCastShadowOff;
+        internal static ConfigEntry<bool> StagingSimplePreview;
         internal static ConfigEntry<float> DepthDrift;
         internal static ConfigEntry<float> DepthSway;
         internal static ConfigEntry<float> DepthLight;
@@ -412,6 +414,17 @@ namespace DeployScreen.Client
                 + "foggy Woods can look like one and a clear midday Streets like another. Off "
                 + "keeps the map's own fixed look whatever the conditions.");
 
+            StagingSimplePreview = Config.Bind(
+                "Staging area",
+                "Simplify the character preview",
+                true,
+                "The character preview runs its own ambient occlusion and shadow-catcher pass. "
+                + "Both are tuned for a PMC standing in a dim room, and against a photograph they "
+                + "show up as a dark halo around him that belongs to neither the character nor "
+                + "the picture. This switches those two off while the deploy screen is up and "
+                + "puts them back afterwards. Turn it off if your character looks flat or ends up "
+                + "in a box.");
+
             StagingCastShadowOff = Config.Bind(
                 "Staging area",
                 "Remove the cast shadow",
@@ -430,6 +443,16 @@ namespace DeployScreen.Client
                 + "it; over a photograph it is a black frame around all four sides. This switches "
                 + "that one effect off while the deploy screen is up and puts it back afterwards. "
                 + "It does not touch bloom, colour or anything else in the stack.");
+
+            ReportLayout = Config.Bind(
+                "Performance",
+                "Report the screen layout",
+                false,
+                "Write the deploy screen's whole hierarchy to the log once per session: every "
+                + "object, where it sits, how it is anchored, what it says and what colour it is. "
+                + "Off by default because it is sixty lines nobody needs, on when the game has "
+                + "been updated and something the mod moves has been renamed -- it is how the "
+                + "names in ScreenLayout were found in the first place.");
 
             StagingRearrange = Config.Bind(
                 "Staging area",

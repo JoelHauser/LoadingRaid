@@ -69,10 +69,11 @@ namespace DeployScreen.Client
         private bool _built;
         private string _artState;
         private float _builtFov, _builtAspect;
-        private object _prism;
+        private readonly List<object> _prisms = new List<object>();
         private readonly List<object> _shadowOwners = new List<object>();
+        private readonly List<Behaviour> _switchedOff = new List<Behaviour>();
         private readonly List<object> _shadowWas = new List<object>();
-        private object _prismVignetteWas;
+        private readonly List<object> _prismWas = new List<object>();
         private bool _fitReported;
         private double _watchNext;
         private bool _warnedOnce;
@@ -155,34 +156,6 @@ namespace DeployScreen.Client
                     + " pixels=" + camera.pixelRect
                     + " screen=" + Screen.width + "x" + Screen.height
                     + " ortho=" + camera.orthographic);
-
-                // Post-processing on the menu camera is the other thing that can put a dark border
-                // round the picture, and it is not something a plane can be sized out of: EFT's
-                // menu camera carries an effects stack, and a vignette in it is invisible over a
-                // dim scene and obvious over a photograph. Name what is on the camera so the next
-                // dark-edge report can be answered from the log instead of from a theory.
-                var effects = new StringBuilder();
-
-                foreach (var component in camera.GetComponents<Component>())
-                {
-                    if (component == null) continue;
-
-                    var type = component.GetType();
-                    if (type.Name == "Transform" || type.Name == "Camera") continue;
-
-                    if (effects.Length > 0) effects.Append(", ");
-                    effects.Append(type.Name);
-
-                    var enabled = type.GetProperty("enabled");
-                    if (enabled != null && enabled.PropertyType == typeof(bool)
-                        && !(bool)enabled.GetValue(component, null)) effects.Append(" [off]");
-                }
-
-                DeployScreenPlugin.Log.LogInfo(
-                    "[DeployScreen] backdrop camera effects: "
-                    + (effects.Length == 0 ? "none" : effects.ToString()));
-
-                ReportBorderSuspects(camera);
 
                 TakeCameraVignette(camera);
 
@@ -761,10 +734,13 @@ namespace DeployScreen.Client
         /// screen without filling the log with a menu's worth of nesting.
         /// </summary>
         private static bool _dumped;
+        private static bool _countdownDumped;
+        private static double _countdownNext;
 
         internal static void DumpScreen(Component screen)
         {
             if (_dumped || screen == null) return;
+            if (!DeployScreenPlugin.ReportLayout.Value) return;
 
             _dumped = true;
 
@@ -806,14 +782,6 @@ namespace DeployScreen.Client
                 DeployScreenPlugin.Log.LogWarning("[DeployScreen] could not read the layout: " + error.Message);
             }
         }
-
-        /// <summary>
-        /// The character preview renders through its own camera into a near-full-screen RawImage
-        /// that sits in front of the backdrop. If that camera clears to a colour rather than to
-        /// nothing, or the image is drawn with alpha, the result is a veil over the art -- which
-        /// vanilla never notices, because what is behind it is a dim scene rather than a picture.
-        /// Dumped separately and deeper, since the main pass stops before reaching it.
-        /// </summary>
         /// <summary>
         /// Keeps the planes covering the frame they were built for.
         ///
@@ -909,6 +877,7 @@ namespace DeployScreen.Client
                     // frame over the art just as surely as the backdrop camera's were -- and it is
                     // the one that survived turning the other off.
                     TakeCameraVignette(camera);
+                    SimplifyPreview(camera);
 
                     foreach (var component in camera.GetComponents<Component>())
                     {
@@ -1004,118 +973,95 @@ namespace DeployScreen.Client
 
                     if (field == null || field.FieldType != typeof(bool)) return;
 
-                    _prism = component;
-                    _prismVignetteWas = field.GetValue(component);
+                    var was = field.GetValue(component);
+
+                    _prisms.Add(component);
+                    _prismWas.Add(was);
 
                     field.SetValue(component, false);
 
                     DeployScreenPlugin.Log.LogInfo(
-                        "[DeployScreen] menu vignette off for the deploy screen (was "
-                        + _prismVignetteWas + ")");
+                        "[DeployScreen] vignette off on '" + camera.name + "' (was " + was + ")");
                     return;
                 }
             }
             catch (Exception error) { WarnOnce(error); }
         }
 
-        private void GiveBackCameraVignette()
-        {
-            if (_prism == null) return;
-
-            try
-            {
-                var field = _prism.GetType().GetField("useVignette",
-                    BindingFlags.Public | BindingFlags.Instance);
-
-                if (field != null) field.SetValue(_prism, _prismVignetteWas);
-            }
-            catch { }
-
-            _prism = null;
-            _prismVignetteWas = null;
-        }
-
-
         /// <summary>
-        /// Anything on the backdrop camera that could be drawing a border, with its live value.
+        /// Switches off the two passes on the preview camera that draw darkness around the
+        /// character rather than on it.
         ///
-        /// A dark edge that survives every geometry change is not geometry. It is either an effect
-        /// in the camera's stack -- a vignette, a mask, a letterbox -- or the camera rendering at a
-        /// size that does not match the screen and the result being fitted rather than filled. The
-        /// menu camera carries a component called MenuCameraResolutionFixer, so the second is not
-        /// hypothetical.
+        /// Ambient occlusion darkens where it believes geometry meets geometry. With the character
+        /// alone against a transparent background, what it finds to darken is the air beside his
+        /// silhouette. The shadow catcher draws his cast shadow onto a surface that, once the menu
+        /// room is hidden, is not there. Both are right for the stock menu and wrong here, and
+        /// zeroing the shadow's own strength fields did not remove what is on screen -- which is
+        /// what says it is not only the shadow.
         ///
-        /// Matched on member name rather than by type, because these types live in assemblies this
-        /// plugin does not reference, and printed with values so the next step is a decision
-        /// rather than another run.
+        /// Components rather than fields this time, because the fields did not do it. Their
+        /// enabled state is recorded and restored, and nothing else on the camera is touched.
         /// </summary>
-        private static void ReportBorderSuspects(Camera camera)
+        private void SimplifyPreview(Camera camera)
         {
-            const string Interesting = "vignette|border|letterbox|pillar|aspect|resolution|"
-                + "downsample|scale|rendertexture|width|height|mask|frame|crop|fit";
+            if (camera == null || !DeployScreenPlugin.StagingSimplePreview.Value) return;
 
             try
             {
-                DeployScreenPlugin.Log.LogInfo(
-                    "[DeployScreen] screen " + Screen.width + "x" + Screen.height
-                    + ", desktop " + Screen.currentResolution.width + "x" + Screen.currentResolution.height
-                    + ", fullscreen=" + Screen.fullScreen
-                    + ", camera target=" + (camera.targetTexture == null
-                        ? "screen"
-                        : camera.targetTexture.width + "x" + camera.targetTexture.height));
-
                 foreach (var component in camera.GetComponents<Component>())
                 {
                     if (component == null) continue;
 
-                    var type = component.GetType();
-                    if (type.Name == "Transform" || type.Name == "Camera") continue;
+                    // The preview's image is a RawImage covering most of the screen, and the
+                    // whole of it -- including the transparent area around the character -- goes
+                    // through this stack. Post-processing a transparent background tints it, and
+                    // the edge of that texture is a rectangle inset from the screen: the border.
+                    // The art itself was measured covering every edge by 30px, so what is left is
+                    // what is drawn on top of it.
+                    var name = component.GetType().Name;
+                    if (name != "AmbientOcclusion" && name != "MaskAndShadow") continue;
 
-                    var line = new StringBuilder();
+                    var behaviour = component as Behaviour;
+                    if (behaviour == null || !behaviour.enabled) continue;
 
-                    foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
-                    {
-                        if (!NameHints(field.Name, Interesting) || !Plain(field.FieldType)) continue;
+                    behaviour.enabled = false;
+                    _switchedOff.Add(behaviour);
 
-                        object value;
-                        try { value = field.GetValue(component); } catch { value = "?"; }
-                        Pair(line, field.Name, value);
-                    }
-
-                    foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
-                    {
-                        if (!NameHints(property.Name, Interesting) || !Plain(property.PropertyType)) continue;
-                        if (!property.CanRead || property.GetIndexParameters().Length > 0) continue;
-
-                        object value;
-                        try { value = property.GetValue(component, null); } catch { value = "?"; }
-                        Pair(line, property.Name, value);
-                    }
-
-                    if (line.Length == 0) continue;
-
-                    DeployScreenPlugin.Log.LogInfo("[DeployScreen] " + type.Name + ": " + line);
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] " + name + " off on '" + camera.name + "'");
                 }
             }
-            catch (Exception error)
-            {
-                DeployScreenPlugin.Log.LogWarning(
-                    "[DeployScreen] could not read the camera stack: " + error.Message);
-            }
+            catch (Exception error) { WarnOnce(error); }
         }
 
-        private static bool NameHints(string name, string words)
+        private void GiveBackPreview()
         {
-            var lower = name.ToLowerInvariant();
-
-            foreach (var word in words.Split('|'))
+            for (var i = _switchedOff.Count - 1; i >= 0; i--)
             {
-                if (lower.Contains(word)) return true;
+                try { if (_switchedOff[i] != null) _switchedOff[i].enabled = true; }
+                catch { }
             }
 
-            return false;
+            _switchedOff.Clear();
         }
 
+        private void GiveBackCameraVignette()
+        {
+            for (var i = _prisms.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    var field = _prisms[i].GetType().GetField("useVignette",
+                        BindingFlags.Public | BindingFlags.Instance);
+
+                    if (field != null) field.SetValue(_prisms[i], _prismWas[i]);
+                }
+                catch { }
+            }
+
+            _prisms.Clear();
+            _prismWas.Clear();
+        }
         private static bool Plain(Type type)
         {
             return type == typeof(bool) || type == typeof(int) || type == typeof(float)
@@ -1127,7 +1073,6 @@ namespace DeployScreen.Client
             if (line.Length > 0) line.Append(", ");
             line.Append(name).Append('=').Append(value);
         }
-
         private static void DumpPreview(Transform root)
         {
             var view = root.Find("PlayerModelView");
@@ -1149,6 +1094,49 @@ namespace DeployScreen.Client
             DumpInto(view, 0);
 
             DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of character preview ---");
+        }
+
+        /// <summary>
+        /// Dumps the final countdown screen the first time it appears.
+        ///
+        /// The countdown is a different screen object -- 'Matchmaker Final Countdown', a sibling of
+        /// the deploy screen -- which is why every layout change made so far leaves it stock:
+        /// nothing here has ever looked at it. It cannot be dumped when the deploy screen opens,
+        /// because it is inactive then and its layout has not been run, so its rects are empty.
+        ///
+        /// Polled rather than patched: a Harmony hook would need a name for a method on a type
+        /// that is only known by its GameObject, and four times a second costs nothing next to
+        /// what the game is doing on these frames.
+        /// </summary>
+        internal static void WatchForCountdown(Component screen, double now)
+        {
+            if (_countdownDumped || screen == null || now < _countdownNext) return;
+            if (!DeployScreenPlugin.ReportLayout.Value) return;
+
+            _countdownNext = now + 0.25;
+
+            var parent = screen.transform.parent;
+            if (parent == null) return;
+
+            var countdown = parent.Find("Matchmaker Final Countdown");
+            if (countdown == null || !countdown.gameObject.activeInHierarchy) return;
+
+            _countdownDumped = true;
+
+            try
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] --- final countdown layout, from " + Describe(countdown.gameObject) + " ---");
+
+                DumpInto(countdown, 0);
+
+                DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of final countdown ---");
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not read the countdown layout: " + error.Message);
+            }
         }
 
         private static void DumpInto(Transform parent, int depth)
@@ -1340,6 +1328,7 @@ namespace DeployScreen.Client
             // is entitled to its own look the moment this screen is done with it.
             GiveBackCameraVignette();
             GiveBackCastShadow();
+            GiveBackPreview();
 
             try { _grade.Restore(); }
             catch (Exception error) { WarnOnce(error); }

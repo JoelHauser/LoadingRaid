@@ -1285,6 +1285,105 @@ The guard catches it. It was not run before installing, because running it is op
 that has to be remembered is a check that will be skipped**; it belongs in pack.ps1, where nothing
 can be packed or installed without it.
 
+## 1.7.2: the border was ours all along
+
+Six builds went looking for what was drawing a rectangle inset from the screen edges. The near
+haze, the overscan floor, the camera moving under the planes, the title's backing plate, both
+cameras' vignettes, the shadow catcher, ambient occlusion, MenuOverhaul's background plane. None
+of them. It was the mod's own scrims:
+
+```
+'Matchmaker Time Has Come/DeployScreen Scrim Top'    x 440..3000 y 1008..1440 (22%) | Image a=0.62
+'Matchmaker Time Has Come/DeployScreen Scrim Bottom' x 440..3000 y   85.. 288 (10%) | Image a=0.44
+```
+
+On a 3440 wide screen. Anchored 0..1 of the deploy screen's own rect, on the assumption that rect
+was the screen. **It is not**: it stops 440px short on each side and 21px short at the bottom. So
+two translucent panels with hard vertical edges sat over the art for six builds while the search
+went through everything the *game* draws.
+
+The scrims now overhang: 2000 units sideways, 140 up and down. The gradient runs vertically, so
+stretching it sideways costs nothing, and the darkest end of each falls off-screen where it cannot
+draw an edge against anything. The task-bar lift is gone too -- stopping short of the bar left a
+hard line with bright art beneath it, which is worse than the dimming it was avoiding, and the bar
+is drawn over this anyway.
+
+### What actually found it
+
+Not reasoning. A census. `ReportBigPanels` walked the whole canvas, projected every graphic's
+corners into screen pixels, ranked them by area and printed the top twenty with colour and alpha.
+The answer was the first line of output.
+
+An earlier version of the same census asked for anything covering **a quarter of the screen or
+more** and printed an empty list. That empty list was read as "nothing large is drawn over the
+art", when what it meant was "the threshold was wrong": the scrims cover 22% and 10%. **A
+diagnostic that can come back empty will eventually come back empty and be believed.** Rank
+everything; let the reader pick.
+
+The same census also answered, in one line each, two things that had each cost a build:
+`PlayerModelView x 202..3816` -- the centring shift pushed the preview texture 202px off the left
+edge -- and, from the renderer census, all 13 objects under `CultistLayout` reading `[off]`, which
+closed the MenuOverhaul theory for good.
+
+### Corrections to what 1.7.1 says
+
+1.7.1 claims the black frame was the menu camera's post-processing vignette, found by
+`ReportBorderSuspects`. The vignette **is** real and is still switched off -- `useVignette=True,
+vignetteStrength=1` on `MainMenuCamera` -- but it was not what the border reports were about. The
+border survived turning it off, and survived every other effect being disabled. Read that section
+as "a real thing that was fixed along the way", not as the answer.
+
+The preview camera's vignette was already off (`was False`), so it never mattered. Tracking the
+two cameras in one field, though, meant the second call overwrote the first and the backdrop
+camera's vignette was never given back -- it stayed off for the rest of the session. Fixed.
+
+### Cleared out
+
+The probes that found their answers are gone: `Corners`, `ReportBorderSuspects`, `NameHints`,
+`ReportRenderers`, `ReportBigPanels`, and the camera effects roll-call. 358 lines. Their findings
+are in this file, which is where a spent diagnostic belongs.
+
+`SimplifyPreview` is narrowed back to `AmbientOcclusion` and `MaskAndShadow`. It briefly disabled
+the preview's whole post stack -- PrismEffects, Bloom, ChromaticAberration, DesaturateEffect,
+CameraMotionBlur -- while the border was suspected there. Disabling those changed how the character
+looks for no proven benefit.
+
+`DumpScreen`, `DumpPreview`, `DumpInto` and `WatchForCountdown` stay, behind
+**Performance / Report the screen layout**, off by default. Sixty lines nobody needs on an ordinary
+run, and exactly what is needed the day a game update renames something `ScreenLayout` moves --
+which is how those names were found in the first place.
+
+### The final countdown screen, for whoever picks it up
+
+`Matchmaker Final Countdown`, a sibling of the deploy screen under `Menu UI/UI`, everything
+centre-anchored:
+
+```
+Logo @0,14 713x317 | Image
+Player Name Panel @0,-10 | Name 'PITTEST' 23pt | Description 'YOUR MAIN CHARACTER' 11pt
+Get Ready Panel @0,-55 230x36 | Image rgba 0.80,0.00,0.00,0.60 | Text 'GET READY' 24pt | Glow
+Deploying Caption @0,-215 | 'Deploying in:' 24pt
+Time Icon @-100,-263 43x43 | Time @-64,-259 '00:28.005' 42pt
+```
+
+The catch is not the layout, it is the timing: `loading-screen-disabled` fires at ~82s and restores
+the staging area, and the countdown appears after that, so it draws over the stock menu room. Making
+it a continuation of the deploy screen means holding the art through the countdown, which means
+changing when the restore runs -- and that restore is the thing that guarantees nothing outlives the
+screen. Not a change to make casually.
+
+### Still open
+
+**Back does not return to the menu.** The abort fires -- the report ends `cancel-requested` -- but
+there is no `loading-screen-disabled` event at all, so the screen never closes. `ScreenLayout` is
+the prime suspect: it re-anchors `Back Button Panel`, which carries a HorizontalLayoutGroup, a
+ContentSizeFitter and a LayoutElement, and hides four objects the game may expect. One run with
+**Rearrange the screen = false** splits it.
+
+**First-load stutter.** 3.8 MB PNGs became ~500 KB JPEGs, which ought to help, but it has not been
+shown: Reserve ran 7 gaps / 3.9s on PNGs and 54 gaps / 40.2s on JPEGs, in different sessions with
+different bot loads. A clean test is the same map twice in one session.
+
 ## The hitching on the deploy screen -- what it actually is
 
 The user reports heavy hitching while waiting to get into a raid, and guessed it was the game

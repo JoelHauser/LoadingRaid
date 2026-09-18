@@ -329,6 +329,7 @@ namespace DeployScreen.Client
                 _depth?.Tick(now);
                 _staging?.Tick(now);
                 _layout?.Keep();
+                StagingArea.WatchForCountdown(_screen as Component, now);
                 if (_closedAt >= 0 && now - _closedAt >= 30) { Finish("screen-closed-without-confirmed-start", false); return; }
                 if (now >= 1800) { Finish("capture-timeout", false); return; }
                 _minimal?.Tick(now);

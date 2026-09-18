@@ -24,7 +24,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.7.1.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.7.2.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -76,6 +76,8 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 | Staging area | Rearrange the screen | On | Map name large in the top-left with its intel under it, progress bottom-left, Back bottom-right, and the Escape from Tarkov logo out of the way. Off keeps the stock arrangement. |
 | Staging area | Turn off the menu vignette | On | The game darkens the screen edges in post-processing. Invisible over the stock backdrop, a black frame over a photograph. Put back when you leave. |
 | Staging area | Remove the cast shadow | On | The character preview casts a shadow onto the menu room. With the room hidden it hangs in mid-air beside your PMC. |
+| Staging area | Simplify the character preview | On | Switches off the preview's ambient occlusion and shadow catcher, which are tuned for a dim room and show as a halo against a photograph. |
+| Performance | Report the screen layout | Off | Writes the deploy screen's whole hierarchy to the log once. For when a game update renames something and the layout stops finding it. |
 
 ## The staging area
 
