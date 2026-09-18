@@ -32,6 +32,13 @@ namespace DeployScreen.Client
         private SceneDepth _depth;
         private StagingArea _staging;
         private ScreenLayout _layout;
+        private CountdownScreen _countdown;
+
+        /// <summary>
+        /// True between the deploy screen closing and the final countdown being done with. While
+        /// it is set the staging area is owed a restore rather than given one -- see ScreenClosed.
+        /// </summary>
+        private bool _holding;
         private LoadEase _ease;
 
         /// <summary>
@@ -201,7 +208,102 @@ namespace DeployScreen.Client
             if (_instance._closedAt >= 0) return;
             _instance._closedAt = _instance._clock.Elapsed.TotalSeconds;
             _instance.Mark("loading-screen-disabled");
+
+            // The deploy screen going dark is not the end of the wait. The final countdown comes
+            // up right after it and owns the last several seconds, and tearing the art down here
+            // is what made the picture vanish for the walk-out. So the restore is owed rather
+            // than run, and Update settles it when the countdown is done -- or when the raid
+            // starts, or when the thirty-second cap runs out, both of which reach Finish, which
+            // restores in a finally. Nothing can outlive the screen by holding here.
+            if (_instance.HoldForCountdown())
+            {
+                _instance._holding = true;
+                _instance.Mark("holding the art for the countdown");
+                return;
+            }
+
             _instance.Restore();
+        }
+
+        /// <summary>
+        /// Whether there is anything worth holding. Only the staging area hangs art, and only a
+        /// staging area that actually built any has something the countdown can stand on.
+        /// </summary>
+        private bool HoldForCountdown()
+        {
+            return _mode == LoadingScreenMode.Staging
+                && _staging != null && _staging.Built
+                && DeployScreenPlugin.StagingHoldCountdown.Value;
+        }
+
+        /// <summary>
+        /// The hold, one frame at a time.
+        ///
+        /// Three ways out, and every one of them gives the art back: the countdown finishes, the
+        /// countdown never arrives, or the raid starts -- the last through Update's own first
+        /// line, which reaches Finish, which restores in a finally.
+        /// </summary>
+        private void HoldCountdown(double now)
+        {
+            if (_countdown == null)
+            {
+                var root = CountdownRoot();
+
+                if (root == null)
+                {
+                    // A second and a half is generous: on the run this was built from, the
+                    // countdown was up on the frame after the deploy screen went dark. If it is
+                    // not coming -- a game version that dropped it, a flow that skips it -- the
+                    // art should not sit over a menu nobody asked to look at.
+                    if (now - _closedAt >= 1.5)
+                    {
+                        Mark("no countdown screen, letting the art go");
+                        Restore();
+                    }
+
+                    return;
+                }
+
+                var screen = new CountdownScreen();
+
+                // The screen can be active a frame before its rect has a size. Arranging against
+                // an empty rect would put everything in the corner of nothing, so it says so and
+                // this comes back next frame.
+                if (!screen.Apply(root, _screen as Component)) return;
+
+                _countdown = screen;
+                Mark("countdown: " + _countdown.Description);
+                return;
+            }
+
+            if (!_countdown.Showing)
+            {
+                Mark("countdown-finished");
+                Restore();
+                return;
+            }
+
+            _countdown.Keep();
+        }
+
+        /// <summary>
+        /// 'Matchmaker Final Countdown', a sibling of the deploy screen. Found by name under the
+        /// same parent rather than patched: a Harmony hook would need a method name on a type
+        /// that is only known by its GameObject, and this is one Find on one transform for a few
+        /// seconds at the end of a load.
+        /// </summary>
+        private RectTransform CountdownRoot()
+        {
+            var screen = _screen as Component;
+            if (screen == null) return null;
+
+            var parent = screen.transform.parent;
+            if (parent == null) return null;
+
+            var found = parent.Find("Matchmaker Final Countdown") as RectTransform;
+            if (found == null || !found.gameObject.activeInHierarchy) return null;
+
+            return found;
         }
 
         private void Begin(object screen, object[] args)
@@ -220,6 +322,7 @@ namespace DeployScreen.Client
             _bannersSkipped = false;
             _presentation = null;
             _easeMetadata = null;
+            _holding = false;
 
             // Every raid gets its own warning budget. Kept for the session, the first failure
             // silences every later one, and reports that stop appearing leave no log line at all.
@@ -329,7 +432,13 @@ namespace DeployScreen.Client
                 _depth?.Tick(now);
                 _staging?.Tick(now);
                 _layout?.Keep();
+
+                // After Keep, not inside it: the character is walked with the scene rather than
+                // held where he was put, and the drift is SceneDepth's number.
+                _layout?.DriftCharacter(_depth == null ? Vector2.zero : _depth.CharacterDrift);
                 StagingArea.WatchForCountdown(_screen as Component, now);
+                StagingArea.WatchForPreview(_screen as Component, now);
+                if (_holding) HoldCountdown(now);
                 if (_closedAt >= 0 && now - _closedAt >= 30) { Finish("screen-closed-without-confirmed-start", false); return; }
                 if (now >= 1800) { Finish("capture-timeout", false); return; }
                 _minimal?.Tick(now);
@@ -412,6 +521,14 @@ namespace DeployScreen.Client
             try { _depth?.Restore(); }
             catch (Exception e) { Warn(e); }
             _depth = null;
+
+            // Before both of the below, for the same reason the layout goes before the staging
+            // area: this screen was arranged around the art, so it goes back to its own shape
+            // while the art it was arranged around is still there.
+            _holding = false;
+            try { _countdown?.Restore(); }
+            catch (Exception e) { Warn(e); }
+            _countdown = null;
 
             // Before the staging area: the layout is arranged around the art, so the screen
             // goes back to its own shape before the art it was arranged around disappears.

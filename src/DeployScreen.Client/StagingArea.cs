@@ -46,6 +46,16 @@ namespace DeployScreen.Client
         /// <summary>How far apart the two art planes sit, as a multiple of the near distance.</summary>
         private const float DepthRatio = 2.6f;
 
+        /// <summary>
+        /// The frame's height in world units at the near plane -- the depth the haze hangs at, and
+        /// the depth the character is treated as standing at when the drift moves him.
+        ///
+        /// This is the number that turns a camera move into a distance on screen: something at
+        /// that depth shifts by <c>move / CharacterFrameHeight</c> of the frame. Zero when no art
+        /// is up, which is how SceneDepth knows there is nothing to be parallaxed against.
+        /// </summary>
+        internal static float CharacterFrameHeight;
+
         private readonly MapGrade _grade = new MapGrade();
 
         private readonly List<GameObject> _created = new List<GameObject>();
@@ -158,6 +168,7 @@ namespace DeployScreen.Client
                     + " ortho=" + camera.orthographic);
 
                 TakeCameraVignette(camera);
+                TakeBackdropOcclusion(camera);
 
 
                 // The art is the whole point. With none for this map, the menu scene is left
@@ -386,11 +397,24 @@ namespace DeployScreen.Client
                     + "'Near plane distance' to see more of it.");
             }
 
+            // What a camera move is worth on screen at the near plane. Measured from the camera
+            // that is actually rendering this, not assumed, for the same reason the planes are.
+            CharacterFrameHeight = 2f * near * Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad);
+
+            // Kept for the probe: what draws the backdrop, and how far away the art is.
+            _backdropCamera = camera;
+            _artDistance = far;
+
             // Far: the map itself, washed toward the destination's light.
             var wash = Color.Lerp(Color.white, grade.Wash,
                 Mathf.Clamp01(DeployScreenPlugin.StagingGradeStrength.Value));
 
             BuildPlane(root, camera, aspect, "DeployScreen Map", far, farOverscan, sprite, wash, -100);
+
+            // What the picture is doing in the corners the writing goes in. Measured here
+            // because this is the one place that knows both the picture and the wash that will
+            // be laid over it, and the screen layout -- which builds the scrims -- runs after.
+            ArtTone.Measure(sprite, wash);
 
             // Near: a soft dark frame. Its only job is to be at a different depth from the map, so
             // that drifting the camera shears the two against each other -- which is the parallax
@@ -870,6 +894,8 @@ namespace DeployScreen.Client
                 var view = GameTypes.Loading_PlayerModel.GetValue(screen) as Component;
                 if (view == null) return;
 
+                var seen = false;
+
                 foreach (var camera in view.GetComponentsInChildren<Camera>(true))
                 {
                     // The preview renders through its own PrismEffects, with its own vignette, and
@@ -877,6 +903,7 @@ namespace DeployScreen.Client
                     // frame over the art just as surely as the backdrop camera's were -- and it is
                     // the one that survived turning the other off.
                     TakeCameraVignette(camera);
+                    TakePreviewKey(camera);
                     SimplifyPreview(camera);
 
                     foreach (var component in camera.GetComponents<Component>())
@@ -898,9 +925,19 @@ namespace DeployScreen.Client
 
                             if (!field.Name.ToLowerInvariant().Contains("shadow")) continue;
 
+                            // Vector2 and int are in the list now, and the shift is why. The
+                            // player drew the outline of what is on screen: a blurred silhouette
+                            // of him *and his rifle*, offset up and to the right. That is a drop
+                            // shadow, and ShadowShift=(-0.03, -0.01) is the offset. Zeroing the
+                            // strengths and leaving the shift alone was leaving the one field
+                            // that decides whether the thing is visible beside him or hidden
+                            // behind him.
                             object now = null;
                             if (field.FieldType == typeof(bool)) now = false;
                             else if (field.FieldType == typeof(float)) now = 0f;
+                            else if (field.FieldType == typeof(int)) now = 0;
+                            else if (field.FieldType == typeof(Vector2)) now = Vector2.zero;
+                            else if (field.FieldType == typeof(Vector3)) now = Vector3.zero;
                             if (now == null) continue;
 
                             _shadowOwners.Add(component);
@@ -911,15 +948,29 @@ namespace DeployScreen.Client
                             changed++;
                         }
 
+                        // Worth saying, and this is the part that matters: SimplifyPreview runs a
+                        // few lines above and logs when it switches this component off. It did
+                        // not, which means the game already had it disabled -- so the dark shape
+                        // behind the PMC is not this, and zeroing its fields was never going to
+                        // remove it.
+                        var effect = component as Behaviour;
+                        var state = effect == null ? "not a behaviour"
+                            : effect.enabled ? "enabled" : "already off";
+
                         DeployScreenPlugin.Log.LogInfo(
                             "[DeployScreen] MaskAndShadow on '" + camera.name + "': " + found
-                            + " -- cleared " + changed + " shadow field(s)");
-                        return;
+                            + " -- cleared " + changed + " shadow field(s), component " + state);
+
+                        seen = true;
+                        break;
                     }
                 }
 
-                DeployScreenPlugin.Log.LogInfo(
-                    "[DeployScreen] no MaskAndShadow on the character preview; the blob is something else");
+                if (!seen)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] no MaskAndShadow on the character preview; the blob is something else");
+                }
             }
             catch (Exception error) { WarnOnce(error); }
         }
@@ -988,6 +1039,123 @@ namespace DeployScreen.Client
             catch (Exception error) { WarnOnce(error); }
         }
 
+        private readonly List<Camera> _keyedCameras = new List<Camera>();
+        private readonly List<Color> _keyedWas = new List<Color>();
+
+        /// <summary>
+        /// Stops the character being composited off an actual greenscreen.
+        ///
+        /// This is the halo, and the probe is what named it. The preview camera clears to
+        /// <c>RGBA(1.000, 0.000, 1.000, 0.000)</c> -- **magenta**, at zero alpha -- into a
+        /// 2734x2464 render texture, and the RawImage lays that over the art afterwards. Zero
+        /// alpha means the background contributes nothing where it is left alone. The trouble is
+        /// that nothing leaves it alone: every post-processing pass on that camera reads
+        /// neighbouring pixels and writes colour without regard for alpha, so each one drags
+        /// magenta inwards across the silhouette and drags the character outwards into the
+        /// magenta. What comes back is a band of part-transparent, magenta-contaminated pixels
+        /// following the character's outline -- a halo the shape of him, bright against a dark
+        /// map and washed-out against a light one, which is exactly what was reported twice.
+        ///
+        /// It is a chroma key, so the player's own words for it were right.
+        ///
+        /// The fix is not to fight the passes, it is to key against nothing: clear to the same
+        /// transparent, but black. Bleed from a black background is a faint dark edge instead of
+        /// a coloured glow, and an edge a pixel or two wide is what a cut-out is supposed to
+        /// have. One property, recorded and put back.
+        ///
+        /// Ruled out on the way here, each by something in the log rather than by argument: the
+        /// cast shadow (MaskAndShadow is disabled by the game before this mod sees it), ambient
+        /// occlusion (we switch it off and say so), every light that can see the preview layer
+        /// (all report shadows=None), bloom (useBloom=False already), and any surface inside the
+        /// preview to catch a shadow -- all 174 renderers the probe found are the character and
+        /// his kit.
+        /// </summary>
+        private void TakePreviewKey(Camera camera)
+        {
+            if (camera == null || !DeployScreenPlugin.StagingClearPreview.Value) return;
+
+            try
+            {
+                if (camera.clearFlags != CameraClearFlags.SolidColor) return;
+
+                var was = camera.backgroundColor;
+
+                // Only a coloured key, and only a transparent one. A camera clearing to something
+                // opaque is drawing a background on purpose and is none of our business, and one
+                // already clearing to black has nothing to contaminate anything with.
+                if (was.a > 0.001f) return;
+                if (was.r < 0.02f && was.g < 0.02f && was.b < 0.02f) return;
+
+                _keyedCameras.Add(camera);
+                _keyedWas.Add(was);
+
+                camera.backgroundColor = new Color(0f, 0f, 0f, 0f);
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] preview key on '" + camera.name + "': was " + was
+                    + ", cleared to transparent black");
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
+        private void GiveBackPreviewKey()
+        {
+            for (var i = _keyedCameras.Count - 1; i >= 0; i--)
+            {
+                try { if (_keyedCameras[i] != null) _keyedCameras[i].backgroundColor = _keyedWas[i]; }
+                catch { }
+            }
+
+            _keyedCameras.Clear();
+            _keyedWas.Clear();
+        }
+
+        /// <summary>
+        /// Switches off ambient occlusion on the camera that draws the backdrop.
+        ///
+        /// This file has known for a long time why AO is wrong here, and says so about the
+        /// preview camera a few lines down: it darkens where it believes geometry meets geometry,
+        /// and against a silhouette with nothing behind it what it finds to darken is the air
+        /// beside the silhouette. That reasoning was applied to the preview camera and never to
+        /// this one, which is the camera the photograph is drawn by -- and this one has it on.
+        ///
+        /// It is a screen-space effect, so what it darkens is whatever is in the frame when it
+        /// runs, and it follows that thing when the thing moves. The player turned the character
+        /// with the mouse and the dark shape turned with him, which is the observation that put
+        /// this camera in the frame at all: a shape that tracks his rotation is a shape derived
+        /// from his silhouette, and by then the preview render had been ruled out as the place it
+        /// could be coming from.
+        ///
+        /// Recorded and restored like everything else, and held down by KeepPreviewQuiet, so a
+        /// menu that switches it back on partway through the load does not win.
+        /// </summary>
+        private void TakeBackdropOcclusion(Camera camera)
+        {
+            if (camera == null || !DeployScreenPlugin.StagingBackdropAo.Value) return;
+
+            try
+            {
+                foreach (var component in camera.GetComponents<Component>())
+                {
+                    if (component == null || component.GetType().Name != "AmbientOcclusion") continue;
+
+                    var behaviour = component as Behaviour;
+                    if (behaviour == null) continue;
+
+                    _switchedOff.Add(behaviour);
+                    _switchedOffWas.Add(behaviour.enabled);
+
+                    if (!behaviour.enabled) continue;
+
+                    behaviour.enabled = false;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] ambient occlusion off on the backdrop camera " + camera.name);
+                }
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
         /// <summary>
         /// Switches off the two passes on the preview camera that draw darkness around the
         /// character rather than on it.
@@ -1019,30 +1187,146 @@ namespace DeployScreen.Client
                     // The art itself was measured covering every edge by 30px, so what is left is
                     // what is drawn on top of it.
                     var name = component.GetType().Name;
-                    if (name != "AmbientOcclusion" && name != "MaskAndShadow") continue;
+                    if (!Simplified(name)) continue;
 
                     var behaviour = component as Behaviour;
-                    if (behaviour == null || !behaviour.enabled) continue;
+                    if (behaviour == null) continue;
+
+                    // Recorded even when it is already off, and that is the point. Skipping those
+                    // meant a component the game switches back on once the character finishes
+                    // loading was never in the list and so was never held down. MaskAndShadow is
+                    // exactly that case: off at screen-show, and nothing here has ever looked at
+                    // it again.
+                    _switchedOff.Add(behaviour);
+                    _switchedOffWas.Add(behaviour.enabled);
+
+                    if (!behaviour.enabled) continue;
 
                     behaviour.enabled = false;
-                    _switchedOff.Add(behaviour);
 
                     DeployScreenPlugin.Log.LogInfo(
-                        "[DeployScreen] " + name + " off on '" + camera.name + "'");
+                        "[DeployScreen] " + name + " off on " + camera.name);
                 }
             }
             catch (Exception error) { WarnOnce(error); }
         }
 
+        /// <summary>
+        /// The effects on the preview camera that are switched off while the art is up.
+        ///
+        /// Two of them always: ambient occlusion darkens the air beside a silhouette when there
+        /// is no geometry for it to find, and MaskAndShadow draws a cast shadow onto a surface
+        /// that is not there once the menu room is hidden.
+        ///
+        /// The rest only when asked. The preview is a render with a transparent surround, and a
+        /// post stack does not know that: bloom bleeds a lit character outwards into the
+        /// transparency as a soft light halo, and grading and aberration tint what should be
+        /// nothing at all. Over a dim room nobody sees it. Over a photograph it is the halo that
+        /// makes the PMC look cut out and pasted on.
+        ///
+        /// Off by default because it also changes how the character himself looks -- these are
+        /// the effects BSG lights him for -- and that is a trade only the person looking at it
+        /// can make. Everything is restored either way.
+        /// </summary>
+        private static bool Simplified(string name)
+        {
+            if (name == "AmbientOcclusion" || name == "MaskAndShadow") return true;
+            if (!DeployScreenPlugin.StagingPlainPreview.Value) return false;
+
+            // Antialiasing is in the list because a post-process AA pass is a neighbour-sampling
+            // blur by another name, and neighbour-sampling is what drags the key colour along the
+            // character's outline in the first place.
+            return name == "PrismEffects" || name == "Bloom" || name == "DesaturateEffect"
+                || name == "ChromaticAberration" || name == "CameraMotionBlur"
+                || name == "Antialiasing";
+        }
+
+        private readonly List<bool> _switchedOffWas = new List<bool>();
+
         private void GiveBackPreview()
         {
             for (var i = _switchedOff.Count - 1; i >= 0; i--)
             {
-                try { if (_switchedOff[i] != null) _switchedOff[i].enabled = true; }
+                try { if (_switchedOff[i] != null) _switchedOff[i].enabled = _switchedOffWas[i]; }
                 catch { }
             }
 
             _switchedOff.Clear();
+            _switchedOffWas.Clear();
+        }
+
+        private readonly HashSet<string> _cameBack = new HashSet<string>();
+
+        /// <summary>
+        /// Holds the preview quiet, rather than switching it off once and walking away.
+        ///
+        /// This file already knows better and says so in ScreenLayout: "the game sets these again
+        /// when it changes state, and whatever writes last wins -- re-assert, do not set". That
+        /// lesson was learned for the screen furniture and never applied to the camera, and the
+        /// camera is the one with an asynchronous character arriving in the middle of it.
+        ///
+        /// Cheap enough to do every frame: an enabled check per component and a float compare per
+        /// field, over the handful of each that were recorded. It says so once per thing that
+        /// comes back, because a log line per frame would be worse than the bug.
+        /// </summary>
+        internal void KeepPreviewQuiet()
+        {
+            for (var i = 0; i < _switchedOff.Count; i++)
+            {
+                var one = _switchedOff[i];
+                if (one == null || !one.enabled) continue;
+
+                one.enabled = false;
+                CameBack(one.GetType().Name);
+            }
+
+            for (var i = 0; i < _shadowNames.Count; i++)
+            {
+                var field = _shadowNames[i];
+                var owner = _shadowOwners[i];
+                if (field == null || owner == null) continue;
+
+                try
+                {
+                    var now = field.GetValue(owner);
+                    if (now == null || IsZero(now)) continue;
+
+                    field.SetValue(owner, Zero(field.FieldType));
+                    CameBack(field.Name);
+                }
+                catch { }
+            }
+        }
+
+        private static bool IsZero(object value)
+        {
+            if (value is bool) return !(bool)value;
+            if (value is float) return Mathf.Abs((float)value) < 0.0001f;
+            if (value is int) return (int)value == 0;
+            if (value is Vector2) return ((Vector2)value).sqrMagnitude < 0.000001f;
+            if (value is Vector3) return ((Vector3)value).sqrMagnitude < 0.000001f;
+
+            return true;
+        }
+
+        private static object Zero(Type type)
+        {
+            if (type == typeof(bool)) return false;
+            if (type == typeof(float)) return 0f;
+            if (type == typeof(int)) return 0;
+            if (type == typeof(Vector2)) return Vector2.zero;
+            if (type == typeof(Vector3)) return Vector3.zero;
+
+            return null;
+        }
+
+        private void CameBack(string what)
+        {
+            if (!_cameBack.Add(what)) return;
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] the game switched " + what + " back on partway through the load, "
+                + "holding it off");
         }
 
         private void GiveBackCameraVignette()
@@ -1094,6 +1378,236 @@ namespace DeployScreen.Client
             DumpInto(view, 0);
 
             DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of character preview ---");
+        }
+
+        private static Camera _backdropCamera;
+        private static float _artDistance;
+
+        private static int _darknessReports;
+        private static double _darknessAt = -1;
+
+        /// <summary>
+        /// When the darkness probe samples, in seconds after the screen opens.
+        ///
+        /// Twice, because one sample cannot tell a thing that is off from a thing that is off
+        /// *yet*. The character arrives asynchronously and the game may turn its own effects back
+        /// on when it does -- which is exactly the mistake the shadow fix made in the other
+        /// direction -- so the second sample is late enough to have missed nothing.
+        /// </summary>
+        private static readonly double[] DarknessAt = { 4.0, 12.0 };
+
+        /// <summary>
+        /// Runs the darkness probe once, a few seconds in.
+        ///
+        /// Not from DumpScreen with the rest of the dump: ShowPlayerModel is async, so at
+        /// screen-show the preview is an empty rig -- no character, no renderers, and a probe
+        /// that lists what is inside it would list nothing and look like an answer.
+        /// </summary>
+        internal static void WatchForPreview(Component screen, double now)
+        {
+            if (screen == null || _darknessReports >= DarknessAt.Length) return;
+            if (!DeployScreenPlugin.ReportLayout.Value) return;
+
+            if (_darknessAt < 0) _darknessAt = now;
+            if (now - _darknessAt < DarknessAt[_darknessReports]) return;
+
+            var at = DarknessAt[_darknessReports];
+            _darknessReports++;
+
+            var view = screen.transform.Find("PlayerModelView");
+            if (view == null) return;
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] --- what is darkening the preview, at " + at.ToString("0") + "s ---");
+            ReportPreviewDarkness(view);
+            ReportBackdrop();
+
+            DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of darkness ---");
+        }
+
+        /// <summary>
+        /// What could be drawing the dark shape behind the PMC.
+        ///
+        /// It is not the cast shadow. MaskAndShadow is already disabled by the game before this
+        /// mod touches it, its strength fields were zeroed anyway, every light under the preview
+        /// has its shadows set to None, and the two lights this mod adds are created with None.
+        /// The shape is still there, so it is something none of those explain, and three
+        /// candidates are left: a surface inside the preview that the character darkens, a light
+        /// from outside the preview that can nonetheless see its layer, or an image effect on the
+        /// preview camera that nobody has named yet.
+        ///
+        /// So this lists all three rather than reasoning about them further. Once per session,
+        /// behind Report the screen layout, and it is meant to be deleted the day it answers --
+        /// see the probes in CLAUDE.md that already have.
+        ///
+        /// FindObjectsOfType is a scene-wide sweep and has no business on a timer. Once, behind a
+        /// flag, on a screen that is already stalling, is the exception.
+        /// </summary>
+        private static void ReportPreviewDarkness(Transform view)
+        {
+            try
+            {
+                // 1. Anything with a surface inside the preview that is not the character. A
+                // shadow catcher, a backdrop quad, a blob sprite: all of them are renderers,
+                // whatever they are called.
+                //
+                // The character's own meshes are skipped, and they are recognised by their
+                // shader rather than by their path. The first version of this filtered on
+                // "under MenuPlayer", which was wrong in the one way that mattered: a shadow blob
+                // hung off the player's rig is under MenuPlayer too, so the filter would have
+                // hidden the very thing the probe exists to find. A skin, a rig or a rifle is
+                // drawn with the game's p0/ shader family; a blob, a catcher or a decal is not.
+                //
+                // Anything that names itself a shadow is printed whatever it is drawn with.
+                var surfaces = 0;
+                var skipped = 0;
+
+                foreach (var renderer in view.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (renderer == null) continue;
+
+                    if (Character(renderer)) { skipped++; continue; }
+
+                    surfaces++;
+
+                    var shaders = new StringBuilder();
+
+                    foreach (var material in renderer.sharedMaterials)
+                    {
+                        if (shaders.Length > 0) shaders.Append(" + ");
+                        shaders.Append(material == null ? "none"
+                            : material.name + " (" + (material.shader == null ? "?" : material.shader.name) + ")");
+                    }
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] preview surface " + Describe(renderer.gameObject)
+                        + " on=" + renderer.enabled + "/" + renderer.gameObject.activeInHierarchy
+                        + " layer=" + LayerMask.LayerToName(renderer.gameObject.layer)
+                        + " casts=" + renderer.shadowCastingMode + " receives=" + renderer.receiveShadows
+                        + " size=" + renderer.bounds.size
+                        + " material=" + shaders);
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] preview surfaces: " + surfaces + " that are not the character, "
+                    + skipped + " that are");
+
+                ReportPreviewLayer(view);
+
+                // A projector is how a blob shadow is usually done, it is not a Renderer, and so
+                // nothing above would have found one.
+                foreach (var component in view.GetComponentsInChildren<Component>(true))
+                {
+                    if (component == null || component.GetType().Name != "Projector") continue;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] preview projector " + Describe(component.gameObject));
+                }
+
+                // Lights inside the preview, with what they are set to now -- the shadows on these
+                // are cleared by TakeCharacterRig, so anything here still casting is one it missed.
+                foreach (var light in view.GetComponentsInChildren<Light>(true))
+                {
+                    if (light == null) continue;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] preview light " + Describe(light.gameObject)
+                        + " type=" + light.type + " shadows=" + light.shadows
+                        + " mask=0x" + light.cullingMask.ToString("X8")
+                        + " on=" + light.enabled + "/" + light.gameObject.activeInHierarchy);
+                }
+
+                // 2. The preview's own components, which DumpInto does not print for the root
+                // object, and every behaviour on each of its cameras: one of them is an image
+                // effect and image effects are where unexplained darkness usually lives.
+                var mine = new StringBuilder();
+
+                foreach (var component in view.GetComponents<Component>())
+                {
+                    if (component == null) continue;
+
+                    var behaviour = component as Behaviour;
+                    Pair(mine, component.GetType().Name, behaviour == null ? "-" : behaviour.enabled.ToString());
+                }
+
+                DeployScreenPlugin.Log.LogInfo("[DeployScreen] preview root components: " + mine);
+
+                // The compositing path, which nothing has ever looked inside. The RawImage on
+                // this object is what draws the preview's render texture onto the screen, and
+                // CameraImage is the game's own component sitting beside it. If a drop shadow is
+                // drawn at composite time rather than inside the render, this is where it lives --
+                // and that would explain why disabling MaskAndShadow, a component that holds
+                // shadow settings and nothing else, changes nothing on screen.
+                foreach (var component in view.GetComponents<Component>())
+                {
+                    if (component == null) continue;
+
+                    var name = component.GetType().Name;
+                    if (name == "RectTransform" || name == "CanvasRenderer") continue;
+
+                    ReportFieldsOn(component);
+                    ReportMaterialsOn(component);
+                }
+
+                foreach (var camera in view.GetComponentsInChildren<Camera>(true))
+                {
+                    if (camera == null) continue;
+
+                    var effects = new StringBuilder();
+
+                    foreach (var component in camera.GetComponents<Component>())
+                    {
+                        if (component == null || component is Camera) continue;
+
+                        var behaviour = component as Behaviour;
+                        Pair(effects, component.GetType().Name, behaviour == null ? "-" : behaviour.enabled.ToString());
+                    }
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] preview camera '" + camera.name + "' components: " + effects);
+
+                    // The line that answered it. A camera clearing to a colour with no alpha is a
+                    // chroma key, and every effect above it smears that colour along whatever it
+                    // is keying out.
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] preview camera '" + camera.name + "' clears to "
+                        + camera.clearFlags + " " + camera.backgroundColor
+                        + " into " + (camera.targetTexture == null
+                            ? "the screen"
+                            : camera.targetTexture.width + "x" + camera.targetTexture.height
+                              + " " + camera.targetTexture.format));
+
+                    ReportFields(camera, "PrismEffects");
+                    ReportPreviewEmptiness(camera);
+                }
+
+                // 3. Lights from anywhere that can see the preview's layer. The ones under the
+                // preview are already accounted for; a light in the menu scene whose culling mask
+                // happens to include WeaponPreview is not, and it would cast the character onto
+                // whatever surface #1 turns up.
+                if (GameTypes.Layers_WeaponPreview == null) return;
+
+                var layer = Convert.ToInt32(GameTypes.Layers_WeaponPreview.GetValue(null));
+                if (layer < 0 || layer > 31) return;
+
+                var mask = 1 << layer;
+
+                foreach (var light in UnityEngine.Object.FindObjectsOfType<Light>())
+                {
+                    if (light == null || (light.cullingMask & mask) == 0) continue;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] light on the preview layer: " + Describe(light.gameObject)
+                        + " type=" + light.type + " shadows=" + light.shadows
+                        + " intensity=" + light.intensity.ToString("0.00")
+                        + " on=" + light.enabled + "/" + light.gameObject.activeInHierarchy);
+                }
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not read what is darkening the preview: " + error.Message);
+            }
         }
 
         /// <summary>
@@ -1206,6 +1720,401 @@ namespace DeployScreen.Client
             }
         }
 
+        /// <summary>
+        /// Everything the backdrop camera can see that is nearer than the art, from anywhere.
+        ///
+        /// This is the gap. HideWhatOccludes only ever looks at the **direct children of the
+        /// environment root** -- one level, one subtree -- so anything drawing on the backdrop
+        /// camera's layers from somewhere else in the scene has never been considered, never been
+        /// logged, and never been hidden. On the run that prompted this, that loop printed exactly
+        /// one object, which should have been a warning on its own: a menu room is not one object.
+        ///
+        /// The preview has now been eliminated as the source -- every surface in it accounted for,
+        /// its effects off, and its render reading alpha 0 wherever the character is not -- so
+        /// what is left is on this side, and this is the sweep that was never done.
+        ///
+        /// FindObjectsOfType across every loaded scene is exactly the thing never to put on a
+        /// timer. Once, behind Report the screen layout, on a screen that is already stalling.
+        /// </summary>
+        private static void ReportBackdrop()
+        {
+            var camera = _backdropCamera;
+            if (camera == null) return;
+
+            try
+            {
+                var effects = new StringBuilder();
+
+                foreach (var component in camera.GetComponents<Component>())
+                {
+                    if (component == null || component is Camera) continue;
+
+                    var behaviour = component as Behaviour;
+                    Pair(effects, component.GetType().Name, behaviour == null ? "-" : behaviour.enabled.ToString());
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] backdrop camera " + camera.name + " components: " + effects);
+
+                var eye = camera.transform.position;
+                var forward = camera.transform.forward;
+                var mask = camera.cullingMask;
+
+                var found = new List<KeyValuePair<float, string>>();
+
+                foreach (var renderer in UnityEngine.Object.FindObjectsOfType<Renderer>())
+                {
+                    if (renderer == null || !renderer.enabled) continue;
+                    if (!renderer.gameObject.activeInHierarchy) continue;
+                    if ((mask & (1 << renderer.gameObject.layer)) == 0) continue;
+
+                    var point = renderer.bounds.ClosestPoint(eye);
+                    var depth = Vector3.Dot(point - eye, forward);
+
+                    // Behind the art cannot occlude it, and behind the camera is not on screen.
+                    if (depth > _artDistance || depth < -50f) continue;
+
+                    var size = renderer.bounds.size;
+                    if (size.x < 0.05f && size.y < 0.05f && size.z < 0.05f) continue;
+
+                    found.Add(new KeyValuePair<float, string>(depth,
+                        depth.ToString("0.00") + "u " + Describe(renderer.gameObject)
+                        + " layer=" + LayerMask.LayerToName(renderer.gameObject.layer)
+                        + " size=" + size
+                        + " shader=" + (renderer.sharedMaterial == null || renderer.sharedMaterial.shader == null
+                            ? "none" : renderer.sharedMaterial.shader.name)));
+                }
+
+                found.Sort((a, b) => a.Key.CompareTo(b.Key));
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] in front of the art at " + _artDistance.ToString("0.00")
+                    + "u: " + found.Count + " renderer(s) the backdrop camera can see");
+
+                for (var i = 0; i < found.Count && i < 30; i++)
+                {
+                    DeployScreenPlugin.Log.LogInfo("[DeployScreen]   " + found[i].Value);
+                }
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not sweep the backdrop: " + error.Message);
+            }
+        }
+
+        /// <summary>
+        /// Everything the preview camera renders that is not under the preview.
+        ///
+        /// The third time this hunt has been lost to a search scoped too narrowly, and the same
+        /// mistake each time: looking inside one subtree and concluding the thing is not there.
+        /// A camera does not render a subtree. It renders **a layer**, from anywhere in any loaded
+        /// scene -- and the preview camera's culling mask is a single layer, WeaponPreview. An
+        /// object sitting on that layer somewhere else entirely is drawn into the preview exactly
+        /// as if it were part of the character, and every sweep so far walked PlayerModelView and
+        /// stopped.
+        ///
+        /// The alpha map is what forced this: a soft band four or five cells wide hugging the
+        /// character's right side, all the way down, inside the render texture. Nothing in the
+        /// preview's own subtree draws it, and it is still there with every post-processing pass
+        /// on that camera switched off, so what draws it is geometry the sweep never looked at.
+        ///
+        /// The backdrop got this sweep two rounds ago and it was clean. The preview never did.
+        /// </summary>
+        private static void ReportPreviewLayer(Transform view)
+        {
+            try
+            {
+                Camera camera = null;
+
+                foreach (var one in view.GetComponentsInChildren<Camera>(true))
+                {
+                    if (one != null) { camera = one; break; }
+                }
+
+                if (camera == null) return;
+
+                var mask = camera.cullingMask;
+                var mine = Describe(view.gameObject);
+                var found = 0;
+
+                foreach (var renderer in UnityEngine.Object.FindObjectsOfType<Renderer>())
+                {
+                    if (renderer == null || !renderer.enabled) continue;
+                    if (!renderer.gameObject.activeInHierarchy) continue;
+                    if ((mask & (1 << renderer.gameObject.layer)) == 0) continue;
+
+                    var path = Describe(renderer.gameObject);
+                    if (path.StartsWith(mine, StringComparison.Ordinal)) continue;
+
+                    found++;
+
+                    if (found > 25) continue;
+
+                    var shaders = new StringBuilder();
+
+                    foreach (var material in renderer.sharedMaterials)
+                    {
+                        if (shaders.Length > 0) shaders.Append(" + ");
+                        shaders.Append(material == null || material.shader == null
+                            ? "none" : material.name + " (" + material.shader.name + ")");
+                    }
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] on the preview layer, outside the preview: " + path
+                        + " layer=" + LayerMask.LayerToName(renderer.gameObject.layer)
+                        + " size=" + renderer.bounds.size
+                        + " material=" + shaders);
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] the preview camera renders " + found
+                    + " renderer(s) from outside PlayerModelView on mask 0x" + mask.ToString("X8"));
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not sweep the preview layer: " + error.Message);
+            }
+        }
+
+        /// <summary>
+        /// A picture of what the preview render contains, printed as text.
+        ///
+        /// The version of this that read five corners was worthless and worse than worthless: it
+        /// answered alpha 0 at all five, which was true and meant nothing, because a shadow sits
+        /// **beside** the character and the corners of a 5420x2464 texture are nowhere near him.
+        /// Reading the empty parts of an image to find out whether it is empty is circular, and it
+        /// cost a round trip. What broke the deadlock was the player noticing the shape turns when
+        /// the character turns -- which says it is a silhouette of him, and a silhouette of him
+        /// can only be in this texture.
+        ///
+        /// So this reads all of it. The render is downscaled on the GPU to something the size of a
+        /// paragraph and printed as a map, alpha per cell. The character is whatever comes out
+        /// solid; anything part-transparent spreading out from him is the thing being hunted, and
+        /// its shape and its offset will be visible in the map at a glance.
+        /// </summary>
+        private static void ReportPreviewEmptiness(Camera camera)
+        {
+            var target = camera.targetTexture;
+            if (target == null) return;
+
+            const int Wide = 78;
+            const int Tall = 30;
+
+            var was = RenderTexture.active;
+            RenderTexture small = null;
+            Texture2D read = null;
+
+            try
+            {
+                small = RenderTexture.GetTemporary(Wide, Tall, 0, RenderTextureFormat.ARGB32);
+                Graphics.Blit(target, small);
+
+                RenderTexture.active = small;
+                read = new Texture2D(Wide, Tall, TextureFormat.RGBA32, false);
+                read.ReadPixels(new Rect(0f, 0f, Wide, Tall), 0, 0, false);
+                read.Apply(false, false);
+
+                var pixels = read.GetPixels32();
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] preview render, alpha map ("
+                    + target.width + "x" + target.height
+                    + "; # solid, * mostly, : half, . faint, space empty):");
+
+                var partial = 0;
+                var solid = 0;
+
+                // Top row first: texture rows run bottom-up and a map printed that way is upside
+                // down, which is exactly the kind of small confusion this is meant to remove.
+                for (var y = Tall - 1; y >= 0; y--)
+                {
+                    var row = new StringBuilder(Wide);
+
+                    for (var x = 0; x < Wide; x++)
+                    {
+                        var a = pixels[y * Wide + x].a / 255f;
+
+                        if (a >= 0.90f) { row.Append('#'); solid++; }
+                        else if (a >= 0.50f) { row.Append('*'); partial++; }
+                        else if (a >= 0.15f) { row.Append(':'); partial++; }
+                        else if (a >= 0.02f) { row.Append('.'); partial++; }
+                        else row.Append(' ');
+                    }
+
+                    DeployScreenPlugin.Log.LogInfo("[DeployScreen] |" + row + "|");
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] preview render: " + solid + " solid cell(s), " + partial
+                    + " part-transparent. Anything part-transparent spreading out from the solid "
+                    + "shape is drawn into this texture, and is what is being hunted.");
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] could not read the preview render: " + error.Message);
+            }
+            finally
+            {
+                RenderTexture.active = was;
+                if (small != null) RenderTexture.ReleaseTemporary(small);
+                if (read != null) UnityEngine.Object.Destroy(read);
+            }
+        }
+
+        /// <summary>
+        /// Whether a renderer is a piece of the character rather than something drawn around him.
+        ///
+        /// By shader family. Every skin, rig and weapon part the probe has ever printed is drawn
+        /// with p0/ -- the game's own lit shader -- and a blob, a catcher, a decal or a projector
+        /// quad is drawn with something else. Anything naming itself a shadow is never skipped,
+        /// whatever it is drawn with, because that is the thing being looked for.
+        /// </summary>
+        private static bool Character(Renderer renderer)
+        {
+            if (renderer.name.ToLowerInvariant().Contains("shadow")) return false;
+
+            var any = false;
+
+            foreach (var material in renderer.sharedMaterials)
+            {
+                if (material == null || material.shader == null) continue;
+                if (!material.shader.name.StartsWith("p0/", StringComparison.OrdinalIgnoreCase)) return false;
+
+                any = true;
+            }
+
+            return any;
+        }
+
+        /// <summary>
+        /// Every plain public field on one named component of a camera.
+        /// </summary>
+        private static void ReportFields(Camera camera, string typeName)
+        {
+            foreach (var component in camera.GetComponents<Component>())
+            {
+                if (component == null || component.GetType().Name != typeName) continue;
+
+                ReportFieldsOn(component);
+                return;
+            }
+        }
+
+        /// <summary>The same, for a component already in hand, and its properties as well.</summary>
+        private static void ReportFieldsOn(Component component)
+        {
+            var line = new StringBuilder();
+
+            foreach (var field in component.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!Plain(field.FieldType)) continue;
+
+                try { Pair(line, field.Name, field.GetValue(component)); }
+                catch { }
+            }
+
+            // Properties too, and this is where it matters: a UI Graphic keeps almost everything
+            // it is asked about behind a property, so a fields-only dump of a RawImage says
+            // nothing at all about it.
+            foreach (var property in component.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!Plain(property.PropertyType) || !property.CanRead) continue;
+                if (property.GetIndexParameters().Length > 0) continue;
+
+                try { Pair(line, property.Name, property.GetValue(component, null)); }
+                catch { }
+            }
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] " + component.GetType().Name + " on "
+                + Describe(component.gameObject) + ": "
+                + (line.Length == 0 ? "nothing plain" : line.ToString()));
+        }
+
+        /// <summary>
+        /// Whatever material a component draws with, and every property on its shader.
+        ///
+        /// A drop shadow drawn at composite time is a shader drawing it, and a shader that draws
+        /// one has properties that say so. Reading the whole list rather than guessing at names is
+        /// the point: a name is what has been missing every time this has been chased.
+        /// </summary>
+        private static void ReportMaterialsOn(Component component)
+        {
+            var names = new[] { "material", "materialForRendering", "defaultMaterial" };
+
+            foreach (var name in names)
+            {
+                var property = component.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+                if (property == null || !property.CanRead) continue;
+
+                Material material;
+                try { material = property.GetValue(component, null) as Material; }
+                catch { continue; }
+
+                if (material == null || material.shader == null) continue;
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen]   " + component.GetType().Name + "." + name + " = "
+                    + material.name + ", shader " + material.shader.name
+                    + ", keywords [" + string.Join(", ", material.shaderKeywords) + "]");
+
+                ReportShaderProperties(material);
+            }
+        }
+
+        private static void ReportShaderProperties(Material material)
+        {
+            try
+            {
+                var shader = material.shader;
+                var type = typeof(Shader);
+
+                var count = type.GetMethod("GetPropertyCount", new[] { typeof(Shader) });
+                var named = type.GetMethod("GetPropertyName", new[] { typeof(Shader), typeof(int) });
+
+                if (count == null || named == null)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen]   this Unity cannot list shader properties");
+                    return;
+                }
+
+                var total = (int)count.Invoke(null, new object[] { shader });
+                var line = new StringBuilder();
+
+                for (var i = 0; i < total; i++)
+                {
+                    var one = named.Invoke(null, new object[] { shader, i }) as string;
+                    if (one == null || !material.HasProperty(one)) continue;
+
+                    object value = null;
+
+                    try
+                    {
+                        // Colour first: a shadow is far more likely to be one than a number, and
+                        // reading a colour property as a float gives nothing useful.
+                        value = one.ToLowerInvariant().Contains("color")
+                            ? (object)material.GetColor(one)
+                            : material.GetFloat(one);
+                    }
+                    catch { }
+
+                    Pair(line, one, value);
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen]   properties: " + (line.Length == 0 ? "none" : line.ToString()));
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen]   shader properties unreadable: " + error.Message);
+            }
+        }
+
         private static bool Keeps(GameObject target, Transform needed, string what)
         {
             if (needed == null || target == null) return false;
@@ -1282,6 +2191,8 @@ namespace DeployScreen.Client
 
         internal void Tick(double now)
         {
+            KeepPreviewQuiet();
+
             WatchArt(now);
 
             if (_subCaptionText == null || _cards == null || _cards.Count == 0) return;
@@ -1324,9 +2235,16 @@ namespace DeployScreen.Client
         {
             _built = false;
 
+            // The reading belongs to the picture that is going, not to the next one.
+            ArtTone.Forget();
+            _cameBack.Clear();
+            _backdropCamera = null;
+            CharacterFrameHeight = 0f;
+
             // First: it belongs to the camera rather than to anything built here, and the menu
             // is entitled to its own look the moment this screen is done with it.
             GiveBackCameraVignette();
+            GiveBackPreviewKey();
             GiveBackCastShadow();
             GiveBackPreview();
 

@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Reflection;
 using UnityEngine;
 
 namespace DeployScreen.Client
@@ -16,61 +14,19 @@ namespace DeployScreen.Client
     /// the picture instead of beside it, which is what makes a full-screen backdrop read as
     /// wallpaper behind a menu rather than as a place.
     ///
-    /// This is BSG's UI, not ours. Every anchor, pivot, position and font size is recorded before
-    /// it is touched and put back in Restore, in reverse order, whatever happens -- the deploy
-    /// screen is reused between raids, so a value left behind is permanent for the session.
-    /// Anything not found by name is skipped and said out loud rather than guessed at: these
-    /// names come from a live dump of one game version and nothing guarantees the next one.
+    /// This is BSG's UI, not ours. How it is recorded and put back is ScreenFurniture; what is
+    /// moved where is here.
     /// </summary>
-    internal sealed class ScreenLayout
+    internal sealed class ScreenLayout : ScreenFurniture
     {
-        /// <summary>Margins as a fraction of the screen, matching the preview this was drawn from.</summary>
-        private const float SideMargin = 0.04f;
-        private const float TopMargin = 0.09f;
-        private const float BottomMargin = 0.08f;
-
-        /// <summary>How far past this screen's own edges a scrim is stretched, in canvas units.</summary>
-        private const float Overhang = 2000f;
-
-        /// <summary>How far past the top or bottom edge a scrim is stretched, in canvas units.</summary>
-        private const float EdgeOverhang = 140f;
-
-        private struct Placed
-        {
-            internal RectTransform Rect;
-            internal Vector2 AnchorMin, AnchorMax, Pivot, Position;
-        }
-
-        private struct Resized
-        {
-            internal object Text;
-            internal PropertyInfo Size;
-            internal object Was;
-        }
-
-        private readonly List<Placed> _placed = new List<Placed>();
-        private readonly List<Placed> _wanted = new List<Placed>();
-        private readonly List<Resized> _resized = new List<Resized>();
-        private readonly List<GameObject> _hidden = new List<GameObject>();
-        private readonly List<GameObject> _created = new List<GameObject>();
-        private readonly List<Texture2D> _textures = new List<Texture2D>();
-        private readonly List<string> _missing = new List<string>();
-
-        private bool _applied;
-
-        internal bool Applied { get { return _applied; } }
-
-        internal string Description
-        {
-            get
-            {
-                return "moved=" + _placed.Count + "; resized=" + _resized.Count
-                    + "; hidden=" + _hidden.Count
-                    + (_missing.Count == 0 ? "" : "; not found: " + string.Join(", ", _missing.ToArray()));
-            }
-        }
-
-        // ------------------------------------------------------------------ apply
+        /// <summary>
+        /// The character, and where he stands when the camera is at rest. Held rather than left to
+        /// the re-assert list because this class writes his position every frame: the scene drifts
+        /// and he has to drift with it. See DriftCharacter.
+        /// </summary>
+        private RectTransform _character;
+        private Vector2 _characterHome;
+        private float _canvasHeight;
 
         internal void Apply(Component screen)
         {
@@ -88,6 +44,10 @@ namespace DeployScreen.Client
             var side = width * SideMargin;
             var top = height * TopMargin;
             var bottom = height * BottomMargin;
+
+            // Canvas units, not pixels: the drift arrives as a fraction of the frame, and this is
+            // what turns it back into a distance on this screen.
+            _canvasHeight = height;
 
             try
             {
@@ -109,14 +69,17 @@ namespace DeployScreen.Client
                 // job now for everything in the corner.
                 Hide(Find(root, "Location Name Panel/Background"));
 
-                Resize(Find(root, "Location Name Panel/Name"), 44f);
+                var title = Find(root, "Location Name Panel/Name");
+                var intel = Find(root, "CaptionsHolder/SubCation");
+
+                Resize(title, 44f);
 
                 // A place names itself in capitals, spaced, the way a title card does.
-                Style(Find(root, "Location Name Panel/Name"), upper: true, spacing: 6f);
+                Style(title, upper: true, spacing: 6f);
 
                 // The intel line writes its header in a colour, which TMP prints as literal tags
                 // unless rich text is on. Off by default on some of these fields, so set it.
-                Style(Find(root, "CaptionsHolder/SubCation"), rich: true);
+                Style(intel, rich: true);
 
                 // The intel line lives under it. CaptionsHolder is a vertical layout group that
                 // now holds only the sub-caption, so moving the holder moves the line.
@@ -124,7 +87,8 @@ namespace DeployScreen.Client
                     new Vector2(side, -(top + height * 0.055f)));
 
                 // Progress bottom left, the way out bottom right, the middle left to the art.
-                Place(Find(root, "Deploying Caption"), BottomLeft, BottomLeft, new Vector2(side, bottom));
+                var progress = Find(root, "Deploying Caption");
+                Place(progress, BottomLeft, BottomLeft, new Vector2(side, bottom));
                 // Not moved: the spinner carries an Animation that drives its own transform, so
                 // re-anchoring it leaves the animation playing against the old frame and the
                 // thing loops around the screen instead of spinning in place. The caption below
@@ -140,16 +104,34 @@ namespace DeployScreen.Client
                 // would collapse its height.
                 CentreCharacter(Find(root, "PlayerModelView"));
 
+                // A dark halo carried by the glyphs themselves. It costs the picture nothing --
+                // it is only where the letters are -- and it is what keeps type legible against
+                // a busy background rather than merely a bright one, which no amount of flat
+                // dimming can do.
+                if (DeployScreenPlugin.StagingTextShadow.Value)
+                {
+                    Shadow(title, 0.16f, 0.50f);
+                    Shadow(intel, 0.12f, 0.45f);
+                    Shadow(progress, 0.12f, 0.45f);
+                }
+
                 // Last, and behind everything: white text on a bright sky is unreadable, and a
                 // real screenshot has plenty of bright sky. Two soft gradients give the type
                 // something to sit on without dimming the middle of the picture, which is where
                 // the character is and where nothing is written.
-                AddScrim(root, "DeployScreen Scrim Top", true, 0.30f, 0.62f);
-                AddScrim(root, "DeployScreen Scrim Bottom", false, 0.20f, 0.44f);
+                //
+                // How dark they are is the picture's business, not a number chosen once. See
+                // ScrimStrength.
+                var above = ScrimStrength(true);
+                var below = ScrimStrength(false);
 
-                _applied = _placed.Count > 0 || _hidden.Count > 0 || _created.Count > 0;
+                AddScrim(root, "DeployScreen Scrim Top", true, 0.30f, above);
+                AddScrim(root, "DeployScreen Scrim Bottom", false, 0.20f, below);
 
-                DeployScreenPlugin.Log.LogInfo("[DeployScreen] screen layout: " + Description);
+                Settle();
+
+                DeployScreenPlugin.Log.LogInfo("[DeployScreen] screen layout: " + Description
+                    + "; scrim top=" + above.ToString("0.00") + " bottom=" + below.ToString("0.00"));
             }
             catch (Exception error)
             {
@@ -157,21 +139,6 @@ namespace DeployScreen.Client
                     "[DeployScreen] the screen layout could not be applied, putting it back: " + error.Message);
                 Restore();
             }
-        }
-
-        private static Vector2 TopLeft { get { return new Vector2(0f, 1f); } }
-        private static Vector2 BottomLeft { get { return new Vector2(0f, 0f); } }
-        private static Vector2 BottomRight { get { return new Vector2(1f, 0f); } }
-
-        /// <summary>
-        /// By path under the screen root, because that is what the layout dump prints and what a
-        /// person can check against a log. A miss is recorded, never guessed around.
-        /// </summary>
-        private RectTransform Find(RectTransform root, string path)
-        {
-            var found = root.Find(path) as RectTransform;
-            if (found == null) _missing.Add(path);
-            return found;
         }
 
         /// <summary>
@@ -196,355 +163,44 @@ namespace DeployScreen.Client
                 "[DeployScreen] character sits at " + centre.ToString("0.00")
                 + " across its view, shifting " + shift.ToString("0") + "px to centre it");
 
-            MoveTo(view, new Vector2(shift, view.anchoredPosition.y));
-        }
+            _character = view;
+            _characterHome = new Vector2(shift, view.anchoredPosition.y);
 
-        /// <summary>Moves without re-anchoring, for anything whose anchors are doing work.</summary>
-        private void MoveTo(RectTransform rect, Vector2 position)
-        {
-            if (rect == null) return;
-
-            Remember(rect);
-            rect.anchoredPosition = position;
-
-            _wanted.Add(new Placed
-            {
-                Rect = rect,
-                AnchorMin = rect.anchorMin,
-                AnchorMax = rect.anchorMax,
-                Pivot = rect.pivot,
-                Position = position,
-            });
-        }
-
-        private void Remember(RectTransform rect)
-        {
-            _placed.Add(new Placed
-            {
-                Rect = rect,
-                AnchorMin = rect.anchorMin,
-                AnchorMax = rect.anchorMax,
-                Pivot = rect.pivot,
-                Position = rect.anchoredPosition,
-            });
-        }
-
-        private void Place(RectTransform rect, Vector2 anchor, Vector2 pivot, Vector2 position)
-        {
-            if (rect == null) return;
-
-            Remember(rect);
-
-            rect.anchorMin = anchor;
-            rect.anchorMax = anchor;
-            rect.pivot = pivot;
-            rect.anchoredPosition = position;
-
-            _wanted.Add(new Placed
-            {
-                Rect = rect,
-                AnchorMin = anchor,
-                AnchorMax = anchor,
-                Pivot = pivot,
-                Position = position,
-            });
+            MoveOnce(view, _characterHome);
         }
 
         /// <summary>
-        /// Font size through reflection, for the same reason everything else here is: the plugin
-        /// holds no reference to the game's UI assemblies, and TextMeshProUGUI lives in one.
-        /// </summary>
-        private void Resize(Component text, float size)
-        {
-            if (text == null) return;
-
-            foreach (var component in text.GetComponents<Component>())
-            {
-                if (component == null) continue;
-
-                var property = component.GetType().GetProperty("fontSize");
-                if (property == null || !property.CanRead || !property.CanWrite) continue;
-                if (property.PropertyType != typeof(float)) continue;
-
-                _resized.Add(new Resized
-                {
-                    Text = component,
-                    Size = property,
-                    Was = property.GetValue(component, null),
-                });
-
-                property.SetValue(component, size, null);
-                return;
-            }
-        }
-
-        /// <summary>
-        /// Type on a title card rather than type in a menu: capitals, a little tracking, and rich
-        /// text where a colour is going to be written into it. All by reflection and all optional
-        /// -- a build that does not have one of these properties simply keeps what it had.
-        /// </summary>
-        private void Style(Component text, bool upper = false, float spacing = float.NaN, bool rich = false)
-        {
-            if (text == null) return;
-
-            foreach (var component in text.GetComponents<Component>())
-            {
-                if (component == null) continue;
-
-                var type = component.GetType();
-                if (type.GetProperty("fontSize") == null) continue;   // a text component, not a fitter
-
-                if (upper) Remember(type, component, "fontStyle", UpperCaseOf(type));
-                if (!float.IsNaN(spacing)) Remember(type, component, "characterSpacing", spacing);
-                if (rich) Remember(type, component, "richText", true);
-                return;
-            }
-        }
-
-        /// <summary>
-        /// TMP's FontStyles is a flags enum in an assembly this plugin does not reference, so the
-        /// value is built from the live type. UpperCase is 0x10 and has been since TextMeshPro 1.x.
-        /// </summary>
-        private static object UpperCaseOf(Type textType)
-        {
-            var property = textType.GetProperty("fontStyle");
-            if (property == null) return null;
-
-            try { return Enum.ToObject(property.PropertyType, 16); }
-            catch { return null; }
-        }
-
-        private void Remember(Type type, object component, string name, object value)
-        {
-            if (value == null) return;
-
-            var property = type.GetProperty(name);
-            if (property == null || !property.CanRead || !property.CanWrite) return;
-            if (!property.PropertyType.IsInstanceOfType(value)) return;
-
-            try
-            {
-                _resized.Add(new Resized
-                {
-                    Text = component,
-                    Size = property,
-                    Was = property.GetValue(component, null),
-                });
-
-                property.SetValue(component, value, null);
-            }
-            catch { }
-        }
-
-        /// <summary>
-        /// A gradient panel pinned to the top or bottom edge, drawn first so it sits over the art
-        /// but under the character and the type. Built through the same image component the art
-        /// planes use, so no new reference to the game's UI assembly is needed.
-        /// </summary>
-        private void AddScrim(RectTransform root, string name, bool top, float fraction, float strength)
-        {
-            if (GameTypes.BackgroundImage == null) return;
-
-            var sprite = ScrimSprite(top);
-            if (sprite == null) return;
-
-            var go = new GameObject(name, typeof(RectTransform));
-            var rect = (RectTransform)go.transform;
-
-            rect.SetParent(root, false);
-            rect.anchorMin = top ? new Vector2(0f, 1f - fraction) : new Vector2(0f, 0f);
-            rect.anchorMax = top ? new Vector2(1f, 1f) : new Vector2(1f, fraction);
-
-            // Anchored 0..1 of THIS screen, not of the screen. The deploy screen's own rect is
-            // narrower than the canvas -- measured at x 440..3000 on a 3440 wide display -- so a
-            // scrim that fills it stops 440px short on each side and draws two hard vertical
-            // edges over the art. That is the border. Overhang far enough that no width can
-            // reach the ends: the gradient runs vertically, so stretching it sideways costs
-            // nothing and shows nothing.
-            // Vertically too, and for the same reason: this screen's rect does not reach the
-            // bottom of the display either -- it was measured starting 21px up -- so a scrim
-            // flush with it still leaves a line with bright art beneath. Past the edge, the
-            // darkest end of the gradient falls off-screen and what is left runs out of frame
-            // with nothing to draw an edge against.
-            rect.offsetMin = new Vector2(-Overhang, top ? 0f : -EdgeOverhang);
-            rect.offsetMax = new Vector2(Overhang, top ? EdgeOverhang : 0f);
-
-            // Runs to the very bottom edge on purpose. Stopping short of the task bar leaves a
-            // hard horizontal line where the gradient ends and the bright art starts again, which
-            // is worse than the dimming it was avoiding -- and the task bar is drawn over this, so
-            // it keeps its own brightness either way.
-            rect.localScale = Vector3.one;
-
-            // First sibling: UI draws in hierarchy order, so this lands over the backdrop and
-            // under the character and everything written on top of it.
-            rect.SetAsFirstSibling();
-            go.layer = root.gameObject.layer;
-
-            var image = go.AddComponent(GameTypes.BackgroundImage);
-
-            if (GameTypes.Background_Sprite != null) GameTypes.Background_Sprite.SetValue(image, sprite, null);
-            if (GameTypes.Background_Color != null)
-                GameTypes.Background_Color.SetValue(image, new Color(0.02f, 0.025f, 0.03f, strength), null);
-            if (GameTypes.Background_Raycast != null) GameTypes.Background_Raycast.SetValue(image, false, null);
-
-            _created.Add(go);
-        }
-
-        /// <summary>
-        /// One pixel wide and sixty-four tall: the stretch does the rest. Squared falloff, so the
-        /// darkness gathers at the edge instead of greying the whole band.
-        /// </summary>
-        private Sprite ScrimSprite(bool top)
-        {
-            const int Height = 64;
-
-            try
-            {
-                var texture = new Texture2D(1, Height, TextureFormat.RGBA32, false);
-                texture.wrapMode = TextureWrapMode.Clamp;
-                texture.filterMode = FilterMode.Bilinear;
-
-                var pixels = new Color32[Height];
-
-                for (var y = 0; y < Height; y++)
-                {
-                    var t = y / (float)(Height - 1);
-                    var a = top ? t : 1f - t;
-                    a *= a;
-                    pixels[y] = new Color32(255, 255, 255, (byte)Mathf.Clamp(a * 255f, 0f, 255f));
-                }
-
-                texture.SetPixels32(pixels);
-                texture.Apply(false, false);
-                _textures.Add(texture);
-
-                return Sprite.Create(texture, new Rect(0f, 0f, 1f, Height), new Vector2(0.5f, 0.5f), 100f);
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private void Hide(Component target)
-        {
-            if (target == null || !target.gameObject.activeSelf) return;
-
-            target.gameObject.SetActive(false);
-            _hidden.Add(target.gameObject);
-        }
-
-        // ------------------------------------------------------------------- keep
-
-        /// <summary>
-        /// Puts the arrangement back whenever the game undoes it.
+        /// Walks the character with the camera.
         ///
-        /// The deploy screen is not laid out once. The game sets these positions again when it
-        /// changes state -- the countdown before a raid is the one that shows -- and whatever it
-        /// writes last wins. Applying the layout at screen-show and walking away means the screen
-        /// snaps back to stock partway through the load, which is exactly what it did.
+        /// The backdrop is a real scene and the drift parallaxes it for real, but the PMC is a
+        /// preview composited on top as a UI image, so without this he is the one thing in the
+        /// frame that does not move -- and he is the nearest thing in it. Giving him the shift an
+        /// object at the near plane would have is what stops him reading as printed on the
+        /// picture. SceneDepth works out how far; this is where it lands.
         ///
-        /// So the arrangement is re-asserted rather than set: cheap, because it compares first
-        /// and only writes when something has actually moved.
+        /// This doubles as the re-assert for his position: he is deliberately kept out of Keep's
+        /// list, since Keep would put him back at rest and call our own drift somebody else's
+        /// doing. A move the game makes is far larger than the step below, so it is still caught.
+        ///
+        /// Written in steps rather than every frame, and that is not a micro-optimisation.
+        /// PlayerModelView carries an AspectRatioFitter, so writing anchoredPosition marks the
+        /// rect dirty and queues a layout rebuild -- every frame, on the frames the game can least
+        /// afford it, for a drift that moves about a tenth of a unit between them. Half a unit is
+        /// comfortably under a pixel on any screen this runs on, so stepping at that size is
+        /// invisible and skips roughly nine writes in ten.
         /// </summary>
-        internal void Keep()
+        private const float DriftStep = 0.5f;
+
+        internal void DriftCharacter(Vector2 fraction)
         {
-            if (!_applied) return;
+            if (!Applied || _character == null) return;
 
-            for (var i = 0; i < _wanted.Count; i++)
-            {
-                var one = _wanted[i];
-                if (one.Rect == null) continue;
+            var wanted = _characterHome + fraction * _canvasHeight;
+            var at = _character.anchoredPosition;
 
-                if (one.Rect.anchorMin == one.AnchorMin && one.Rect.anchorMax == one.AnchorMax
-                    && one.Rect.pivot == one.Pivot && one.Rect.anchoredPosition == one.Position) continue;
+            if (Mathf.Abs(wanted.x - at.x) < DriftStep && Mathf.Abs(wanted.y - at.y) < DriftStep) return;
 
-                one.Rect.anchorMin = one.AnchorMin;
-                one.Rect.anchorMax = one.AnchorMax;
-                one.Rect.pivot = one.Pivot;
-                one.Rect.anchoredPosition = one.Position;
-
-                Reasserted(one.Rect.name);
-            }
-
-            for (var i = 0; i < _hidden.Count; i++)
-            {
-                if (_hidden[i] == null || !_hidden[i].activeSelf) continue;
-
-                _hidden[i].SetActive(false);
-                Reasserted(_hidden[i].name);
-            }
-        }
-
-        /// <summary>Said once per element: a log line every frame would be worse than the bug.</summary>
-        private readonly HashSet<string> _reasserted = new HashSet<string>();
-
-        private void Reasserted(string name)
-        {
-            if (!_reasserted.Add(name)) return;
-
-            DeployScreenPlugin.Log.LogInfo(
-                "[DeployScreen] screen layout: the game moved '" + name + "' back, re-applying");
-        }
-
-        // ---------------------------------------------------------------- restore
-
-        internal void Restore()
-        {
-            // Reverse order throughout: the screen is reused between raids, so anything left
-            // behind here is permanent until the game is restarted.
-            for (var i = _created.Count - 1; i >= 0; i--)
-            {
-                try { if (_created[i] != null) UnityEngine.Object.Destroy(_created[i]); }
-                catch { }
-            }
-            _created.Clear();
-
-            for (var i = _textures.Count - 1; i >= 0; i--)
-            {
-                try { if (_textures[i] != null) UnityEngine.Object.Destroy(_textures[i]); }
-                catch { }
-            }
-            _textures.Clear();
-
-            for (var i = _hidden.Count - 1; i >= 0; i--)
-            {
-                try { if (_hidden[i] != null) _hidden[i].SetActive(true); }
-                catch { }
-            }
-            _hidden.Clear();
-
-            for (var i = _resized.Count - 1; i >= 0; i--)
-            {
-                try
-                {
-                    var one = _resized[i];
-                    if (one.Text != null && one.Size != null) one.Size.SetValue(one.Text, one.Was, null);
-                }
-                catch { }
-            }
-            _resized.Clear();
-
-            for (var i = _placed.Count - 1; i >= 0; i--)
-            {
-                try
-                {
-                    var one = _placed[i];
-                    if (one.Rect == null) continue;
-
-                    one.Rect.anchorMin = one.AnchorMin;
-                    one.Rect.anchorMax = one.AnchorMax;
-                    one.Rect.pivot = one.Pivot;
-                    one.Rect.anchoredPosition = one.Position;
-                }
-                catch { }
-            }
-            _placed.Clear();
-            _wanted.Clear();
-            _reasserted.Clear();
-
-            _missing.Clear();
-            _applied = false;
+            _character.anchoredPosition = wanted;
         }
     }
 }

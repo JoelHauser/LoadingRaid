@@ -335,7 +335,11 @@ namespace DeployScreen.Client
         internal static string PictureName(string stem)
         {
             var at = stem.LastIndexOf('@');
-            return at > 0 ? stem.Substring(0, at).TrimEnd() : stem;
+
+            // TrimEnd(null), not TrimEnd(). See ScreenFit.Remember: this assembly compiles
+            // against the game's own mscorlib, which carries string methods plain .NET
+            // Framework does not, and the test harness loads the DLL on .NET Framework.
+            return at > 0 ? stem.Substring(0, at).TrimEnd(null) : stem;
         }
 
         /// <summary>
@@ -474,7 +478,8 @@ namespace DeployScreen.Client
             // The separator has to be punctuation, not just a space. Otherwise "24 Hour Shift"
             // reads as banner 24 called "Hour Shift", while "01 - Dorms" and "3. Dorms" are
             // exactly what the digits-are-ordering rule is for.
-            var rest = text.Substring(at).TrimStart(' ');
+            // The array, not the single char, for the same reason as PictureName.
+            var rest = text.Substring(at).TrimStart(new[] { ' ' });
 
             if (rest.Length == 0 || ".-_)".IndexOf(rest[0]) < 0) return text;
 

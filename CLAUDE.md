@@ -1353,7 +1353,287 @@ looks for no proven benefit.
 run, and exactly what is needed the day a game update renames something `ScreenLayout` moves --
 which is how those names were found in the first place.
 
-### The final countdown screen, for whoever picks it up
+### Keeping the type readable -- measured, not eyeballed
+
+The scrims were a pair of fixed numbers, 0.62 over the top 30% and 0.44 over the bottom 20%. That
+cannot be right for both a dawn treeline and a white sky, and it was set for the dark one: the map
+name washed out over anything bright. These are the player's own screenshots, so the range is the
+whole range.
+
+**`ArtTone`** measures the picture in the two corners the writing sits in, and `ScrimStrength` maps
+that onto 0.40..0.88 (top) and 0.26..0.68 (bottom), smoothed, with a config multiplier over the
+top. A reading that fails falls back to exactly the old numbers, so a failure looks like it did
+before rather than like a bug.
+
+The measurement is on the GPU, and it has to be. `LoadImage` is told to drop the CPU copy -- a
+banner sized for 4K is 22 MB and keeping both would double it -- so there are no pixels on this
+side to read. `Graphics.Blit` of the corner into a 32-wide `RenderTexture` is a downscale the
+hardware does for free, and `ReadPixels` on a thumbnail that size is a kilobyte. Once per raid, on
+a frame the game is already stalling on.
+
+Two details worth keeping:
+
+- The band is read as a mean lerped 65% toward its 85th percentile, not as a mean. White type is
+  unreadable over the brightest thing it crosses, not over the average of the band -- a horizon
+  through the lower third barely moves a mean and is exactly what swallows the title.
+- The reading is multiplied by the map grade's `Wash`, because that tint is what actually reaches
+  the screen. Measuring the file alone reads a night map as brighter than it ever appears.
+
+**The shadow does the other half.** A scrim answers brightness; it does nothing for a *busy*
+background -- branches, rubble, chain-link -- where the trouble is that the letters have no clean
+edge. `ScreenFurniture.Shadow` switches on TMP's underlay through the material: `UNDERLAY_ON`,
+centred, dilate and softness per label. Reading `fontMaterial` is the load-bearing line -- TMP hands
+back a copy for that label alone and assigns it, so nothing else sharing the font is touched, and
+the shared material is recorded first and put back in `Restore` with the copy destroyed after it.
+`UpdateMeshPadding()` afterwards or the halo is clipped at the glyph quad.
+
+### ScreenLayout split in two
+
+The deploy screen and the countdown need identical care and identical machinery, so the
+remember-and-put-back half moved to **`ScreenFurniture`** -- `Find`, `Place`, `MoveTo`, `Resize`,
+`Style`, `Retext`, `Shadow`, `AddScrim`, `Hide`, `Keep`, `Restore`, and the scrim strength. What is
+left in `ScreenLayout` is which object goes where, and `CountdownScreen` is the same shape.
+
+### The chroma key -- a real bug, but not the answer
+
+> **Read this first.** This section was written as though it had solved the dark shape behind the
+> PMC. It had not: the shape survived the fix and is still open -- see **THE DARK SHAPE BEHIND THE
+> PMC** below. What is in here is true and the fix is worth keeping, but treat it as "a real thing
+> found along the way", exactly as the 1.7.1 border section has to be read.
+
+Reported three times: a dark shape behind the PMC on Woods, a light-grey wash over half the frame
+on Shoreline, "like he is standing in front of a greenscreen". The greenscreen part was literally
+correct, and it is why this looked like the answer.
+
+Everything was ruled out by something in a log rather than by argument, in this order:
+
+- **Not the cast shadow.** `SimplifyPreview` logs when it disables `MaskAndShadow` and it did not,
+  which means the game already had it off. Its strength fields were zeroed anyway.
+- **Not a light.** Every light `TakeCharacterRig` finds gets `shadows = None`, the two
+  `LightCharacter` adds are created with `None`, and the probe confirmed every light anywhere whose
+  culling mask includes WeaponPreview reports `shadows=None`.
+- **Not ambient occlusion.** Switched off, and the log says so.
+- **Not bloom.** The first guess after the probe, and wrong: `useBloom=False` already. That attempt
+  also switched off `useBloomStability`, which is not a spreading pass at all -- a word-matching
+  filter finding the wrong word. Reverted.
+- **Not a surface.** The probe found 174 renderers inside the preview and every one of them is the
+  character or his rifle, down to the individual rounds in the magazine. No catcher, no backdrop
+  quad, nothing to receive anything.
+
+What it is, from the line that ended it:
+
+```
+preview camera 'Camera_timehascome0' clear=SolidColor bg=RGBA(1.000, 0.000, 1.000, 0.000)
+  mask=0x00080000 depth=0.5 target=2734x2464
+```
+
+**Magenta, at zero alpha.** The preview is keyed. Zero alpha means the background contributes
+nothing where it is left alone -- and nothing leaves it alone: every post-processing pass on that
+camera reads neighbouring pixels and writes colour without regard for alpha, so each one drags
+magenta inwards across the silhouette and the character outwards into the magenta. What comes back
+is a band of part-transparent, magenta-contaminated pixels following his outline. Bright against a
+dark map, washed-out against a light one, which is why it was described two opposite ways.
+
+`TakePreviewKey` clears to transparent **black** instead. Bleed from a black background is a faint
+dark edge rather than a coloured glow, and an edge a pixel or two wide is what a cut-out is supposed
+to have. One property, recorded and put back, and only ever touched when the camera is already
+clearing to a transparent colour that is not black -- a camera clearing to something opaque is
+drawing a background on purpose and is none of our business.
+
+`Antialiasing` joined the **Turn off the preview post-processing** list while this was being chased:
+a post-process AA pass is a neighbour-sampling blur by another name, and neighbour-sampling is the
+mechanism. That option stays the nuclear one; the key fix is the surgical one.
+
+The probe now skips anything under `MenuPlayer` and prints a count instead, dumps the camera's clear
+flags, and can dump every field of a named component. 47 KB of gun parts per session was the price
+of the first version.
+
+### The probe filter that would have hidden the answer
+
+`ReportPreviewDarkness` first skipped renderers by path -- anything under `MenuPlayer` -- to avoid
+printing 174 gun parts. That is wrong in the one way that matters: **a shadow blob hung off the
+player's rig is under MenuPlayer too**, so the filter would have hidden the very thing the probe
+exists to find, and the conclusion drawn from it ("no catcher, nothing to receive anything") was
+drawn from a list that could not have contained one.
+
+It now skips by **shader family** instead. Every skin, rig and weapon part it has printed is drawn
+with the game's `p0/` shader; a blob, a catcher, a decal or a projector quad is not. Anything naming
+itself a shadow is never skipped whatever it is drawn with. It also lists `Projector` components
+(how a blob shadow is usually done, and not a `Renderer`, so nothing would have found one) and every
+`Light` inside the preview with its shadow setting -- `TakeCharacterRig` clears those, so anything
+still casting is one it missed.
+
+### THE DARK SHAPE BEHIND THE PMC -- STILL OPEN, START HERE
+
+A soft dark band that hugs the character's right side, top to bottom, drawn over the backdrop. It
+turns when he turns. It is the thing that makes the composite read as a sticker, and it is the one
+thing left unfinished.
+
+**It is inside the preview render texture.** That is settled, not guessed. The alpha map -- the
+render downsampled and printed as text by `ReportPreviewEmptiness` -- shows it plainly:
+
+```
+preview render, alpha map (5420x2464; # solid, * mostly, : half, . faint, space empty):
+|                               .:::..                                         |
+|                              ###:::.                                         |
+|                             ####::::.                                        |
+|                            ########::::.                                     |
+|                         #############:::.                                    |
+|                            #######::::.                                      |
+preview render: 164 solid cell(s), 111 part-transparent
+```
+
+164 solid cells are the character. The 111 part-transparent ones are a band four or five cells wide
+following his silhouette down the whole height, offset right. `MaskAndShadow` on that camera holds
+`ShadowShift=(-0.03, -0.01)`, `ShadowBlurIterations=4`, `ShadowBlurStrength=4`, `ShadowStrength=0.5`
+-- a shift that samples left puts a shadow right, and four blur iterations make it that soft. The
+numbers match the picture. What does not match is that the component reporting them is **disabled**,
+at 4s and again at 12s, and has been every time it has been looked at.
+
+#### Ruled out, each by a log line rather than an argument
+
+| suspect | how it was killed |
+| --- | --- |
+| `MaskAndShadow` cast shadow | component `enabled=false` at 4s and 12s; `SimplifyPreview` logs when it disables one and never did, so the game ships it off |
+| Lights casting | every light whose culling mask includes WeaponPreview reports `shadows=None`, scene-wide |
+| Preview ambient occlusion | switched off by this mod, logged, shape unchanged |
+| Bloom | `useBloom=False` already; the guess that it was bloom also wrongly switched off `useBloomStability` |
+| The whole preview post stack | one run with `Antialiasing`, `PrismEffects` and `AmbientOcclusion` all off -- shape unchanged. **This is the important one: it is not post-processing** |
+| The chroma key | real, fixed (`TakePreviewKey`), shape unchanged |
+| `BootShadow` | switched off and confirmed `on=True/False` in the same log, shape unchanged |
+| `MenuPoser.BottomShadow` | the GameObject that field points at is inactive on this build |
+| The composite | `RawImage` draws with `Default UI Material` on shader `UI/Default`; `CameraImage` holds nothing but texture format and depth |
+| The backdrop scene | scene-wide sweep of every renderer the backdrop camera can see in front of the art: one dust particle system |
+| Menu camera ambient occlusion | switched off, confirmed `AmbientOcclusion=False` at both samples, shape unchanged |
+
+#### The next thing to look at, already built and not yet run
+
+`ReportPreviewLayer`. It is in the tree, behind **Report the screen layout**, and has never been run
+in game -- the session ended before a raid with it installed.
+
+It exists because **every renderer sweep in this file walked `PlayerModelView` and stopped**, three
+separate times, and that is the wrong shape of question. A camera does not render a subtree, it
+renders a **layer**. The preview camera's culling mask is `0x00080000`, one layer, WeaponPreview.
+Anything on that layer anywhere in any loaded scene is drawn into the preview exactly as if it were
+part of the character, and no sweep ever looked outside the subtree. The backdrop camera got that
+treatment and came back clean; the preview camera never did.
+
+So the next log lines to read are:
+
+```
+on the preview layer, outside the preview: <path> layer=Weapon Preview size=... material=...
+the preview camera renders N renderer(s) from outside PlayerModelView on mask 0x00080000
+```
+
+- **N greater than 0** -- that list contains it. Given the band's shape, expect a dark duplicate of
+  the character on that layer. Hide it the way `TakeBootShadow` hides the boot shadows, from `Tick`
+  and not from `Begin`.
+- **N is 0** -- the band is the character's own meshes rendering with partial alpha, and the hunt
+  moves to their materials. The 174 renderers are all `p0/Reflective/Bumped Specular SMap_Decal`
+  and friends; something about how that shader writes alpha into an ARGB32 target would be the
+  place to start, along with `Undithering` and `LightSwitcherOverkill`, the two components on that
+  camera nobody has opened.
+
+#### Three probe bugs, because they each cost a raid
+
+1. **Filtering renderers by path.** "Skip anything under `MenuPlayer`" hides a shadow rig hung off
+   the player's rig, which is where one lives. Fixed by filtering on shader family instead, which
+   found `BootShadow` immediately.
+2. **Sampling the render texture at its corners.** It answered alpha 0 five times, which was true
+   and meaningless: a shadow sits *beside* the character and the corners of a 5420x2464 texture are
+   nowhere near him. It produced a confident, wrong "the preview is eliminated". Reading the empty
+   part of an image to find out whether it is empty is circular. Fixed by printing the whole thing
+   as an alpha map, which is what finally located the band.
+3. **Fixing at screen-show, probing at four seconds.** `ShowPlayerModel` is async. `TakeBootShadow`
+   first ran from `Begin`, found nothing because `MenuPlayer` did not exist yet, and said nothing.
+   The probe had already been moved late for exactly this reason. Anything that touches the
+   character belongs in `Tick`.
+
+The through-line: **scope the search to what the renderer actually is, not to where you expect it to
+be.**
+
+#### What the player sees, for confirming a fix
+
+The shape turns when the character is turned with the mouse during the load. That is the check --
+if it stops tracking his rotation, it is gone. It reads dark over Woods and washed-out grey over
+Shoreline, which is one shape over two backdrops, not two different bugs.
+
+
+### The shadow rig is BootShadow, not BottomShadow
+
+`MenuPlayerPoser.BottomShadow` -- the field this mod had been reaching for since the beginning --
+points at a GameObject that is **inactive** on this build. That is why setting the contact shadow to
+Hide changed nothing and the log said `contact-shadow=as found`: there was nothing there to hide.
+The field was not wrong, it was just not the one in use.
+
+What is actually drawing is `MenuPlayer/BootShadow`: five quads -- `Over`, `Left`, `Right`,
+`Over (1)`, `Over (2)` -- all active, all `Unlit/Transparent Colored`, the largest 2.83 units across
+against a character about 1.8 tall.
+
+```
+preview surfaces: 11 that are not the character, 163 that are
+preview surface '.../MenuPlayer/BootShadow/Over' on=True/True layer=Weapon Preview
+  casts=On receives=True size=(2.83, 0.00, 2.85) material=boot_shadow2 (Unlit/Transparent Colored)
+```
+
+They had been in front of the probe the whole time, under `MenuPlayer`, which the path filter
+skipped -- see the section above. The moment it filtered by shader instead, they appeared.
+
+`TakeBootShadow` toggles them by name rather than by field, because the field lied. It takes the
+root of each run of shadow-named objects rather than each child, and records what each one was so
+Restore puts it back in either direction.
+
+**It has to run from `Tick`, not from `Begin`.** The first version ran at screen-show, found nothing
+and said nothing -- no rig line in the log at all -- because `ShowPlayerModel` is async and there is
+no `MenuPlayer` yet at screen-show, so there is nothing named shadow to find. This is the same trap
+`ReportPreviewDarkness` was deliberately moved late to avoid, four sections up, and the fix for it
+walked straight into it. `_playerView` is now recorded before anything that can fail, `WatchBootShadow`
+searches four times a second until it finds something, and then stops searching and re-asserts the
+objects it holds instead.
+
+### The contact shadow could only be switched on
+
+`DepthGroundShadow` was a bool: true switched `MenuPlayerPoser.BottomShadow` on if it was off, false
+left it alone. There was no way to say "and I do not want it", which over a photograph is a real
+thing to want -- a blob authored to sit under a character in a dim menu room does not necessarily
+sit under him when the framing, the camera height and the ground plane have all changed, and it can
+read as a smear behind him instead.
+
+Now a three-state `ContactShadow`: `AsFound`, `Show`, `Hide`. Whichever it was is recorded and put
+back in both directions, and the log says which way it went. It is the leading suspect for the dark
+shape that survived the chroma-key fix, and it was live in every run so far -- `ground-shadow=False`
+in the old logs meant "we did not switch it on", not "it is off".
+
+### The character had to move too
+
+The backdrop is a real scene and `SceneDepth` really moves the camera across it, so every object in
+it parallaxes for free. The PMC does not: he is a preview rendered by a second camera and
+composited on top as a UI image, so while the world slid he was nailed to the screen -- which means
+**the nearest thing in the frame was the one moving least**. That is the opposite of what an eye
+expects and is most of why the composite read as a sticker.
+
+`SceneDepth.CharacterDrift` gives him the shift he would have had, as a fraction of the frame's
+height, and `ScreenLayout.DriftCharacter` lands it. The depth used is the near plane -- where the
+haze hangs, and the nearest thing the scene actually has -- so the number is
+`camera move / StagingArea.CharacterFrameHeight`, measured from the camera that is rendering rather
+than assumed. At the defaults that is about 21px against the art's 8px on a 1440-tall screen.
+
+Two things that are easy to get wrong and are not:
+
+- **The direction comes from the lens, not the container.** The drift is written to the camera
+  *container's* localPosition, and nothing promises the container and the camera inside it share an
+  orientation. The offset goes out to world space and back in through the camera's own transform,
+  so `x` really is screen right. Get this wrong and the character swims *against* the scene, which
+  is more wrong than not moving at all.
+- **He is kept out of `Keep`'s re-assert list.** `MoveOnce` records for restore without re-asserting,
+  because `DriftCharacter` writes his position every frame anyway. Left in the list, `Keep` would
+  put him back at rest first and then report our own drift as "the game moved this back".
+
+The sway is not compensated for. A rotation shifts near and far by the same angle, so it is not
+parallax and he is no more wrong for it than the scene is -- and at the default 0.12 degrees it is
+worth about a tenth of what the drift is.
+
+### The final countdown screen -- picked up
 
 `Matchmaker Final Countdown`, a sibling of the deploy screen under `Menu UI/UI`, everything
 centre-anchored:
@@ -1366,13 +1646,63 @@ Deploying Caption @0,-215 | 'Deploying in:' 24pt
 Time Icon @-100,-263 43x43 | Time @-64,-259 '00:28.005' 42pt
 ```
 
-The catch is not the layout, it is the timing: `loading-screen-disabled` fires at ~82s and restores
-the staging area, and the countdown appears after that, so it draws over the stock menu room. Making
-it a continuation of the deploy screen means holding the art through the countdown, which means
-changing when the restore runs -- and that restore is the thing that guarantees nothing outlives the
-screen. Not a change to make casually.
+The catch was never the layout, it was the timing: `loading-screen-disabled` restores the staging
+area and the countdown appears after that, so it drew over the stock menu room. The run this was
+built from puts the screen closing at 55.9s and `game-world-started` at 62.4s -- six and a half
+seconds of menu room at the end of every load.
+
+**How the hold works.** `ScreenClosed` no longer restores. When the mode is Staging and the staging
+area actually built art, it sets `_holding` and returns, and `Update` runs `HoldCountdown` each
+frame: find `Matchmaker Final Countdown` under the deploy screen's parent, arrange it once it is
+active, `Keep()` it after that, and restore when it goes away.
+
+The safety property is unchanged, and that is the whole reason it is shaped this way. Every other
+ending already funnels through `Finish`, which restores in a `finally` -- raid started, thirty
+seconds past the close, the 1800s cap, abort, plugin destroyed. The hold adds one more way out
+rather than replacing any: if the countdown never appears within 1.5s, the art is let go.
+
+**What cannot follow.** `PlayerModelView` belongs to the deploy screen and goes dark with it, so
+there is no character on the countdown. The scrims are children of the deploy screen too, which is
+why `CountdownScreen` builds its own pair -- `ArtTone.Current` is still live, because the staging
+area has not been restored, so they come out the same darkness.
+
+**The arrangement.** `Player Name Panel` moves top-left and is repurposed: the destination takes the
+large line (read off the deploy screen's own `Location Name Panel/Name`, so the two screens cannot
+disagree), the player's name drops to the small line under it. `Get Ready Panel` and `Time` take the
+the **middle of the screen**, side by side. The deploy screen keeps its middle clear because the
+character is standing in it; this screen has no character, so the middle is the only empty place on
+it and the last thing before a raid belongs there rather than in a corner. They are centred by
+centring the *gap* between them -- the plate's right edge half a gap left of centre, the count's
+left edge half a gap right -- which stays centred when a locale makes GET READY longer, where
+measuring one of them would not.
+
+Vertically, the count is put on the line the **plate's caption** is written at, not on the plate's
+own centre. Aligning the two rects aligns the rects, which is not what an eye reads -- it reads the
+two rows of letters, and nothing promises a 230x36 image with a caption on it has that caption in
+its middle. A first attempt nudged the count down by a guessed 4 units and made it worse. The
+caption's world position is read straight after the plate is moved -- a transform move is immediate,
+it does not wait for a canvas rebuild -- and brought back into the screen's local space.
+
+`Logo`, `Deploying Caption` and `Time Icon` are hidden.
+
+The first version put them bottom-left, on the line the progress caption had been on. It was wrong
+for a reason worth keeping: continuity of *position* is not the same as continuity of *design*. The
+deploy screen's corners are busy because its middle is occupied, and inheriting the corners onto a
+screen whose middle is empty left the frame reading as an afterthought.
 
 ### Still open
+
+**The dark shape behind the PMC.** The big one, and the reason the session ended where it did. Full
+write-up, everything ruled out and the next step, is in **THE DARK SHAPE BEHIND THE PMC -- START
+HERE** above. Short version: it is inside the preview render texture, it is not post-processing, and
+the sweep that has never been run is `ReportPreviewLayer` -- every renderer on the preview camera's
+layer from **outside** `PlayerModelView`.
+
+**Names on the countdown were already wrong.** `Player Name Panel/Name` is in the dump this was
+written from and is not in the running build: the first run logged `not found: Player Name
+Panel/Name` and left the corner stock. `LabelsUnder` now sorts a panel's labels by font size and
+takes the big one and the next, which survives a rename where a path does not. The names it finds
+are logged, so the next build's are not hunted for.
 
 **Back does not return to the menu.** The abort fires -- the report ends `cancel-requested` -- but
 there is no `loading-screen-disabled` event at all, so the screen never closes. `ScreenLayout` is

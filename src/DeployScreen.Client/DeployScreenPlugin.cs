@@ -49,6 +49,23 @@ namespace DeployScreen.Client
     }
 
     /// <summary>
+    /// What to do with the PMC's own contact shadow -- MenuPlayerPoser.BottomShadow, the dark
+    /// patch the game draws under him. Three states rather than two, because a setting that could
+    /// only switch it on had no way to say "and I do not want it".
+    /// </summary>
+    public enum ContactShadow
+    {
+        [Description("Leave it alone")]
+        AsFound,
+
+        [Description("Show it")]
+        Show,
+
+        [Description("Hide it")]
+        Hide,
+    }
+
+    /// <summary>
     /// Replaces what you look at while a raid loads.
     ///
     /// The deploy screen -- MatchmakerTimeHasCome, the one with your PMC and "Deploying in:" --
@@ -71,7 +88,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.7.2";
+        public const string PluginVersion = "1.8.0";
 
         internal static ManualLogSource Log;
 
@@ -88,10 +105,14 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> StagingVignetteOff;
         internal static ConfigEntry<bool> StagingCastShadowOff;
         internal static ConfigEntry<bool> StagingSimplePreview;
+        internal static ConfigEntry<bool> StagingPlainPreview;
+        internal static ConfigEntry<bool> StagingBackdropAo;
+        internal static ConfigEntry<bool> StagingClearPreview;
         internal static ConfigEntry<float> DepthDrift;
         internal static ConfigEntry<float> DepthSway;
         internal static ConfigEntry<float> DepthLight;
-        internal static ConfigEntry<bool> DepthGroundShadow;
+        internal static ConfigEntry<ContactShadow> DepthGroundShadow;
+        internal static ConfigEntry<float> DepthCharacter;
         internal static ConfigEntry<bool> DepthPatrol;
         internal static ConfigEntry<bool> DepthOverlay;
         internal static ConfigEntry<float> StagingDistance;
@@ -105,6 +126,10 @@ namespace DeployScreen.Client
         internal static ConfigEntry<float> StagingRimIntensity;
         internal static ConfigEntry<bool> StagingFollowWeather;
         internal static ConfigEntry<bool> StagingIntelLine;
+        internal static ConfigEntry<bool> StagingTextShadow;
+        internal static ConfigEntry<bool> StagingHoldCountdown;
+        internal static ConfigEntry<bool> StagingScrimAdaptive;
+        internal static ConfigEntry<float> StagingScrimStrength;
         internal static ConfigEntry<float> StagingIntelSeconds;
         internal static ConfigEntry<string> MeasuredSizes;
         internal static ConfigEntry<LoadingScreenMode> ScreenMode;
@@ -280,14 +305,32 @@ namespace DeployScreen.Client
                     + "0.06 reads as air moving rather than as a flicker. 0 leaves them alone.",
                     new AcceptableValueRange<float>(0f, 0.4f)));
 
+            DepthCharacter = Config.Bind(
+                "Scene",
+                "Move the character with the scene",
+                1f,
+                new ConfigDescription(
+                    "The backdrop is a real scene and the drift parallaxes it for real, but your "
+                    + "PMC is a separate render composited on top, so without this he is the one "
+                    + "thing on screen that does not move -- and he is the nearest thing on it, "
+                    + "which is the opposite of what an eye expects and is most of why he reads "
+                    + "as pasted onto a photograph. 1 gives him the movement something standing "
+                    + "where he appears to stand would have. Raise it if the effect is too subtle "
+                    + "to see, 0 to pin him to the screen as before.",
+                    new AcceptableValueRange<float>(0f, 2f)));
+
             DepthGroundShadow = Config.Bind(
                 "Scene",
-                "Ground the character",
-                true,
-                "Switch on the PMC's own contact shadow if it is off.\n"
-                + "MenuPlayerPoser.BottomShadow already exists in the game, so this needs no new "
-                + "art. Without it the character reads as pasted in front of the scene rather than "
-                + "standing in it.");
+                "The character contact shadow",
+                ContactShadow.Show,
+                "MenuPlayerPoser.BottomShadow is the dark patch the game draws under your PMC, "
+                + "and it already exists, so none of this needs new art.\n"
+                + "Show grounds him, which is the point of it -- without any shadow a character "
+                + "reads as pasted in front of a scene rather than standing in it. Hide is for "
+                + "when it lands somewhere that reads as a smear behind him rather than under "
+                + "him, which is what a shadow authored for a dim menu room does over a "
+                + "photograph. Leave it alone touches nothing. Whichever it was is put back on "
+                + "the way out.");
 
             DepthPatrol = Config.Bind(
                 "Scene",
@@ -425,6 +468,41 @@ namespace DeployScreen.Client
                 + "puts them back afterwards. Turn it off if your character looks flat or ends up "
                 + "in a box.");
 
+            StagingBackdropAo = Config.Bind(
+                "Staging area",
+                "Turn off the menu ambient occlusion",
+                true,
+                "The menu camera runs ambient occlusion, which darkens wherever it believes one "
+                + "surface meets another. Over the stock dim menu room that is what it is for. "
+                + "Over a photograph with your PMC composited into it there is no geometry for it "
+                + "to read, so what it finds to darken is the air beside his silhouette -- a soft "
+                + "dark shape that follows him when he turns. Switched back on when you leave.");
+
+            StagingClearPreview = Config.Bind(
+                "Staging area",
+                "Clear the preview to nothing",
+                true,
+                "Your PMC is rendered by his own camera and laid over the art afterwards, and "
+                + "that camera clears its background to magenta -- a chroma key. Every effect on "
+                + "it then smears a little of that magenta along his outline, which over the "
+                + "stock dim menu room nobody sees and over a photograph is the halo that makes "
+                + "him look like he is standing in front of a greenscreen. This clears to "
+                + "transparent black instead, so what bleeds is a faint dark edge rather than a "
+                + "coloured glow. Put back when you leave.");
+
+            StagingPlainPreview = Config.Bind(
+                "Staging area",
+                "Turn off the preview post-processing",
+                false,
+                "Your PMC is rendered by his own camera onto a transparent background and then "
+                + "laid over the art. The effects on that camera do not know the background is "
+                + "meant to be nothing: bloom bleeds a lit character outwards into it as a soft "
+                + "light halo, and grading and aberration tint it. Over the stock dim room nobody "
+                + "notices; over a photograph it is the halo that makes him look cut out and "
+                + "pasted on. This switches the whole stack off -- bloom, grading, aberration, "
+                + "motion blur -- and puts it back when you leave. On costs you the look BSG "
+                + "lights him for, so try it both ways.");
+
             StagingCastShadowOff = Config.Bind(
                 "Staging area",
                 "Remove the cast shadow",
@@ -478,6 +556,47 @@ namespace DeployScreen.Client
                 new ConfigDescription(
                     "How long each line stays before the next.",
                     new AcceptableValueRange<float>(3f, 30f)));
+
+            StagingHoldCountdown = Config.Bind(
+                "Staging area",
+                "Keep the art through the countdown",
+                true,
+                "The GET READY countdown is a different screen from the deploy screen, and it "
+                + "comes up after the deploy screen has closed -- so by default the map art "
+                + "disappears for the last few seconds and you watch the menu room instead. This "
+                + "holds the art until the countdown is done and moves the countdown's own "
+                + "furniture into the same corners: the map name stays top-left, GET READY and "
+                + "the count take the bottom-left. Off gives the art back the moment the deploy "
+                + "screen closes, as it did before.");
+
+            StagingTextShadow = Config.Bind(
+                "Staging area",
+                "Shadow behind the writing",
+                true,
+                "Carry a soft dark halo on the map name, the intel line and the progress line, "
+                + "so they hold their shape over a busy picture -- branches, rubble, a "
+                + "chain-link fence -- where the trouble is not brightness but that the letters "
+                + "have no clean edge to read against. It darkens only what is behind the "
+                + "letters themselves, so it costs the picture nothing.");
+
+            StagingScrimAdaptive = Config.Bind(
+                "Staging area",
+                "Match the dimming to the picture",
+                true,
+                "Measure how bright your picture is in the corners the writing sits in, and dim "
+                + "those corners by as much as that picture needs -- barely anything over a dawn "
+                + "treeline, a good deal over a white sky. Off uses one fixed amount for every "
+                + "picture, which is what this did before it could measure.");
+
+            StagingScrimStrength = Config.Bind(
+                "Staging area",
+                "Dimming behind the writing",
+                1f,
+                new ConfigDescription(
+                    "A multiplier over whatever the above works out: below 1 for more picture "
+                    + "and less contrast, above 1 if the writing still loses. 0 removes the "
+                    + "dimming entirely.",
+                    new AcceptableValueRange<float>(0f, 2f)));
 
             ScreenFit.Remember(MeasuredSizes.Value);
 
