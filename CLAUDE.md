@@ -968,10 +968,10 @@ plane DeployScreen Map: 23.98x10.04u at 7.80u on layer 25 (Menu Environment),
   2.39:1, which is the screen. Overscan sat at the 1.12 floor, and the art lands within a few per
   cent of 1:1 -- confirmed three ways against a test image (title cap height, horizon position,
   skyline block height).
-- `EnvironmentUIRoot.MainScreenObjects` **hid nothing**. The only object switched off in a real
-  raid was `Menu UI/UI/Matchmaker Time Has Come/Banner Panel`. The long-standing worry about what
-  hiding that array leaves behind -- a floor, or a void -- did not arise, because on this build in
-  this state the array yields nothing to hide. The guards added for it never fired.
+- `EnvironmentUIRoot.MainScreenObjects` **hid nothing**, and the reason took another two builds to
+  find. The array is not empty -- it has 2 entries -- but both are already inactive by the time the
+  deploy screen runs, and `Hide` returns early on `!activeSelf`. Reporting "hid nothing" and
+  "the array is empty" as the same thing cost an evening. See 1.6.2 below.
 - The outer ~6% on each side is trim. Art with anything important near an edge loses it, which is
   worth saying in the banners README rather than letting people find out.
 
@@ -1005,6 +1005,59 @@ and nothing else. Needs another raid's `Player.log` to say whether it is even re
 `scripts\test-logic.ps1` cannot run past the image-header section under Windows PowerShell 5.1 on
 this machine: the DLL binds `String.TrimEnd()` against Unity's mscorlib, which has the parameterless
 overload, and .NET Framework 4.8 does not. Pre-existing, not from 1.6.1. It needs PowerShell 7.
+
+## 1.6.2: the art was never hidden, it was behind the wall
+
+1.6.1 rendered the art perfectly and nobody ever saw it. The symptom reported was a flash: the
+picture for an instant during the scene transition, then the ordinary menu for the rest of the
+load. Three wrong theories went past first -- a teardown, a scene reload, a UI panel in front --
+and what settled it was a watchdog rather than another guess.
+
+`StagingArea.Tick` now checks the map plane four times a second and logs the first time its state
+changes: destroyed, orphaned, inactive (walking up to name the ancestor that was switched off), or
+the camera being disabled. One line came back for a whole 27-second load:
+
+```
+[DeployScreen] art up at 0.17s (first look)
+```
+
+Alive, active, parented, camera enabled, never changing. That single line rules out every
+disappearance theory at once and leaves exactly one: the art is **occluded**.
+
+### What was in the way
+
+```
+menu scene: MainScreenObjects has 2 entries
+menu scene: 'Environment UI/EnvironmentUISceneTue/CultistLayout' draws 12 renderer(s),
+  nearest -2.89u -- in front of the art at 7.80u
+```
+
+`CultistLayout` -- the themed menu set. Twelve renderers, and a nearest bound of **minus** 2.89
+units, meaning its bounds enclose the camera. The player stands inside that room; the art hangs
+7.8u behind its far wall. The flash was the moment in the transition before the room drew.
+
+`MainScreenObjects` was never the answer, and worse, it never said so. It has 2 entries, both
+already inactive when the deploy screen runs, so `Hide`'s `!activeSelf` early return skipped both
+and the count came out zero -- indistinguishable, from the log, from an empty array. **A silent
+early return and an empty collection have to look different in the log, or a wrong conclusion
+survives for as long as this one did.**
+
+### The rule now
+
+When the game's own list yields nothing, `HideWhatOccludes` measures the live scene instead: for
+each child of the backdrop root, the nearest point of what it actually draws, along the camera's
+axis, via `renderer.bounds.ClosestPoint(eye)` rather than the transform origin, which on
+`CultistLayout` would have been meaningless. Anything nearer than the map plane is switched off.
+Anything with no renderers is left alone, and so is anything behind the art -- the scene lights in
+particular, since the grade is applied through them.
+
+The depth test is what keeps this honest: it hides what provably occludes, and it says in the log
+what it hid and why, with distances.
+
+### Verified in game
+
+Shoreline, 3440x1440, art consistent for the whole load rather than a flash. `scene-objects-hidden`
+went from 1 to 2: `CultistLayout` and the banner panel.
 
 ## The hitching on the deploy screen -- what it actually is
 

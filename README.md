@@ -24,7 +24,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.6.1.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.6.2.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -66,7 +66,7 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 | Staging area | Near plane distance | 3 | Gap between the two art planes, in world units. Wider gap, stronger parallax. |
 | Staging area | Overscan | 1.12 | A **floor**. The mod works out what your screen shape and drift actually need. |
 | Staging area | Near haze | 0.55 | How dark the near frame is. 0 removes that plane. |
-| Staging area | Hide the menu scene | On | Switch off the menu backdrop's furniture so your art is the world. |
+| Staging area | Hide the menu scene | On | Switch off whatever stands between you and your art, so the art is the world. |
 | Staging area | Light the scene for the map | On | Tint the backdrop's own lights toward the destination. |
 | Staging area | Grade strength | 0.65 | How far lights and art are pulled toward the destination's colour. |
 | Staging area | Light the character to match | On | Key and rim lights that fall on your PMC and nothing else. |

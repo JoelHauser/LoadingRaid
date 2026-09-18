@@ -65,6 +65,8 @@ namespace DeployScreen.Client
         private Texture2D _vignette;
         private string _conditions = "conditions unknown";
         private bool _built;
+        private string _artState;
+        private double _watchNext;
         private bool _warnedOnce;
 
         internal bool Built { get { return _built; } }
@@ -515,14 +517,75 @@ namespace DeployScreen.Client
         private void HideSceneFurniture(Component root)
         {
             if (!DeployScreenPlugin.StagingHideMenuScene.Value) return;
-            if (GameTypes.EnvRoot_MainScreenObjects == null) return;
 
-            var array = GameTypes.EnvRoot_MainScreenObjects.GetValue(root) as Array;
-            if (array == null) return;
+            var before = _hidden.Count;
 
-            foreach (var entry in array)
+            if (GameTypes.EnvRoot_MainScreenObjects == null)
             {
-                Hide(entry as GameObject);
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] menu scene: this build has no MainScreenObjects field");
+            }
+            else
+            {
+                var array = GameTypes.EnvRoot_MainScreenObjects.GetValue(root) as Array;
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] menu scene: MainScreenObjects "
+                    + (array == null ? "is null" : "has " + array.Length + " entries"));
+
+                if (array != null)
+                {
+                    foreach (var entry in array) Hide(entry as GameObject);
+                }
+            }
+
+            if (_hidden.Count > before) return;
+
+            // The game's own list came to nothing on this build -- it is empty by the time the
+            // deploy screen runs -- and the art hangs deep in the backdrop, so anything of the
+            // menu room still standing nearer than the map plane is simply in front of it. That
+            // is not a missing feature, it is the whole picture: the art renders perfectly and
+            // is never seen. So fall back to the scene's own children.
+            HideWhatOccludes(root);
+        }
+
+        /// <summary>
+        /// Switches off the parts of the live backdrop scene that stand between the camera and the
+        /// art, and only those. A child with nothing to draw cannot occlude anything, and neither
+        /// can one further away than the map plane -- the lights in particular have to stay, since
+        /// the grade is applied through them.
+        /// </summary>
+        private void HideWhatOccludes(Component root)
+        {
+            if (_camera == null) return;
+
+            var far = Mathf.Max(0.05f, DeployScreenPlugin.StagingDistance.Value) * DepthRatio;
+            var eye = _camera.transform.position;
+            var forward = _camera.transform.forward;
+
+            foreach (Transform child in root.transform)
+            {
+                var go = child.gameObject;
+                if (!go.activeSelf || _created.Contains(go)) continue;
+
+                var renderers = go.GetComponentsInChildren<Renderer>(false);
+                if (renderers.Length == 0) continue;
+
+                // Depth along the camera's own axis, measured to the nearest point of what the
+                // object actually draws rather than to its transform, which can sit anywhere.
+                var nearest = float.MaxValue;
+                foreach (var renderer in renderers)
+                {
+                    var point = renderer.bounds.ClosestPoint(eye);
+                    nearest = Mathf.Min(nearest, Vector3.Dot(point - eye, forward));
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] menu scene: " + Describe(go) + " draws " + renderers.Length
+                    + " renderer(s), nearest " + nearest.ToString("0.00") + "u"
+                    + (nearest < far ? " -- in front of the art at " + far.ToString("0.00") + "u" : " -- behind the art"));
+
+                if (nearest < far) Hide(go);
             }
         }
 
@@ -569,6 +632,55 @@ namespace DeployScreen.Client
         /// once per object so a list of what the game put in MainScreenObjects ends up in the
         /// log, where the next person can read it without a decompiler.
         /// </summary>
+        /// <summary>
+        /// The planes are built once and never touched again, so if the art stops being on screen
+        /// mid-load, something outside this mod took it: a backdrop scene reload, a parent being
+        /// switched off, a destroy. Reports the first time each state changes, with the time and
+        /// the object responsible, so that "it flashed" becomes something that can be read back.
+        /// </summary>
+        private void WatchArt(double now)
+        {
+            if (_created.Count == 0 || now < _watchNext) return;
+
+            _watchNext = now + 0.25;
+
+            var plane = _created[0];
+            string state;
+
+            if (plane == null)
+            {
+                state = "destroyed";
+            }
+            else if (plane.transform.parent == null)
+            {
+                state = "orphaned";
+            }
+            else if (!plane.activeInHierarchy)
+            {
+                // Which ancestor was switched off is the whole answer, so walk up to the first
+                // one that is not active rather than reporting the plane and stopping there.
+                var culprit = plane.transform;
+                while (culprit != null && culprit.gameObject.activeSelf) culprit = culprit.parent;
+                state = culprit == null ? "inactive" : "inactive -- " + Describe(culprit.gameObject) + " was switched off";
+            }
+            else
+            {
+                state = "up";
+            }
+
+            if (_camera == null) state += "; camera destroyed";
+            else if (!_camera.isActiveAndEnabled) state += "; camera '" + _camera.name + "' disabled";
+
+            if (state == _artState) return;
+
+            var was = _artState;
+            _artState = state;
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] art " + state + " at " + now.ToString("0.00") + "s"
+                + (was == null ? " (first look)" : " (was " + was + ")"));
+        }
+
         private static bool Keeps(GameObject target, Transform needed, string what)
         {
             if (needed == null || target == null) return false;
@@ -645,6 +757,8 @@ namespace DeployScreen.Client
 
         internal void Tick(double now)
         {
+            WatchArt(now);
+
             if (_subCaptionText == null || _cards == null || _cards.Count == 0) return;
             if (now < _nextCard) return;
 
