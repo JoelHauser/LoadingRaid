@@ -31,6 +31,7 @@ namespace DeployScreen.Client
         private MinimalScreen _minimal;
         private SceneDepth _depth;
         private StagingArea _staging;
+        private ScreenLayout _layout;
         private LoadEase _ease;
 
         /// <summary>
@@ -125,6 +126,15 @@ namespace DeployScreen.Client
                     _instance._presentation = _instance._staging.Metadata;
                     _instance.Mark("staging: " + _instance._staging.Description);
 
+                    // After the art is up and the panel is gone: the layout is arranged
+                    // around what is left, and there is no point moving furniture for a
+                    // staging area that failed to build.
+                    if (DeployScreenPlugin.StagingRearrange.Value)
+                    {
+                        _instance._layout = new ScreenLayout();
+                        _instance._layout.Apply(__instance as Component);
+                    }
+
                     _instance._depth = new SceneDepth();
                     _instance._depth.Begin(__instance as Component);
                     if (_instance._depth.Running) _instance.Mark("depth: " + _instance._depth.Description);
@@ -199,6 +209,10 @@ namespace DeployScreen.Client
             if (_active) Finish("replaced-by-next-load");
             _mode = DeployScreenPlugin.ScreenMode.Value;
             _screen = screen;
+
+            // The layout belongs to the screen, not to any one mode, and the feature being built
+            // on top of it has to work whichever mode the player is in. Once per session.
+            StagingArea.DumpScreen(screen as Component);
             _banners = GameTypes.Loading_Banners == null ? null : GameTypes.Loading_Banners.GetValue(screen);
             _started = false;
             _closedAt = -1;
@@ -314,6 +328,7 @@ namespace DeployScreen.Client
                 if (_started) { Finish("first-update-after-game-started", false); return; }
                 _depth?.Tick(now);
                 _staging?.Tick(now);
+                _layout?.Keep();
                 if (_closedAt >= 0 && now - _closedAt >= 30) { Finish("screen-closed-without-confirmed-start", false); return; }
                 if (now >= 1800) { Finish("capture-timeout", false); return; }
                 _minimal?.Tick(now);
@@ -396,6 +411,12 @@ namespace DeployScreen.Client
             try { _depth?.Restore(); }
             catch (Exception e) { Warn(e); }
             _depth = null;
+
+            // Before the staging area: the layout is arranged around the art, so the screen
+            // goes back to its own shape before the art it was arranged around disappears.
+            try { _layout?.Restore(); }
+            catch (Exception e) { Warn(e); }
+            _layout = null;
 
             // After depth, so the camera is back at rest before the planes hung off it go away.
             if (_staging != null) _presentation = _staging.Metadata;

@@ -24,7 +24,7 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.6.2.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.7.0.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
@@ -64,7 +64,7 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 | Ease the load | Pause character IK while loading | Off | Stop the PMC's limb solvers while the raid loads. |
 | Staging area | Follow the raid's weather | On | Light the screen for the raid's real time of day, fog, rain and cloud. |
 | Staging area | Near plane distance | 3 | Gap between the two art planes, in world units. Wider gap, stronger parallax. |
-| Staging area | Overscan | 1.12 | A **floor**. The mod works out what your screen shape and drift actually need. |
+| Staging area | Overscan | 1.02 | A **floor**. The mod works out what your screen shape and drift actually need and uses whichever is larger, so raising this past what is needed just crops your picture. |
 | Staging area | Near haze | 0.55 | How dark the near frame is. 0 removes that plane. |
 | Staging area | Hide the menu scene | On | Switch off whatever stands between you and your art, so the art is the world. |
 | Staging area | Light the scene for the map | On | Tint the backdrop's own lights toward the destination. |
@@ -73,6 +73,7 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 | Staging area | Key light / Rim light | 0.85 / 1.25 | The two character lights. Rim usually wants to be brighter. |
 | Staging area | Intel under the map name | On | Briefing, bosses, extracts and tasks in the line under the location. |
 | Staging area | Seconds per intel line | 7 | How long each line stays. |
+| Staging area | Rearrange the screen | On | Map name large in the top-left with its intel under it, progress bottom-left, Back bottom-right, and the Escape from Tarkov logo out of the way. Off keeps the stock arrangement. |
 
 ## The staging area
 
@@ -193,7 +194,7 @@ With **Captions** set to **Map intel**, each banner shows one of these cards:
 - Map, boss, extract and task names come from the game's own text, in your game language.
 - If a map has more banners than cards, the cards repeat.
 
-## Custom banners
+scripts\fetch-wiki-art.ps1 -SPTPath "C:\path\to\SPT"
 
 Put images in a folder named after the map, inside `BepInEx/plugins/DeployScreen/banners`:
 

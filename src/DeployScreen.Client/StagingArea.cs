@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Text;
 using UnityEngine;
 
 namespace DeployScreen.Client
@@ -681,6 +682,138 @@ namespace DeployScreen.Client
                 + (was == null ? " (first look)" : " (was " + was + ")"));
         }
 
+        /// <summary>
+        /// One-shot inventory of the deploy screen's own hierarchy: what is on it, where it sits,
+        /// how it is anchored and what it says. Written because the layout cannot be rearranged
+        /// without knowing which object holds the location name, which the timer, and whether
+        /// they are anchored to a corner or stretched -- and none of that is knowable from
+        /// outside the running game.
+        ///
+        /// Once per session, four levels deep: enough to find everything that matters on this
+        /// screen without filling the log with a menu's worth of nesting.
+        /// </summary>
+        private static bool _dumped;
+
+        internal static void DumpScreen(Component screen)
+        {
+            if (_dumped || screen == null) return;
+
+            _dumped = true;
+
+            try
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] --- deploy screen layout, from " + Describe(screen.gameObject) + " ---");
+
+                DumpInto(screen.transform, 0);
+
+                DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of layout ---");
+
+                DumpPreview(screen.transform);
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning("[DeployScreen] could not read the layout: " + error.Message);
+            }
+        }
+
+        /// <summary>
+        /// The character preview renders through its own camera into a near-full-screen RawImage
+        /// that sits in front of the backdrop. If that camera clears to a colour rather than to
+        /// nothing, or the image is drawn with alpha, the result is a veil over the art -- which
+        /// vanilla never notices, because what is behind it is a dim scene rather than a picture.
+        /// Dumped separately and deeper, since the main pass stops before reaching it.
+        /// </summary>
+        private static void DumpPreview(Transform root)
+        {
+            var view = root.Find("PlayerModelView");
+            if (view == null) return;
+
+            DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- character preview ---");
+
+            foreach (var camera in view.GetComponentsInChildren<Camera>(true))
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] preview camera '" + camera.name + "' clear=" + camera.clearFlags
+                    + " bg=" + camera.backgroundColor + " mask=0x" + camera.cullingMask.ToString("X8")
+                    + " depth=" + camera.depth
+                    + " target=" + (camera.targetTexture == null
+                        ? "screen"
+                        : camera.targetTexture.width + "x" + camera.targetTexture.height));
+            }
+
+            DumpInto(view, 0);
+
+            DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of character preview ---");
+        }
+
+        private static void DumpInto(Transform parent, int depth)
+        {
+            if (depth > 4) return;
+
+            foreach (Transform child in parent)
+            {
+                var line = new StringBuilder();
+
+                line.Append(' ', depth * 2).Append(child.name);
+                if (!child.gameObject.activeSelf) line.Append(" [off]");
+
+                var rect = child as RectTransform;
+                if (rect != null)
+                {
+                    line.Append(" @").Append(rect.anchoredPosition.x.ToString("0"))
+                        .Append(",").Append(rect.anchoredPosition.y.ToString("0"))
+                        .Append(" ").Append(rect.rect.width.ToString("0"))
+                        .Append("x").Append(rect.rect.height.ToString("0"))
+                        .Append(" anc ").Append(rect.anchorMin.x.ToString("0.##"))
+                        .Append(",").Append(rect.anchorMin.y.ToString("0.##"))
+                        .Append("-").Append(rect.anchorMax.x.ToString("0.##"))
+                        .Append(",").Append(rect.anchorMax.y.ToString("0.##"));
+                }
+
+                foreach (var component in child.GetComponents<Component>())
+                {
+                    if (component == null) continue;
+
+                    var type = component.GetType();
+                    if (type.Name == "RectTransform" || type.Name == "Transform"
+                        || type.Name == "CanvasRenderer") continue;
+
+                    line.Append(" | ").Append(type.Name);
+
+                    // A near-full-screen image with alpha is a veil over everything behind
+                    // it, and nothing but its colour tells it apart from a decoration.
+                    var colour = type.GetProperty("color");
+                    if (colour != null && colour.PropertyType == typeof(Color))
+                    {
+                        var drawn = (Color)colour.GetValue(component, null);
+                        line.Append(" rgba ").Append(drawn.r.ToString("0.00"))
+                            .Append(",").Append(drawn.g.ToString("0.00"))
+                            .Append(",").Append(drawn.b.ToString("0.00"))
+                            .Append(",").Append(drawn.a.ToString("0.00"));
+                    }
+
+                    // Reflection rather than a TextMeshPro reference: this plugin deliberately
+                    // holds no reference to the game's UI assemblies.
+                    var text = type.GetProperty("text");
+                    if (text == null || text.PropertyType != typeof(string)) continue;
+
+                    var value = text.GetValue(component, null) as string;
+                    if (string.IsNullOrEmpty(value)) continue;
+
+                    if (value.Length > 40) value = value.Substring(0, 40) + "...";
+                    line.Append(" '").Append(value.Replace((char)10, ' ')).Append("'");
+
+                    var size = type.GetProperty("fontSize");
+                    if (size != null) line.Append(" ").Append(size.GetValue(component, null)).Append("pt");
+                }
+
+                DeployScreenPlugin.Log.LogInfo("[DeployScreen] " + line);
+
+                DumpInto(child, depth + 1);
+            }
+        }
+
         private static bool Keeps(GameObject target, Transform needed, string what)
         {
             if (needed == null || target == null) return false;
@@ -772,9 +905,13 @@ namespace DeployScreen.Client
                 // Raw text is correct here, unlike on a banner caption. The caption trap is
                 // SelectBanner's -- it hides a description that localizes to itself -- and this
                 // writes the TextMeshPro text directly, so there is no lookup to fall foul of.
+                // The header in the mod's own brass, the body in the text's own colour, so the
+                // line reads as a label and a value rather than as a sentence. Rich text is
+                // switched on for this field when the layout takes it; TMP prints the tags
+                // literally otherwise, which is why it is not assumed here.
                 var line = string.IsNullOrEmpty(card.Header)
                     ? card.Body
-                    : card.Header + "   " + card.Body;
+                    : "<color=#C8A45C>" + card.Header + "</color>   " + card.Body;
 
                 _subCaptionText.SetValue(_subCaption, line ?? string.Empty, null);
             }

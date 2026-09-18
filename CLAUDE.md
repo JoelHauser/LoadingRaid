@@ -1059,6 +1059,140 @@ what it hid and why, with distances.
 Shoreline, 3440x1440, art consistent for the whole load rather than a flash. `scene-objects-hidden`
 went from 1 to 2: `CultistLayout` and the banner panel.
 
+## 1.7.0: the screen rearranged, and real art to put in it
+
+Everything before this made a picture appear behind the character. This makes the screen look
+like something, which turned out to be a different problem with a different cause.
+
+### The layout was never the mod's to begin with
+
+The preview this was designed from puts the map name large in the top-left, its intel under it,
+the progress line bottom-left and the way out bottom-right. None of that was ever implemented --
+the mod hung art and wrote one sub-caption line, and the preview's own provenance card tags the
+layout as a stand-in. It is rendered at full confidence beside the parts that are real, so it
+reads as the target. Worth knowing before defending the art again: the complaint "it does not
+look like the mockup" was about the arrangement, not the picture.
+
+### Ask the screen what it is before moving it
+
+`StagingArea.DumpScreen` prints the deploy screen's hierarchy once per session, four levels deep:
+name, on/off, anchored position, size, anchors, every component type, and for anything with a
+`text` property its content, font size and colour. It runs from `LoadingPerformance.Begin`, not
+from the staging area, because it describes the screen rather than any one mode -- put it inside
+`StagingArea` and it silently produces nothing the moment someone is on Enhanced.
+
+What it found, which no amount of reasoning would have:
+
+```
+CaptionsHolder @0,0 495x86 anc 0.5,1-0.5,1 | VerticalLayoutGroup | ContentSizeFitter
+  MainCaption @247,-15 | TextMeshProUGUI 'DEPLOYING ON LOCATION' 42pt
+  SubCation  @247,-66 | TextMeshProUGUI 'GAME MODE NOT SET' 18pt
+Logo @0,54 713x317 anc 0.5,0-0.5,0 | Image
+Location Name Panel @130,-170 109x27 anc 0.5,1-0.5,1
+  Name @25,0 | CustomTextMeshProUGUI 'TARKOV STREETS' 24pt | ContentSizeFitter
+PlayerModelView @-120,0 2710x1232 anc 0.5,0-0.5,1 | RawImage | CameraImage
+  DragTrigger @0,0 anc 0.24,0-0.6,0.77
+Back Button Panel @0,40 | BackButton 200x42 | 'BACK' 24pt
+Deploying Caption @0,195 | 'deploying' 24pt
+Loader @0,162 44x44 | Image | Animation
+```
+
+Three things in that dump are load-bearing:
+
+- `Logo` is a 713x317 image anchored to the bottom centre -- the Escape from Tarkov wordmark,
+  drawn across the art and through the character. Vanilla gets away with it because what is behind
+  it is a dim scene. A photograph cannot.
+- `PlayerModelView` sits at x=-120 because the stock screen keeps the right-hand half for the
+  banner panel. Remove the panel and the character reads as crooked.
+- `Loader` carries an `Animation`. Re-anchoring it leaves the animation playing against the frame
+  it was authored in, and the spinner loops around the screen instead of spinning in place. It is
+  hidden rather than moved. Anything with an Animation component is not yours to re-anchor.
+
+### Centring the character, not its texture
+
+Moving the view to x=0 centres the texture; the character is not in the middle of it. The game
+says where it is: `DragTrigger` is anchored around the character so the mouse can turn it, 0.24 to
+0.60 on this build, so its centre is the character's centre and the view shifts by the difference.
+Derived at runtime and logged, rather than a number someone eyeballed once at one resolution:
+
+```
+character sits at 0.42 across its view, shifting 217px to centre it
+```
+
+### The screen is laid out more than once
+
+Applying the arrangement at screen-show and walking away does not hold. The game sets those
+positions again when it changes state -- the countdown before a raid is the visible one -- and
+whatever writes last wins, so the screen snapped back to stock partway through every load. The
+report is what ruled out the mod's own teardown: `loading-screen-disabled` came at 79.7s against a
+countdown at 38.4s.
+
+`ScreenLayout.Keep()` re-asserts from the existing `Update`, comparing before writing so it costs
+nothing per frame, and says once per element when the game pushes back. Re-assert; do not set.
+
+### Overscan was eating a tenth of every picture
+
+`RequiredOverscan` works out what the drift actually needs and takes whichever is larger of that
+and the configured floor. The floor shipped at 1.12, and the real requirement at the default drift
+is 1.0134 -- so 10.7% of every picture was cropped for margin nothing used. Default is now 1.02,
+and the setting's description no longer claims "there is no reason to lower it", which was simply
+false. Arithmetic, for the next person who wonders:
+
+```
+frustum at 7.80u : 21.52 x 9.01 u      plane at x1.12 : 23.98 x 10.04 u  -> 89.3% visible
+drift needs      : x1.0134             plane at x1.02 : 21.84 x 9.14  u  -> 98.2% visible
+```
+
+### Art: the wiki, and the trap in it
+
+`scripts\fetch-wiki-art.ps1` fills the banner folders from the Escape from Tarkov wiki. Two things
+in it are not obvious.
+
+The biggest images on a map's page are the wrong ones. They are cartographic 2D maps up to
+10694x6016, which behind a PMC look absurd. The filter keeps landscape images at screen-like
+proportions, rejects icons, quest overlays, keys and portraits, and prefers the official
+"Showcase" set -- BSG's own capture of each location, 1920x1080.
+
+Fandom serves WebP from a .png URL. Content negotiation, and it ignores an `Accept: image/png`
+header -- tested, not assumed. Unity's `ImageConversion.LoadImage` reads PNG and JPEG only, so
+fifty files arrived with the right names in the right folders and loaded as nothing:
+
+```
+not a readable PNG/JPG: ...banners\Shoreline\01 - Shoreline Showcase 15.png
+art-planes=0
+```
+
+`format=original` on the URL is what makes it hand over the real file -- 3.5MB PNG against a 758KB
+WebP. If art ever silently fails to load again, check the magic number before anything else.
+
+At 1920x1080 these upscale about 1.8x on a 3440-wide screen and the mod says so. The wiki has
+nothing larger that is a photograph rather than a map; a player's own screenshots will be sharper.
+
+### Finish work
+
+- Two gradient scrims, top and bottom, built from the same image component the art planes use so
+  no new UI assembly reference is needed, drawn as first siblings so they sit over the backdrop and
+  under the character and the type. Squared falloff, so the darkness gathers at the edge rather
+  than greying the band. White text on a bright sky is unreadable and a real screenshot has plenty
+  of bright sky.
+- The bottom scrim stops 64px short of the bottom edge. The menu task bar -- hideout, traders, and
+  whatever tabs other mods have added -- is not part of this screen and is drawn underneath it. A
+  scrim running to the edge dims someone else's UI, and it reads as that mod being broken.
+- The map name as a title card: 44pt, uppercase via TMP's `FontStyles` (0x10, built from the live
+  enum type since the assembly is not referenced), 6 units of tracking.
+- The intel header in brass, `<color=#C8A45C>`, with rich text switched on for that field first --
+  TMP prints the tags literally otherwise.
+
+### Everything is put back
+
+`ScreenLayout` records anchor, anchorMax, pivot, position and font size before touching anything,
+and restores in reverse order, before the staging area's own restore, so the screen returns to its
+own shape before the art it was arranged around goes. The scrim textures are destroyed, not leaked.
+The deploy screen is reused between raids: a value left behind is permanent for the session.
+
+Every element is found by the exact path the dump prints, and a miss is recorded and reported
+(`not found: ...`) rather than worked around. Those names came from one game version.
+
 ## The hitching on the deploy screen -- what it actually is
 
 The user reports heavy hitching while waiting to get into a raid, and guessed it was the game

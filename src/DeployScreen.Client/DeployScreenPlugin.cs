@@ -71,7 +71,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.6.2";
+        public const string PluginVersion = "1.7.0";
 
         internal static ManualLogSource Log;
 
@@ -83,6 +83,7 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> IntelQuests;
         internal static ConfigEntry<bool> MatchEnvironment;
         internal static ConfigEntry<bool> DepthEnabled;
+        internal static ConfigEntry<bool> StagingRearrange;
         internal static ConfigEntry<float> DepthDrift;
         internal static ConfigEntry<float> DepthSway;
         internal static ConfigEntry<float> DepthLight;
@@ -326,11 +327,15 @@ namespace DeployScreen.Client
             StagingOverscan = Config.Bind(
                 "Staging area",
                 "Overscan",
-                1.12f,
+                1.02f,
                 new ConfigDescription(
                     "How much bigger than the frame each plane is built, so drifting the camera "
-                    + "cannot reveal an edge. Raise it if you see the art end at the side of the "
-                    + "screen; there is no reason to lower it.",
+                    + "cannot reveal an edge. This is a floor, not the answer: the mod works out "
+                    + "what your drift, screen shape and field of view actually need and uses "
+                    + "whichever is larger. Anything above that is pure crop -- at the default "
+                    + "drift the real requirement is about x1.01, and every 0.10 here costs you "
+                    + "roughly 9% of your picture. Raise it only if you actually see the art end "
+                    + "at the side of the screen.",
                     new AcceptableValueRange<float>(1f, 1.6f)));
 
             StagingVignette = Config.Bind(
@@ -404,6 +409,16 @@ namespace DeployScreen.Client
                 + "Time of day, fog, rain and cloud are all settled before you deploy, so a 03:00 "
                 + "foggy Woods can look like one and a clear midday Streets like another. Off "
                 + "keeps the map's own fixed look whatever the conditions.");
+
+            StagingRearrange = Config.Bind(
+                "Staging area",
+                "Rearrange the screen",
+                true,
+                "Move the game's own deploy screen out of the middle: the map name large in the "
+                + "top-left with its intel under it, the progress line bottom-left, the way out "
+                + "bottom-right, and the Escape from Tarkov logo -- which is anchored across the "
+                + "centre and through your character -- out of the way. Off keeps the stock "
+                + "arrangement, which is built around the banner panel the staging area removes.");
 
             StagingIntelLine = Config.Bind(
                 "Staging area",
