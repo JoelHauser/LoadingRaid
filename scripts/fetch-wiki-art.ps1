@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Downloads real map screenshots from the Escape from Tarkov wiki into the mod's banner folders.
 
@@ -58,6 +58,20 @@ $locations = [ordered]@{
     # empty they get the stock banners while every other map has art.
     'sandbox_high'   = 'Ground Zero'
     'factory4_night' = 'Factory'
+
+    # Not in a stock install, and here on purpose. The locations database already carries
+    # labyrinth (Enabled=False, with a real scene at maps/labyrinth_preset.bundle) and terminal
+    # (Locked=True), so a mod that turns either on reports exactly these ids and the folders are
+    # waiting for it. All three have BSG's own Showcase sets on the wiki -- Icebreaker's at
+    # 2560x1440 -- which is the set this script already prefers.
+    #
+    # icebreaker is a guess at the id and the only one here that is. No stock database entry
+    # exists for it, so whichever mod adds it chooses the name; if it turns out to be something
+    # else, rename the folder and nothing else changes, because BannerArt.For looks up the folder
+    # by the id the game reports and does no more than that.
+    'labyrinth'      = 'The Labyrinth'
+    'terminal'       = 'Terminal'
+    'icebreaker'     = 'Icebreaker'
 }
 
 $banners = Join-Path $SPTPath 'BepInEx\plugins\DeployScreen\banners'
@@ -67,7 +81,7 @@ $api = 'https://escapefromtarkov.fandom.com/api.php'
 $agent = 'DeployScreen-art-fetch/1.0 (SPT mod; one-off, a few files per map)'
 
 # Anything that is not a photograph of the place: icons, cartography, quest overlays, people.
-$reject = 'icon|2dmap|2d map|quest|portrait|\bkey\b|keycard|loot|spawn|extract map|marker|logo|banner '
+$reject = 'icon|2dmap|2d map|quest|portrait|\bkey\b|keycard|loot|spawn|extract map|marker|logo|banner |map by|\bmap\b|\bname\b'
 
 function Wanted($title, $w, $h) {
     if ($w -lt 1600) { return $false }
