@@ -72,8 +72,29 @@ namespace DeployScreen.Client
                 postfix: new HarmonyMethod(AccessTools.Method(typeof(EnvironmentState), nameof(AfterShowEnvironment))));
         }
 
+        private static bool _menuShown;
+
+        /// <summary>
+        /// Whether the menu has brought its environment up since the watch was armed.
+        ///
+        /// This is the end of the wait nobody had a name for. After the deploy screen closes there
+        /// is a stretch where the raid is being torn down and the menu rebuilt -- quests
+        /// re-requested, tabs re-added, the environment re-shown -- and the player called it a
+        /// waiting room, which is exactly what it looks like. Finishing before it meant handing
+        /// over to that instead of to the menu.
+        ///
+        /// ShowEnvironment(true) is the game saying the menu's own backdrop is up, and it is
+        /// already patched here for the deferred restore, so this costs one bool.
+        /// </summary>
+        internal static bool MenuShown { get { return _menuShown; } }
+
+        /// <summary>Starts the watch. Armed when the art begins waiting, not before.</summary>
+        internal static void WatchForMenu() { _menuShown = false; }
+
         private static void AfterShowEnvironment(bool __0)
         {
+            if (__0) _menuShown = true;
+
             if (!__0 || !_pending || _applying) return;
 
             _pending = false;

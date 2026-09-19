@@ -3395,6 +3395,7 @@ namespace DeployScreen.Client
         private float _fadeWaited;
         private float _dim;
         private bool _dimming;
+        private string _released;
 
         /// <summary>How far down the picture goes while a cancel is waited out. Not to black.</summary>
         private const float Dimmed = 0.25f;
@@ -3502,8 +3503,11 @@ namespace DeployScreen.Client
             try { EnvironmentState.Restore(); }
             catch (Exception error) { WarnOnce(error); }
 
+            EnvironmentState.WatchForMenu();
+
             _fade = 1f;
             _fadeWaited = 0f;
+            _released = null;
             return true;
         }
 
@@ -3522,10 +3526,29 @@ namespace DeployScreen.Client
             // Capped, because a scene load that never finishes must not leave the art parked over
             // a menu nobody asked to look at -- the same bargain every other hold in this mod
             // makes. Eight seconds is far longer than the swap has ever taken and still an end.
-            if (EnvironmentState.Settling && _fadeWaited < 8f)
+            // Two things have to be true before the art may thin, and neither was being waited
+            // for properly. The backdrop swap has to have finished -- it is a scene load -- and
+            // the menu has to have actually come up behind it. Releasing on the first alone handed
+            // the screen to the stretch between them: the raid tearing down, quests re-requested,
+            // tabs re-added. The player's word for that was a waiting room, and the answer is that
+            // this mod should be the waiting room.
+            //
+            // Capped, and the cap says so in the report. A hold with no end would park the art
+            // over a menu nobody asked to look at, which is the failure every other hold here is
+            // written to avoid, and if this cap turns out to be wrong the line names which exit
+            // was taken rather than inviting another guess.
+            if (_fadeWaited < 10f && (EnvironmentState.Settling || !EnvironmentState.MenuShown))
             {
                 _fadeWaited += seconds;
                 return false;
+            }
+
+            if (_released == null)
+            {
+                _released = _fadeWaited >= 10f ? "cap" : "menu up";
+
+                LoadingPerformance.Note(
+                    "art held " + _fadeWaited.ToString("0.0") + "s for the menu (" + _released + ")");
             }
 
             _fade -= seconds / Mathf.Max(0.05f, DeployScreenPlugin.StagingFadeSeconds.Value);
@@ -3547,6 +3570,7 @@ namespace DeployScreen.Client
             _fadeWaited = 0f;
             _dimming = false;
             _dim = 0f;
+            _released = null;
             _planeImages.Clear();
             _planeColours.Clear();
             _notice = null;

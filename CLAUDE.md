@@ -2125,6 +2125,46 @@ already was. He is lit by a rig masked to his own layer, so it reaches him and n
 A quarter rather than zero, on purpose. Four seconds of black is a worse hang than four seconds of
 picture: the dim is there to say the press landed, not to end the screen before the game has.
 
+#### The waiting room, and being it rather than handing over to it
+
+After the deploy screen closes there is a stretch nobody here had a name for: the raid tearing
+down, quests re-requested, tabs re-added, the environment re-shown. The log has always shown it and
+it was always read as noise --
+
+```
+loading report (cancel-requested)      <- the mod finishing
+MusicExtender: Playing music track
+AllQuestsCheckmarks: Requesting quests data...
+[REQUEST] /botplacementsystem/load
+MenuOverhaul: UpdateLayoutElements ...
+SPT Casino: tab live again             <- the menu actually back
+```
+
+-- all of it **after** the mod let go. The player called it a waiting room, which is exactly what
+it is, and the mod was finishing into it rather than through it.
+
+The fix is the condition, not the timing. `FadeStep` was releasing on `EnvironmentState.Settling`
+alone, which only says the backdrop's own scene load is done; the menu coming up behind it is a
+separate event. Both now have to be true:
+
+```
+if (_fadeWaited < 10f && (EnvironmentState.Settling || !EnvironmentState.MenuShown)) hold;
+```
+
+`MenuShown` is `ShowEnvironment(true)`, which `EnvironmentState` already patches for the deferred
+restore, so this costs one bool. `WatchForMenu` arms it in `BeginFade` -- armed when the wait
+starts, so a `ShowEnvironment` from earlier in the screen's life cannot satisfy it.
+
+Capped at ten seconds, and **the report names the exit**:
+
+```
+art held 3.4s for the menu (menu up)
+art held 10.0s for the menu (cap)
+```
+
+Which is the difference between a fix and a guess. If `ShowEnvironment(true)` turns out not to fire
+on this path at all, every run will say `cap` and that is the answer rather than a mystery.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
