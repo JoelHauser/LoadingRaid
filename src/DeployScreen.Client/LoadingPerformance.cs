@@ -40,6 +40,7 @@ namespace DeployScreen.Client
         /// </summary>
         private bool _holding;
         private bool _fading;
+        private bool _closing;
         private double _fadeAt;
         private double _nextFadeSample;
         private int _fadeSamples;
@@ -291,6 +292,31 @@ namespace DeployScreen.Client
         /// A second and a half caps it. SoftChange takes well under that, and art left sitting
         /// over a menu nobody asked to look at is a worse failure than a visible cut.
         /// </summary>
+        /// <summary>
+        /// The art dissolving into the menu instead of being cut away from in front of it.
+        ///
+        /// Every exit from the hold comes here rather than going straight to Finish. The staging
+        /// area puts the menu back behind its own art and hands over an alpha; this spends it over
+        /// a few frames and finishes underneath, so the last thing seen is the picture thinning
+        /// out onto the main menu rather than the main menu arriving.
+        ///
+        /// Anything that cannot dissolve -- no art up, the option off, a minimal screen -- takes
+        /// the old path unchanged, and the cap in HoldFade still bounds the whole thing.
+        /// </summary>
+        private void BeginClose()
+        {
+            _fading = false;
+
+            if (DeployScreenPlugin.StagingFadeOut.Value && _staging != null && _staging.BeginFade())
+            {
+                _closing = true;
+                Mark("fading the art back to the menu");
+                return;
+            }
+
+            Finish("cancel-requested", false);
+        }
+
         private void HoldFade(double now)
         {
             var screen = _screen as Component;
@@ -303,7 +329,7 @@ namespace DeployScreen.Client
             if (screen == null || !screen.gameObject.activeInHierarchy)
             {
                 Mark("screen went away");
-                Finish("cancel-requested", false);
+                BeginClose();
                 return;
             }
 
@@ -312,14 +338,14 @@ namespace DeployScreen.Client
             if (group == null)
             {
                 Mark("no canvas group to wait on, letting the art go");
-                Finish("cancel-requested", false);
+                BeginClose();
                 return;
             }
 
             if (group.alpha <= 0.02f)
             {
                 Mark("screen faded out");
-                Finish("cancel-requested", false);
+                BeginClose();
                 return;
             }
 
@@ -344,7 +370,7 @@ namespace DeployScreen.Client
             if (now - _fadeAt < 6.0) return;
 
             Mark("screen neither faded nor closed, letting the art go");
-            Finish("cancel-requested", false);
+            BeginClose();
         }
 
         internal static void ScreenClosed(object screen)
@@ -360,7 +386,12 @@ namespace DeployScreen.Client
             // than run, and Update settles it when the countdown is done -- or when the raid
             // starts, or when the thirty-second cap runs out, both of which reach Finish, which
             // restores in a finally. Nothing can outlive the screen by holding here.
-            if (_instance.HoldForCountdown())
+            // Not while the abort is being seen out. The trace from the run this was written
+            // from has loading-screen-disabled and "holding the art for the countdown" on the same
+            // millisecond, on a raid that was cancelled: the screen closing put the countdown hold
+            // in, to wait for a countdown that cancelling means will never arrive. Harmless only
+            // because HoldFade reached its own exit half a second later.
+            if (!_instance._fading && !_instance._closing && _instance.HoldForCountdown())
             {
                 _instance._holding = true;
                 _instance.Mark("holding the art for the countdown");
@@ -469,6 +500,7 @@ namespace DeployScreen.Client
             _easeMetadata = null;
             _holding = false;
             _fading = false;
+            _closing = false;
             _fadeAt = 0;
             _nextFadeSample = 0;
             _fadeSamples = 0;
@@ -589,6 +621,16 @@ namespace DeployScreen.Client
                 StagingArea.WatchForPreview(_screen as Component, now);
                 if (_holding) HoldCountdown(now);
                 if (_fading) HoldFade(now);
+
+                if (_closing)
+                {
+                    if (_staging == null || _staging.FadeStep(Time.unscaledDeltaTime))
+                    {
+                        Mark("faded to the menu");
+                        Finish("cancel-requested", false);
+                        return;
+                    }
+                }
                 if (_closedAt >= 0 && now - _closedAt >= 30) { Finish("screen-closed-without-confirmed-start", false); return; }
                 if (now >= 1800) { Finish("capture-timeout", false); return; }
                 _minimal?.Tick(now);
@@ -677,6 +719,7 @@ namespace DeployScreen.Client
             // while the art it was arranged around is still there.
             _holding = false;
             _fading = false;
+            _closing = false;
             try { _countdown?.Restore(); }
             catch (Exception e) { Warn(e); }
             _countdown = null;

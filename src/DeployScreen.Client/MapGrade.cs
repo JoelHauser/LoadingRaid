@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -432,16 +432,36 @@ namespace DeployScreen.Client
 
             var mask = 1 << layer;
 
+            // Exposure, which until now was computed and never read by anything. Grade builds it
+            // out of the hour, the fog, the rain and the cloud and clamps it to 0.25..1.6, and it
+            // is the one number that says how *bright* the destination is rather than what colour
+            // it is. The key and the rim were taking their colour from the raid and their
+            // brightness from a fixed setting, so a midnight deploy in a downpour lit the
+            // character exactly as hard as noon in clear weather -- right hue, wrong amount, and
+            // the disagreement between a character and the place behind him is the whole reason
+            // the composite reads as a cut-out.
+            //
+            // Through the same strength the scene grade uses, so the config numbers still mean
+            // what they say at strength 0 and the two halves of the picture move together.
+            var strength = Mathf.Clamp01(DeployScreenPlugin.StagingGradeStrength.Value);
+            var lift = Mathf.Lerp(1f, grade.Exposure, strength);
+
             _rig = new GameObject("DeployScreen Character Light");
             UnityEngine.Object.DontDestroyOnLoad(_rig);
 
             AddLight(_rig, "Key", grade.Key,
-                DeployScreenPlugin.StagingKeyIntensity.Value,
+                DeployScreenPlugin.StagingKeyIntensity.Value * lift,
                 Quaternion.Euler(32f, -38f, 0f), mask);
 
             AddLight(_rig, "Rim", grade.Rim,
-                DeployScreenPlugin.StagingRimIntensity.Value,
+                DeployScreenPlugin.StagingRimIntensity.Value * lift,
                 Quaternion.Euler(8f, 158f, 0f), mask);
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] character light: exposure=" + grade.Exposure.ToString("0.00")
+                + " lift=" + lift.ToString("0.00")
+                + " key=" + (DeployScreenPlugin.StagingKeyIntensity.Value * lift).ToString("0.00")
+                + " rim=" + (DeployScreenPlugin.StagingRimIntensity.Value * lift).ToString("0.00"));
         }
 
         private static void AddLight(GameObject parent, string name, Color colour, float intensity,

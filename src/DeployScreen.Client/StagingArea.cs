@@ -469,6 +469,12 @@ namespace DeployScreen.Client
             go.layer = VisibleLayer(camera, root);
             SetLayerRecursively(go, go.layer);
 
+            // The handle the fade pulls on. A CanvasGroup is free while its alpha is 1 and is the
+            // only thing here that can take the art down without touching the image, the sprite or
+            // the shader -- which matters, because the art plane is a world-space Canvas precisely
+            // so that no shader has to be guessed at.
+            _planeFades.Add(go.AddComponent<CanvasGroup>());
+
             var canvas = go.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
             canvas.worldCamera = camera;
@@ -3314,9 +3320,77 @@ namespace DeployScreen.Client
         /// Everything built is destroyed and everything hidden comes back. Safe to call twice and
         /// safe to call when Begin never got anywhere.
         /// </summary>
+        private readonly List<CanvasGroup> _planeFades = new List<CanvasGroup>();
+        private float _fade = 1f;
+
+        /// <summary>
+        /// Puts the menu back behind the art and hands over the art's own alpha, so what follows
+        /// is a dissolve rather than a cut.
+        ///
+        /// Order is the whole of it. Restore destroys the planes first and un-hides the menu
+        /// furniture afterwards, which is right when nobody is looking -- but run while the player
+        /// is watching it is two pops in a row: the picture vanishes onto an empty room, and then
+        /// the room fills in. So the furniture comes back *first*, underneath art that is still
+        /// fully opaque and hiding it, and the grade goes back with it so the menu is already
+        /// lit as itself. Only then does the art thin out, and what it reveals is a main menu that
+        /// has been sitting there the whole time.
+        ///
+        /// False when there is nothing to dissolve, and the caller finishes the ordinary way.
+        /// </summary>
+        internal bool BeginFade()
+        {
+            if (!_built || _planeFades.Count == 0) return false;
+
+            var any = false;
+
+            foreach (var group in _planeFades)
+            {
+                if (group != null) any = true;
+            }
+
+            if (!any) return false;
+
+            foreach (var go in _hidden)
+            {
+                try { if (go != null) go.SetActive(true); }
+                catch (Exception error) { WarnOnce(error); }
+            }
+
+            _hidden.Clear();
+
+            try { _grade.Restore(); }
+            catch (Exception error) { WarnOnce(error); }
+
+            _fade = 1f;
+            return true;
+        }
+
+        /// <summary>
+        /// One frame of the dissolve. True when the art is gone and the rest of the teardown can
+        /// run behind it without anyone seeing the seam.
+        /// </summary>
+        internal bool FadeStep(float seconds)
+        {
+            if (_planeFades.Count == 0) return true;
+
+            _fade -= seconds / Mathf.Max(0.05f, DeployScreenPlugin.StagingFadeSeconds.Value);
+
+            var alpha = Mathf.Clamp01(_fade);
+
+            foreach (var group in _planeFades)
+            {
+                try { if (group != null) group.alpha = alpha; }
+                catch { }
+            }
+
+            return alpha <= 0f;
+        }
+
         internal void Restore()
         {
             _built = false;
+            _planeFades.Clear();
+            _fade = 1f;
 
             // The reading belongs to the picture that is going, not to the next one.
             ArtTone.Forget();

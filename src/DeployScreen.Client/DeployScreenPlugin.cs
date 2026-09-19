@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.ComponentModel;
 using System.IO;
 using System.Reflection;
@@ -104,6 +104,8 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> ReportLayout;
         internal static ConfigEntry<bool> StagingVignetteOff;
         internal static ConfigEntry<bool> StagingCastShadowOff;
+        internal static ConfigEntry<bool> StagingFadeOut;
+        internal static ConfigEntry<float> StagingFadeSeconds;
         internal static ConfigEntry<bool> StagingSimplePreview;
         internal static ConfigEntry<bool> StagingPlainPreview;
         internal static ConfigEntry<bool> StagingBackdropAo;
@@ -511,6 +513,24 @@ namespace DeployScreen.Client
                 + "component. In the stock menu it falls on the room's wall and looks right. With "
                 + "the room hidden and a photograph behind instead, it has nothing to fall on and "
                 + "hangs in mid-air as a dark blob beside your PMC. Off keeps the shadow.");
+
+            StagingFadeOut = Config.Bind(
+                "Staging area",
+                "Fade back to the menu",
+                true,
+                "When you press Back, the art dissolves into the main menu instead of being cut "
+                + "away in front of it. The menu is put back underneath first, while the picture "
+                + "is still solid and hiding it, so what you see is the deploy screen thinning "
+                + "out onto a menu that was already there. Off cuts straight to the menu.");
+
+            StagingFadeSeconds = Config.Bind(
+                "Staging area",
+                "Seconds to fade back",
+                0.45f,
+                new ConfigDescription(
+                    "How long that dissolve takes. Short enough not to be a wait, long enough to "
+                    + "read as a fade rather than a flicker.",
+                    new AcceptableValueRange<float>(0.1f, 2f)));
 
             StagingVignetteOff = Config.Bind(
                 "Staging area",

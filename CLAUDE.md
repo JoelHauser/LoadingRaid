@@ -1996,6 +1996,55 @@ interleave them is how a run gets read wrong, and this one nearly was.
 now land on both. The next report reads as one timeline: when the cancel button appeared, when it
 was hovered, when it was pressed, when the screen closed.
 
+#### Back works, and the trace reads as one story
+
+```
+ 0.029  cancel button visibility=False
+ 4.205  cancel button visibility=True
+10.120  back: DefaultUIButton.OnMouseOver
+10.355  cancel-requested, holding the art while the screen goes
+10.356  back: DefaultUIButton.OnClick
+10.356  waiting: alpha=1.00 active=True at 0.0s
+        ... alpha 1.00, active True, all the way through
+14.398  loading-screen-disabled
+14.906  screen went away
+```
+
+Everything that was guessed at is now a line with a time against it.
+
+**The button opens at 4.2s.** That is `ChangeCancelButtonVisibility(true)`, and it is the whole of
+the run where nothing happened -- the press was simply before the game had opened Back.
+
+**The wait is four seconds, not one and a half.** Alpha never moves off 1.00 and the object stays
+active the entire time; the screen is deactivated at 14.398, four full seconds after the click.
+The first cap of 1.5s never stood a chance, and the six-second one has nearly two seconds to spare.
+`HoldFade` caught the close half a second later and let the art go.
+
+One thing worth fixing that the trace exposed: `loading-screen-disabled` and
+`holding the art for the countdown` land on the same millisecond, **on a cancelled raid**. The
+screen closing started the countdown hold, to wait for a countdown that cancelling means will never
+arrive. It was harmless only because `HoldFade` reached its own exit first. `HoldForCountdown` is
+now skipped while an abort is being seen out.
+
+#### Two things asked for once it worked
+
+**The art dissolves into the menu.** Order is the whole of it. `Restore` destroys the planes first
+and un-hides the menu furniture afterwards, which is correct when nobody is watching and is two
+pops in a row when they are: the picture vanishes onto an empty room, then the room fills in. So
+`BeginFade` puts the furniture back **first**, underneath art that is still solid and hiding it,
+and restores the grade with it so the menu is already lit as itself. Only then does the art thin
+out, revealing a main menu that was there the whole time. A `CanvasGroup` on each plane is the
+handle -- free at alpha 1, and it needs no shader, which is the reason the art plane is a
+world-space Canvas in the first place. **Fade back to the menu**, **Seconds to fade back**.
+
+**The character feels the weather.** `Grade.Exposure` was computed out of the hour, the fog, the
+rain and the cloud, clamped to 0.25..1.6 -- and **read by nothing**. The key and rim took their
+colour from the raid and their brightness from a fixed setting, so a midnight deploy in a downpour
+lit the PMC exactly as hard as noon in clear weather. Right hue, wrong amount. Now both intensities
+are multiplied by it, through the same **Grade strength** the scene uses, so the config numbers
+still mean what they say at strength 0 and the two halves of the picture move together. Logged per
+raid as `character light: exposure=... lift=... key=... rim=...`.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
