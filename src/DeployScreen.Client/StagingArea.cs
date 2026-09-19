@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace DeployScreen.Client
 {
@@ -905,6 +906,7 @@ namespace DeployScreen.Client
                     TakeCameraVignette(camera);
                     TakePreviewKey(camera);
                     SimplifyPreview(camera);
+                    TakeCommandBuffers(camera);
 
                     foreach (var component in camera.GetComponents<Component>())
                     {
@@ -992,6 +994,103 @@ namespace DeployScreen.Client
             _shadowOwners.Clear();
             _shadowWas.Clear();
             _shadowNames.Clear();
+
+            GiveBackCommandBuffers();
+        }
+
+        private readonly List<Camera> _bufferCameras = new List<Camera>();
+        private readonly List<CameraEvent> _bufferEvents = new List<CameraEvent>();
+        private readonly List<CommandBuffer> _buffers = new List<CommandBuffer>();
+
+        /// <summary>
+        /// Takes the command buffers off the preview camera, which is where the dark band has been
+        /// hiding for five sessions.
+        ///
+        /// A command buffer is not a component. `camera.AddCommandBuffer` attaches work to a
+        /// camera and that work keeps running when the component that attached it is disabled,
+        /// when its fields are zeroed, and when every Behaviour on the camera is switched off --
+        /// which is exactly the set of things that has been tried, and exactly why none of them
+        /// changed anything. Nothing in this file had ever asked the camera what it was carrying.
+        ///
+        /// Everything measured says this is it:
+        ///
+        /// - the plateau is `rgba 1,1,1,127` -- black at an alpha of exactly half, and
+        ///   `MaskAndShadow.ShadowStrength` is 0.5 on every stock instance
+        /// - it runs to about 250 pixels and is gone by 512, and `ShadowShift.x` is -0.05, which on
+        ///   a 5420-wide target is 271 pixels
+        /// - it is on one side only, which is what a shift does and a blur does not
+        /// - no single renderer owns it: hiding any one of the 42 takes at most 31 pixels of 203,
+        ///   because the buffer draws all of them into a mask and then offsets and blurs the whole
+        ///   mask, so each renderer only owns its own share
+        /// - with every renderer hidden the target is empty, so it is drawn from the character and
+        ///   not from anything else
+        ///
+        /// Zeroing `MaskAndShadow`'s fields never had a chance: the buffer was built while the
+        /// values were still stock, and a built buffer does not re-read them.
+        ///
+        /// Every buffer is recorded with the camera and the event it was attached to, so
+        /// `GiveBackCommandBuffers` can put it back exactly where it was. Behind the same
+        /// **Remove the cast shadow** option that has always owned this, and the names are logged
+        /// either way -- if taking all of them costs something else on screen, the log says which
+        /// one to spare.
+        /// </summary>
+        private void TakeCommandBuffers(Camera camera)
+        {
+            if (camera == null || !DeployScreenPlugin.StagingCastShadowOff.Value) return;
+
+            try
+            {
+                if (camera.commandBufferCount == 0)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] preview camera '" + camera.name
+                        + "' carries no command buffers; the band is something else again");
+                    return;
+                }
+
+                foreach (CameraEvent when in Enum.GetValues(typeof(CameraEvent)))
+                {
+                    CommandBuffer[] buffers;
+
+                    try { buffers = camera.GetCommandBuffers(when); }
+                    catch { continue; }
+
+                    if (buffers == null || buffers.Length == 0) continue;
+
+                    foreach (var buffer in buffers)
+                    {
+                        if (buffer == null) continue;
+
+                        DeployScreenPlugin.Log.LogInfo(
+                            "[DeployScreen] command buffer on '" + camera.name + "' at " + when
+                            + ": '" + buffer.name + "', " + buffer.sizeInBytes + " bytes -- removed");
+
+                        camera.RemoveCommandBuffer(when, buffer);
+
+                        _bufferCameras.Add(camera);
+                        _bufferEvents.Add(when);
+                        _buffers.Add(buffer);
+                    }
+                }
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
+        private void GiveBackCommandBuffers()
+        {
+            for (var i = _buffers.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    if (_bufferCameras[i] != null && _buffers[i] != null)
+                        _bufferCameras[i].AddCommandBuffer(_bufferEvents[i], _buffers[i]);
+                }
+                catch { }
+            }
+
+            _bufferCameras.Clear();
+            _bufferEvents.Clear();
+            _buffers.Clear();
         }
 
 
@@ -1582,6 +1681,7 @@ namespace DeployScreen.Client
                             : camera.targetTexture.width + "x" + camera.targetTexture.height
                               + " " + camera.targetTexture.format));
 
+                    ReportCommandBuffers(camera);
                     ReportFields(camera, "PrismEffects");
 
                     // The last two components on this camera nobody has opened. A name in a log
@@ -2143,6 +2243,48 @@ namespace DeployScreen.Client
                 RenderTexture.active = was;
                 if (small != null) RenderTexture.ReleaseTemporary(small);
                 if (read != null) UnityEngine.Object.Destroy(read);
+            }
+        }
+
+        /// <summary>
+        /// What the preview camera is carrying that is not a component.
+        ///
+        /// Printed whether or not TakeCommandBuffers removed anything, because the two together
+        /// say which case this is: buffers listed here and none removed means the option is off,
+        /// buffers listed and removed means the band should be gone, and nothing listed at all
+        /// means five sessions of elimination have run out of suspects and the hunt starts again.
+        /// </summary>
+        private static void ReportCommandBuffers(Camera camera)
+        {
+            try
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] preview camera '" + camera.name + "' carries "
+                    + camera.commandBufferCount + " command buffer(s)");
+
+                foreach (CameraEvent when in Enum.GetValues(typeof(CameraEvent)))
+                {
+                    CommandBuffer[] buffers;
+
+                    try { buffers = camera.GetCommandBuffers(when); }
+                    catch { continue; }
+
+                    if (buffers == null || buffers.Length == 0) continue;
+
+                    foreach (var buffer in buffers)
+                    {
+                        if (buffer == null) continue;
+
+                        DeployScreenPlugin.Log.LogInfo(
+                            "[DeployScreen]   still attached at " + when + ": '" + buffer.name
+                            + "', " + buffer.sizeInBytes + " bytes");
+                    }
+                }
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not read the camera's command buffers: " + error.Message);
             }
         }
 

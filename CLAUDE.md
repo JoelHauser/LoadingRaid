@@ -1865,6 +1865,62 @@ puts the stock deploy screen on screen for a moment on the way out, which is wha
 described as reverting to the default loading screen. The hook is on the wrong object; finding the
 right one is the fix.
 
+#### The plateau named itself: a command buffer, not a component
+
+```
+the plateau at x=2907 is rgba 1,1,1,127
+plateau on row 616: 203 pixel(s) at a middling alpha, across 42 renderer(s)
+plateau, without '.../mod_muzzle/silencer/wpn_amb17_rwap_hud.ogf 03.002': 184 (-19)
+plateau: every renderer whose removal took at least 16 pixels off it is above.
+```
+
+**`rgba 1,1,1,127`.** Black, at an alpha of exactly half. Composited over the backdrop that is a
+50% darkening, which is the complaint in one line.
+
+And **no renderer owns it**. Of 42, only the silencer clears the threshold at all, and it takes 19
+pixels of 203 -- its own share of the right-hand edge, nothing more. Hiding any one part of the
+character removes only that part's contribution.
+
+Put beside everything else measured, that is not a puzzle any more, it is a description:
+
+| measurement | what it says |
+| --- | --- |
+| `rgba 1,1,1,127` | black at half alpha -- and `MaskAndShadow.ShadowStrength` is **0.5** on every stock instance |
+| plateau to ~250px, gone by 512 | `ShadowShift.x` is **-0.05**, and 5% of a 5420-wide target is **271px** |
+| one side only | a shift does that; a blur cannot |
+| no single renderer owns it | the mask is drawn from *all* of them, then offset and blurred as one image |
+| target empty with renderers off | it is drawn from the character, not from anything else |
+| disabling the component changed nothing | **it was never the component doing the drawing** |
+
+A **command buffer is not a component**. `camera.AddCommandBuffer` attaches work to a camera, and
+that work keeps running when the component that attached it is disabled, when its fields are
+zeroed, and when every `Behaviour` on the camera is switched off. That is precisely the list of
+things this hunt has tried, and precisely why not one of them moved the band by a pixel. Zeroing
+`MaskAndShadow`'s fields never had a chance either: the buffer was built while the values were
+still stock, and a built buffer does not re-read them.
+
+Nothing in this file had ever asked the camera what it was carrying. Five sessions of elimination,
+and the suspect was never in the line-up.
+
+#### `TakeCommandBuffers`, which is a fix and not another probe
+
+Walks every `CameraEvent`, logs each attached buffer by name and size, and removes it -- recording
+the camera and the event so `GiveBackCommandBuffers` can put it back exactly where it was, called
+from `GiveBackCastShadow` with the rest of the teardown. Behind **Remove the cast shadow**, the
+option that has always owned this.
+
+`ReportCommandBuffers` prints the same list from the probe regardless of the option, and the two
+together say which case a log is showing:
+
+- **buffers listed and removed, band gone** -- done, and the mechanism is understood.
+- **buffers listed, band still there** -- the band is drawn by something else at the same strength
+  and offset, which would be a remarkable coincidence, but the names in the log narrow it.
+- **`carries no command buffers`** -- the theory is wrong, every measured property above is a
+  coincidence, and the hunt genuinely restarts.
+
+Removing all of them rather than guessing at a name is deliberate: everything is restored, and if
+taking them all costs something else on screen, the log names which one to spare next time.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
@@ -2047,12 +2103,17 @@ actually been tested, `Undithering` and `LightSwitcherOverkill` included.
 band -- removing the eight decal renderers takes 173 of 208 solid cells but only 41 of 135 part
 cells, so the part-transparent region does not scale with how much character is present.
 
-`ReportAlphaProfile` has since checked the instrument and cleared it: `mips=False`, and the band is
-real. Alpha holds at **exactly 127** for more than a hundred pixels to the right of the silhouette
-and is down to 1 within two pixels on the left. A flat half, one-sided -- a fill, not a blur, and a
-half-alpha black over the backdrop is the 50% darkening being complained about. `ReportPlateauOwner`
-now measures that plateau directly and hides the 42 renderers one at a time to name the one that
-draws it.
+`ReportAlphaProfile` cleared the instrument -- `mips=False`, the band is real -- and
+`ReportPlateauOwner` then named the mechanism by failing to find a culprit. The plateau is
+`rgba 1,1,1,127`, black at half alpha, and **no renderer owns it**: of 42, only the silencer clears
+the threshold and it takes 19 pixels of 203.
+
+That, with the 0.5 alpha matching `ShadowStrength` and the 250-pixel reach matching `ShadowShift.x`
+of -0.05 on a 5420-wide target, is a **command buffer**. A command buffer is not a component, so it
+survives the component being disabled, its fields being zeroed and every `Behaviour` on the camera
+being switched off -- which is the entire list of things tried across five sessions, and exactly why
+none of them changed anything. `TakeCommandBuffers` removes them and restores them on teardown, and
+that is a fix rather than another probe.
 
 Back is answered: the press lands and the abort fires, and the reason it sometimes does nothing is
 that the button is `active=False` for the first seconds of the screen. What remains is that
