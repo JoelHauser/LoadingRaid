@@ -2090,6 +2090,41 @@ anything to lose, so the notice waits until it has been offered at least once; a
 sets it false on the way *out*, where a notice would be announcing a deadline about a button the
 player just pressed. **Say when cancelling stops being offered**.
 
+#### The abort works; the silence was the bug
+
+Three cancels in one session, all clean, and all three reported as Back not working:
+
+| click | screen closes | menu |
+| --- | --- | --- |
+| 16.668 | 21.584 (**4.9s**) | 22.937 |
+| 21.270 | 22.161 (0.9s) | 23.944 |
+| 25.324 | 25.509 (0.2s) | 27.572 |
+
+The middle column is the game's own round trip. `AbortMatching` goes to the matchmaker and the
+screen closes when it comes back, and it has taken up to five seconds. Nothing in this mod can
+shorten it -- `HoldFade` waits on it and no more.
+
+What the mod *was* doing through that wait was holding the art at full brightness and saying
+nothing, so a press that worked was indistinguishable from a press that did not. Three traces of a
+working abort and three reports of a broken button is not a contradiction, it is a description of
+missing feedback.
+
+So the press is now answered at once, and the wait is left alone:
+
+- **The picture and the character dim to a quarter** over `Seconds to dim when cancelling` (0.6s).
+- **The intel row says `CANCELLING -- returning to the menu`**, through the same `Notice` the
+  end-of-window line uses.
+
+Tint, not alpha, and that distinction is the whole reason this is safe. Lowering alpha would thin
+the art and let the game's own deploy screen through, which is the bug the dissolve exists to
+prevent; darkening the colour leaves the planes fully opaque so nothing can appear early. The
+character is dimmed through `MapGrade.DimCharacter`, scaled from what the raid asked for rather
+than set to a number, so the weather grade stays underneath it -- a night deploy dims from where it
+already was. He is lit by a rig masked to his own layer, so it reaches him and nothing else.
+
+A quarter rather than zero, on purpose. Four seconds of black is a worse hang than four seconds of
+picture: the dim is there to say the press landed, not to end the screen before the game has.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested

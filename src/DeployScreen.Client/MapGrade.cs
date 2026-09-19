@@ -293,6 +293,35 @@ namespace DeployScreen.Client
         /// <summary>Whether the character is currently carrying our key and rim.</summary>
         internal bool CharacterLit { get { return _rig != null; } }
 
+        /// <summary>
+        /// Takes the character down with the picture while a cancel is being waited out.
+        ///
+        /// He is lit by a rig masked to his own layer, so this reaches him and nothing else. A
+        /// character left at full key over a backdrop that has just gone dim is the one thing on
+        /// screen insisting nothing has happened, which is the opposite of what the dim is for.
+        ///
+        /// Scaled from what the raid asked for rather than set to a number, so the weather grade
+        /// is still underneath it and a night deploy dims from where it already was.
+        /// </summary>
+        internal void DimCharacter(float scale)
+        {
+            if (_rig == null) return;
+
+            foreach (var light in _rig.GetComponentsInChildren<Light>(true))
+            {
+                if (light == null) continue;
+
+                var full = light.name == "Rim"
+                    ? DeployScreenPlugin.StagingRimIntensity.Value
+                    : DeployScreenPlugin.StagingKeyIntensity.Value;
+
+                light.intensity = full * _lift * Mathf.Clamp01(scale);
+            }
+        }
+
+        /// <summary>What the exposure multiplied the configured intensities by, kept for the dim.</summary>
+        private float _lift = 1f;
+
         internal string Description
         {
             get
@@ -445,6 +474,7 @@ namespace DeployScreen.Client
             // what they say at strength 0 and the two halves of the picture move together.
             var strength = Mathf.Clamp01(DeployScreenPlugin.StagingGradeStrength.Value);
             var lift = Mathf.Lerp(1f, grade.Exposure, strength);
+            _lift = lift;
 
             _rig = new GameObject("DeployScreen Character Light");
             UnityEngine.Object.DontDestroyOnLoad(_rig);

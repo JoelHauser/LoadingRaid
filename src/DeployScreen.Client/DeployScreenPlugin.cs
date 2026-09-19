@@ -107,6 +107,7 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> StagingFadeOut;
         internal static ConfigEntry<bool> StagingSayCancelClosed;
         internal static ConfigEntry<float> StagingFadeSeconds;
+        internal static ConfigEntry<float> StagingDimSeconds;
         internal static ConfigEntry<bool> StagingSimplePreview;
         internal static ConfigEntry<bool> StagingPlainPreview;
         internal static ConfigEntry<bool> StagingBackdropAo;
@@ -556,6 +557,18 @@ namespace DeployScreen.Client
                 new ConfigDescription(
                     "How long that dissolve takes. Short enough not to be a wait, long enough to "
                     + "read as a fade rather than a flicker.",
+                    new AcceptableValueRange<float>(0.1f, 2f)));
+
+            StagingDimSeconds = Config.Bind(
+                "Staging area",
+                "Seconds to dim when cancelling",
+                0.6f,
+                new ConfigDescription(
+                    "Pressing Back cannot end the screen on its own -- the game has to agree, and "
+                    + "that has taken up to five seconds. The picture and your character dim to a "
+                    + "quarter over this long as soon as you press, so the wait reads as something "
+                    + "happening rather than as a button that did nothing. It darkens rather than "
+                    + "fades, so nothing behind the art can show through early.",
                     new AcceptableValueRange<float>(0.1f, 2f)));
 
             StagingVignetteOff = Config.Bind(

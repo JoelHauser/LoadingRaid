@@ -267,6 +267,13 @@ namespace DeployScreen.Client
                 _instance._nextFadeSample = _instance._fadeAt;
                 _instance._fadeSamples = 0;
                 _instance.Mark("cancel-requested, holding the art while the screen goes");
+
+                // Both of these are for the player rather than for the log. The wait that follows
+                // is the game's and can run to five seconds; without something answering the press
+                // immediately, an abort that worked is indistinguishable from one that did not.
+                _instance._staging?.BeginDimming();
+                _instance._staging?.Notice(
+                    "<color=#C8A45C>CANCELLING</color>   returning to the menu");
                 return;
             }
 
@@ -648,7 +655,11 @@ namespace DeployScreen.Client
                 StagingArea.WatchForCountdown(_screen as Component, now);
                 StagingArea.WatchForPreview(_screen as Component, now);
                 if (_holding) HoldCountdown(now);
-                if (_fading) HoldFade(now);
+                if (_fading)
+                {
+                    _staging?.DimStep(Time.unscaledDeltaTime);
+                    HoldFade(now);
+                }
 
                 if (_closing)
                 {

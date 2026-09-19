@@ -482,6 +482,9 @@ namespace DeployScreen.Client
 
             var image = go.AddComponent(GameTypes.BackgroundImage);
 
+            _planeImages.Add(image);
+            _planeColours.Add(colour);
+
             if (GameTypes.Background_Sprite != null) GameTypes.Background_Sprite.SetValue(image, sprite, null);
             if (GameTypes.Background_Color != null) GameTypes.Background_Color.SetValue(image, colour, null);
             if (GameTypes.Background_Raycast != null) GameTypes.Background_Raycast.SetValue(image, false, null);
@@ -3386,8 +3389,69 @@ namespace DeployScreen.Client
         /// safe to call when Begin never got anywhere.
         /// </summary>
         private readonly List<CanvasGroup> _planeFades = new List<CanvasGroup>();
+        private readonly List<Component> _planeImages = new List<Component>();
+        private readonly List<Color> _planeColours = new List<Color>();
         private float _fade = 1f;
         private float _fadeWaited;
+        private float _dim;
+        private bool _dimming;
+
+        /// <summary>How far down the picture goes while a cancel is waited out. Not to black.</summary>
+        private const float Dimmed = 0.25f;
+
+        /// <summary>
+        /// Answers the press at once, while the game takes its time about the rest.
+        ///
+        /// The measured gap between the click and the screen actually closing is up to five
+        /// seconds -- a server round trip we wait on and do not control. Holding the art at full
+        /// brightness through it meant a press that had worked looked exactly like one that had
+        /// not, and it was reported as Back not working three times over while the trace showed
+        /// three clean aborts.
+        ///
+        /// Tint rather than alpha, and this is the point of it: lowering alpha would thin the art
+        /// and show the game's own deploy screen through it, which is the bug the dissolve exists
+        /// to avoid. Darkening the colour leaves the planes fully opaque, so nothing behind them
+        /// can appear early.
+        ///
+        /// A quarter, not zero. Four seconds of black is a worse hang than four seconds of
+        /// picture: the point is to say "heard you" and keep the scene alive underneath, not to
+        /// end the screen before the game has.
+        /// </summary>
+        internal void BeginDimming()
+        {
+            if (!_built || _planeImages.Count == 0) return;
+
+            _dimming = true;
+            _dim = 0f;
+        }
+
+        /// <summary>One frame of that. Silent when nothing asked for it.</summary>
+        internal void DimStep(float seconds)
+        {
+            if (!_dimming || GameTypes.Background_Color == null) return;
+
+            _dim = Mathf.Clamp01(_dim + seconds / Mathf.Max(0.05f, DeployScreenPlugin.StagingDimSeconds.Value));
+
+            var k = Mathf.Lerp(1f, Dimmed, _dim);
+
+            for (var i = 0; i < _planeImages.Count; i++)
+            {
+                var image = _planeImages[i];
+                if (image == null) continue;
+
+                var was = _planeColours[i];
+
+                try
+                {
+                    GameTypes.Background_Color.SetValue(
+                        image, new Color(was.r * k, was.g * k, was.b * k, was.a), null);
+                }
+                catch { }
+            }
+
+            try { _grade.DimCharacter(Mathf.Lerp(1f, Dimmed, _dim)); }
+            catch { }
+        }
 
         /// <summary>
         /// Puts the menu back behind the art and hands over the art's own alpha, so what follows
@@ -3481,6 +3545,10 @@ namespace DeployScreen.Client
         {
             _built = false;
             _fadeWaited = 0f;
+            _dimming = false;
+            _dim = 0f;
+            _planeImages.Clear();
+            _planeColours.Clear();
             _notice = null;
             _noticeUntil = -1;
             _planeFades.Clear();
