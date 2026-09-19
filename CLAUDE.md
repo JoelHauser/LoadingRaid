@@ -1954,6 +1954,48 @@ So `TheShadow` matches on the name -- `alpha` and `blur` together -- and anythin
 logged and left where it is. A buffer this does not remove is a buffer whose owner still gets to
 run. `Key light` and `Rim light` are the knobs if the character wants lifting after that.
 
+#### The run where nothing happened: hover arrived, the press did not
+
+```
+back: DefaultUIButton.OnMouseOver fired      (three over/out pairs)
+outcome: first-update-after-game-started
+```
+
+`OnClick fired` appears **zero** times, and the raid went ahead. So the pointer was reaching the
+button -- hover proves the raycast lands, nothing is covering it, and it is where the log says it
+is -- and the press was not. The listener is not at fault either: it fired `OnClick` and produced
+`cancel-requested` twice in an earlier session.
+
+**A button that takes hover but not clicks is a button that is visible and not accepting**, and
+`ChangeCancelButtonVisibility(bool)` is the call that decides that. It is now patched and marked, so
+the next run says when Back became available relative to when it was pressed.
+
+The same run is also the first to log `loading-screen-disabled`, at 49.690s, on the ordinary path:
+
+```
+49.690  loading-screen-disabled
+49.690  holding the art for the countdown
+50.511  countdown: moved=3; resized=9; hidden=3
+56.003  game-world-started
+```
+
+Worth correcting the record for. The screen **is** deactivated when a raid actually starts --
+`HideGameObject` runs and `ScreenClosed` fires. What never happens is that on the **abort** path,
+and the reason is in `ScreenClosed` itself: it returns early unless `_active` is still true, and
+`Finish` clears that first. "No `loading-screen-disabled` in any log" was true and meant something
+narrower than it was read as.
+
+#### Two records of one sequence
+
+The back button's events were going to the BepInEx log, which carries no timestamps, while
+everything that would explain them -- `loading-screen-disabled`, the countdown, `game-world-started`
+-- was going to the trace with a time against it. Two records of one sequence and no way to
+interleave them is how a run gets read wrong, and this one nearly was.
+
+`LoadingPerformance.Note` puts a line on the trace from outside the class, and the button's events
+now land on both. The next report reads as one timeline: when the cancel button appeared, when it
+was hovered, when it was pressed, when the screen closed.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested

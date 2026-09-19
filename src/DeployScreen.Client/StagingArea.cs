@@ -2724,8 +2724,7 @@ namespace DeployScreen.Client
 
                 add.Invoke(raised, new object[]
                 {
-                    new UnityEngine.Events.UnityAction(() => DeployScreenPlugin.Log.LogInfo(
-                        "[DeployScreen] back: " + what + " fired"))
+                    new UnityEngine.Events.UnityAction(() => Fired(what))
                 });
 
                 DeployScreenPlugin.Log.LogInfo("[DeployScreen] back: listening on " + what);
@@ -2735,6 +2734,16 @@ namespace DeployScreen.Client
                 DeployScreenPlugin.Log.LogInfo(
                     "[DeployScreen] back: could not listen on " + what + ": " + error.Message);
             }
+        }
+
+        /// <summary>
+        /// One button event, on both records: the log for reading by eye, and the trace so it sits
+        /// on the same timeline as the screen closing and the raid starting.
+        /// </summary>
+        private static void Fired(string what)
+        {
+            DeployScreenPlugin.Log.LogInfo("[DeployScreen] back: " + what + " fired");
+            LoadingPerformance.Note("back: " + what);
         }
 
         /// <summary>

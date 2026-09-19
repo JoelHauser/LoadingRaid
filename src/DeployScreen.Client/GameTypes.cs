@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using HarmonyLib;
 
@@ -219,6 +219,13 @@ namespace DeployScreen.Client
         internal static PropertyInfo RaidSettings_SelectedLocation;
 
         internal static MethodInfo Loading_Show, Loading_Status, Loading_Abort, World_Started;
+
+        /// <summary>
+        /// MatchmakerTimeHasCome.ChangeCancelButtonVisibility(bool), which is why the back button
+        /// reads active=False early in the screen's life: the game brings it up partway through,
+        /// so a click before that lands on nothing at all.
+        /// </summary>
+        internal static MethodInfo Loading_CancelButton;
         internal static MethodInfo Loading_ShowPlayer;
         internal static FieldInfo Loading_PlayerModel, Loading_Banners;
         internal static FieldInfo Environment_Current, Environment_Visible;
@@ -271,6 +278,8 @@ namespace DeployScreen.Client
             {
                 Loading_Status = AccessTools.Method(screen, "ChangeStatus", new[] { typeof(string), typeof(float?) });
                 Loading_Abort = AccessTools.Method(screen, "AbortMatching", Type.EmptyTypes);
+                Loading_CancelButton = AccessTools.Method(
+                    screen, "ChangeCancelButtonVisibility", new[] { typeof(bool) });
                 Loading_ShowPlayer = AccessTools.Method(screen, "ShowPlayerModel");
                 if (Loading_ShowPlayer != null && Loading_ShowPlayer.ReturnType != typeof(System.Threading.Tasks.Task))
                     Loading_ShowPlayer = null;

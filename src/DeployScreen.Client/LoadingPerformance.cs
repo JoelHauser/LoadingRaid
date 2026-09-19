@@ -72,6 +72,7 @@ namespace DeployScreen.Client
             _statusHook = Patch(harmony, GameTypes.Loading_Status, nameof(Status));
             _startHook = Patch(harmony, GameTypes.World_Started, null, nameof(Started));
             Patch(harmony, GameTypes.Loading_Abort, nameof(Aborted));
+            Patch(harmony, GameTypes.Loading_CancelButton, nameof(CancelButton));
             _playerHook = Patch(harmony, GameTypes.Loading_ShowPlayer, nameof(SkipPlayer));
             if (GameTypes.BannersPanel_Show != null && GameTypes.BannersPanel_Show.ReturnType == typeof(Task))
                 _bannerHook = Patch(harmony, GameTypes.BannersPanel_Show, nameof(SkipBanners));
@@ -198,6 +199,38 @@ namespace DeployScreen.Client
             if (_instance == null || !_instance._active) return;
             _instance._started = true;
             _instance.Mark("game-world-started");
+        }
+
+        /// <summary>
+        /// The game deciding whether Back is available, on the timeline with everything else.
+        ///
+        /// The run this was written for is the one where nothing happened. The button logged three
+        /// OnMouseOver/OnMouseOut pairs and **no OnClick at all**, and the raid went ahead --
+        /// so the pointer was reaching the button and the press was not. Hover arriving while a
+        /// click does not is the shape of a button that is visible but not accepting, and this is
+        /// the call that decides that.
+        /// </summary>
+        private static void CancelButton(object __instance, bool __0)
+        {
+            if (_instance == null || !ReferenceEquals(_instance._screen, __instance)) return;
+
+            _instance.Mark("cancel button visibility=" + __0);
+        }
+
+        /// <summary>
+        /// A line on the trace from outside this class, so the back button's own events land on
+        /// the same timeline as the screen's.
+        ///
+        /// They were going to the BepInEx log, which carries no timestamps, while everything that
+        /// would explain them -- loading-screen-disabled, the countdown, game-world-started -- was
+        /// going to the trace with a time against it. Two records of one sequence and no way to
+        /// interleave them is how a run gets read wrong.
+        /// </summary>
+        internal static void Note(string name)
+        {
+            if (_instance == null || !_instance._active) return;
+
+            _instance.Mark(name);
         }
 
         private static void Aborted(object __instance)
