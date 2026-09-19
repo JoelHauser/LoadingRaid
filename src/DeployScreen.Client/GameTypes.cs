@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using HarmonyLib;
 
@@ -218,7 +218,23 @@ namespace DeployScreen.Client
         internal static Type RaidSettings;
         internal static PropertyInfo RaidSettings_SelectedLocation;
 
+        /// <summary>
+        /// RaidSettings.SelectedDateTime, a JsonType.EDateTime of CURR=0 or PAST=1, and
+        /// Location.UnixDateTime, the map's own in-game clock. Together they are the raid's real
+        /// hour: TimeAndWeatherSettings.HourOfDay is only filled in for a custom raid and reads -1
+        /// for every ordinary one, which is why the screen has been lit by the wall clock.
+        /// </summary>
+        internal static FieldInfo RaidSettings_SelectedDateTime;
+        internal static FieldInfo Location_UnixDateTime;
+
         internal static MethodInfo Loading_Show, Loading_Status, Loading_Abort, World_Started;
+
+        /// <summary>
+        /// MatchmakerTimeHasCome.ChangeCancelButtonVisibility(bool), which is why the back button
+        /// reads active=False early in the screen's life: the game brings it up partway through,
+        /// so a click before that lands on nothing at all.
+        /// </summary>
+        internal static MethodInfo Loading_CancelButton;
         internal static MethodInfo Loading_ShowPlayer;
         internal static FieldInfo Loading_PlayerModel, Loading_Banners;
         internal static FieldInfo Environment_Current, Environment_Visible;
@@ -266,11 +282,15 @@ namespace DeployScreen.Client
         {
             var screen = AccessTools.TypeByName("EFT.UI.Matchmaker.MatchmakerTimeHasCome");
             var settings = AccessTools.TypeByName("EFT.RaidSettings");
+            if (settings != null)
+                RaidSettings_SelectedDateTime = AccessTools.Field(settings, "SelectedDateTime");
             Loading_Show = settings == null ? null : FindShowTaking(screen, settings);
             if (screen != null)
             {
                 Loading_Status = AccessTools.Method(screen, "ChangeStatus", new[] { typeof(string), typeof(float?) });
                 Loading_Abort = AccessTools.Method(screen, "AbortMatching", Type.EmptyTypes);
+                Loading_CancelButton = AccessTools.Method(
+                    screen, "ChangeCancelButtonVisibility", new[] { typeof(bool) });
                 Loading_ShowPlayer = AccessTools.Method(screen, "ShowPlayerModel");
                 if (Loading_ShowPlayer != null && Loading_ShowPlayer.ReturnType != typeof(System.Threading.Tasks.Task))
                     Loading_ShowPlayer = null;
@@ -363,6 +383,7 @@ namespace DeployScreen.Client
         private static bool ResolveIntel()
         {
             Location_MongoId = AccessTools.Field(Location, "_Id");
+            Location_UnixDateTime = AccessTools.Field(Location, "UnixDateTime");
             Location_Name = AccessTools.Field(Location, "Name");
             Location_EscapeTimeLimit = AccessTools.Field(Location, "EscapeTimeLimit");
             Location_AveragePlayTime = AccessTools.Field(Location, "AveragePlayTime");

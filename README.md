@@ -2,7 +2,9 @@
 
 Gives you something worth looking at while a raid loads: moving banners, a briefing for the map you're entering, your own images, and a backdrop that fits the map.
 
-> **Pre-release.** Built and checked against SPT 4.1.5, but not yet tested in game.
+> **Pre-release.** Built against SPT 4.1.5 and played in game. One known issue: a soft dark
+> band follows the PMC's silhouette and is drawn over the backdrop, which spoils the
+> composite. It is being chased -- see CLAUDE.md for everything ruled out so far.
 
 ## What it does
 
@@ -14,6 +16,8 @@ This mod changes that:
 - **Map intel.** The banner captions tell you which bosses can spawn and how likely they are, how many extracts the map has, and which of your tasks are on this map.
 - **Custom banners.** Use your own images, per map.
 - **Backdrop.** The menu scene behind the screen changes to suit the map. Off by default.
+- **Readable over anything.** The writing carries its own shadow, and how much the corners are dimmed is measured from your picture rather than fixed -- barely anything over a dark treeline, a good deal over a white sky.
+- **The countdown too.** GET READY and the final count stay on the map art in the same corners, instead of cutting back to the menu room for the last few seconds.
 - **Performance comparison.** Record loading phases and frame gaps, compare the stock presentation with an experimental minimal screen, and find out whether removing presentation work helps on your machine.
 
 Motion and map intel work as soon as you install, with nothing to set up. Nothing is saved to your profile, and removing the mod puts everything back the way it was.
@@ -55,7 +59,7 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 | Scene | Camera drift | 0.05 | How far the camera drifts, in world units. **The one setting likely to need tuning.** |
 | Scene | Camera sway | 0.12 | A slow rotation on top of the drift, in degrees. |
 | Scene | Light wander | 0.06 | How much the scene's lights breathe, as a fraction of their set intensity. |
-| Scene | Ground the character | On | Switch on the PMC's own contact shadow if it's off. |
+| Scene | The character contact shadow | Show | MenuPlayerPoser.BottomShadow is the dark patch the game draws under your PMC. Show grounds him. Hide is for when it lands as a smear behind him rather than under him, which is what a shadow authored for a dim menu room can do over a photograph. Leave it alone touches nothing. |
 | Scene | Idle movement | Off | Ask the PMC's animator for its idle patrol motion. |
 | Scene | Dim behind the text | Off | Use the game's own scrim behind the loading text, for readability. |
 | Ease the load | Decode art early | On | Read your pictures before the load starts, not during it. |
@@ -74,8 +78,15 @@ Press **F12** and open **Deploy Screen**. Changes take effect the next time you 
 | Staging area | Intel under the map name | On | Briefing, bosses, extracts and tasks in the line under the location. |
 | Staging area | Seconds per intel line | 7 | How long each line stays. |
 | Staging area | Rearrange the screen | On | Map name large in the top-left with its intel under it, progress bottom-left, Back bottom-right, and the Escape from Tarkov logo out of the way. Off keeps the stock arrangement. |
+| Scene | Move the character with the scene | 1.0 | Your PMC is a separate render composited on top, so without this he is the one thing on screen that does not move while the camera drifts -- and he is the nearest thing on it. Gives him the movement something standing where he appears to stand would have. 0 pins him to the screen. |
+| Staging area | Keep the art through the countdown | On | The GET READY countdown is a separate screen that appears after the deploy screen closes. This holds the art until it is done, puts the map name top-left and GET READY and the count in the middle of the screen, instead of dropping you back to the menu room for the last few seconds. |
+| Staging area | Shadow behind the writing | On | A soft dark halo on the map name, the intel line and the progress line, so they hold their shape over a busy picture. Darkens only what is behind the letters. |
+| Staging area | Match the dimming to the picture | On | Measures how bright your picture is in the corners the writing sits in, and dims those corners by as much as that picture needs. Off uses one fixed amount for every picture. |
+| Staging area | Dimming behind the writing | 1.0 | A multiplier over that. Below 1 for more picture and less contrast, above 1 if the writing still loses, 0 for none. |
 | Staging area | Turn off the menu vignette | On | The game darkens the screen edges in post-processing. Invisible over the stock backdrop, a black frame over a photograph. Put back when you leave. |
 | Staging area | Remove the cast shadow | On | The character preview casts a shadow onto the menu room. With the room hidden it hangs in mid-air beside your PMC. |
+| Staging area | Clear the preview to nothing | On | Your PMC's camera clears its background to magenta -- a chroma key -- and every effect on it smears a little of that along his outline. Invisible over the stock menu room, a greenscreen halo over a photograph. Clears to transparent black instead. |
+| Staging area | Turn off the preview post-processing | Off | Your PMC is rendered by his own camera onto a transparent background. Its effects do not know the background is meant to be nothing: bloom bleeds a lit character outwards into it as a soft light halo. This switches the whole stack off. Costs you the look BSG lights him for -- try it both ways. |
 | Staging area | Simplify the character preview | On | Switches off the preview's ambient occlusion and shadow catcher, which are tuned for a dim room and show as a halo against a photograph. |
 | Performance | Report the screen layout | Off | Writes the deploy screen's whole hierarchy to the log once. For when a game update renames something and the layout stops finding it. |
 
@@ -174,8 +185,11 @@ measure how big the scenes are. The default assumes one unit is about a metre:
 - Scene swimming or seasick? Lower it.
 - 0 turns the drift off and leaves only the sway.
 
-**Ground the character** switches on a contact shadow the game already has but doesn't always show.
-It's what stops the PMC looking pasted on top of the backdrop rather than standing in it.
+**The character contact shadow** is one the game already has -- the dark patch under the PMC. Shown,
+it's what stops him looking pasted on top of the backdrop rather than standing in it. Hidden, it's
+gone: a blob authored to sit under a character in a dim menu room doesn't necessarily sit under him
+over a photograph, and when it reads as a smear behind him it does more harm than the grounding is
+worth. Leave it alone touches nothing.
 
 **Idle movement** is off by default for an honest reason: the game property that enables it can be
 set but not read, so the mod can't tell what it was before and simply turns it off again on the way

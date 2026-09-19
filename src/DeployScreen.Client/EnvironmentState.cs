@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using HarmonyLib;
 
@@ -72,8 +72,35 @@ namespace DeployScreen.Client
                 postfix: new HarmonyMethod(AccessTools.Method(typeof(EnvironmentState), nameof(AfterShowEnvironment))));
         }
 
+        private static bool _menuShown;
+
+        /// <summary>
+        /// Whether the menu has brought its environment up since the watch was armed.
+        ///
+        /// This is the end of the wait nobody had a name for. After the deploy screen closes there
+        /// is a stretch where the raid is being torn down and the menu rebuilt -- quests
+        /// re-requested, tabs re-added, the environment re-shown -- and the player called it a
+        /// waiting room, which is exactly what it looks like. Finishing before it meant handing
+        /// over to that instead of to the menu.
+        ///
+        /// ShowEnvironment(true) is the game saying the menu's own backdrop is up, and it is
+        /// already patched here for the deferred restore, so this costs one bool.
+        /// </summary>
+        internal static bool MenuShown { get { return _menuShown; } }
+
+        /// <summary>Starts the watch. Armed when the art begins waiting, not before.</summary>
+        internal static void WatchForMenu() { _menuShown = false; }
+
         private static void AfterShowEnvironment(bool __0)
         {
+            if (__0) _menuShown = true;
+
+            // On the trace this was added for, MenuShown never became true and the hold ran to its
+            // cap, so ShowEnvironment(true) is not the menu returning -- or is not called on the
+            // cancel path at all. Printed with its argument rather than reasoned about, because
+            // one line in the next report settles which.
+            LoadingPerformance.Note("ShowEnvironment(" + __0 + ")");
+
             if (!__0 || !_pending || _applying) return;
 
             _pending = false;
@@ -234,8 +261,30 @@ namespace DeployScreen.Client
         /// A faulted scene load must not surface as an unhandled task exception, and must not
         /// leave us believing we own a backdrop we failed to set.
         /// </summary>
+        private static System.Threading.Tasks.Task _settling;
+
+        /// <summary>
+        /// Whether the backdrop is mid-swap.
+        ///
+        /// Putting the player's own backdrop back is a scene load, and a scene load takes as long
+        /// as it takes. Nothing used to wait on it: the art faded out, the menu behind it was
+        /// still the map's, and the swap then happened in full view -- the player's background
+        /// arriving, hanging, and the main menu turning up after it. Three things where there
+        /// should have been one.
+        ///
+        /// So the dissolve waits on this. The swap is started while the art is still solid and
+        /// hiding everything, and the art only begins to thin once the menu underneath is the one
+        /// the player is going back to.
+        /// </summary>
+        internal static bool Settling
+        {
+            get { return _settling != null && !_settling.IsCompleted; }
+        }
+
         private static void Observe(object task)
         {
+            _settling = task as System.Threading.Tasks.Task;
+
             var asTask = task as System.Threading.Tasks.Task;
             if (asTask == null) return;
 

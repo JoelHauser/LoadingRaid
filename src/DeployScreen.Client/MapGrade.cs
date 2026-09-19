@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -104,6 +104,9 @@ namespace DeployScreen.Client
             internal bool Known;
             internal int HourOfDay;
             internal bool HourFromClock;
+
+            /// <summary>Where the hour came from -- the map, the map shifted for night, or the clock.</summary>
+            internal string HourSource;
             internal int Rain;        // ERainType     NoRain .. Shower
             internal int Fog;         // EFogType      NoFog  .. Continuous
             internal int Cloudiness;  // ECloudiness   Clear  .. Thundercloud
@@ -226,8 +229,27 @@ namespace DeployScreen.Client
                 // whole screen for midnight whatever the hour really is, so fall back to the
                 // clock -- what 1.5.0 did -- and say in the log which of the two it was.
                 var hour = Convert.ToInt32(GameTypes.Weather_HourOfDay.GetValue(settings));
-                weather.HourFromClock = hour < 0 || hour > 23;
-                weather.HourOfDay = weather.HourFromClock ? DateTime.Now.Hour : hour;
+
+                if (hour >= 0 && hour <= 23)
+                {
+                    weather.HourOfDay = hour;
+                }
+                else
+                {
+                    // -1 is the ordinary case, not the exception. HourOfDay is only filled in for
+                    // a custom raid, so every normal deploy arrived here and fell back to the wall
+                    // clock -- which is why the screen was lit for whatever time it happened to be
+                    // in the room rather than for the raid.
+                    //
+                    // The raid's real hour is the map's own clock, shifted if the player picked
+                    // the other half of the day. Location.UnixDateTime is the in-game time for
+                    // that map (Customs sits at 14:41), and RaidSettings.SelectedDateTime is the
+                    // CURR/PAST toggle from the location screen, which is EFT's twelve-hour day
+                    // and night. Read together they are what the raid will actually look like.
+                    weather.HourOfDay = MapHour(raidSettings, out weather.HourSource);
+                }
+
+                weather.HourFromClock = weather.HourSource == "the clock";
                 weather.Rain = Convert.ToInt32(GameTypes.Weather_RainType.GetValue(settings));
                 weather.Fog = Convert.ToInt32(GameTypes.Weather_FogType.GetValue(settings));
 
@@ -243,13 +265,61 @@ namespace DeployScreen.Client
             }
         }
 
+        /// <summary>
+        /// The hour this raid will actually be at, from the map and the day/night toggle.
+        /// Falls back to the wall clock only when neither can be read.
+        /// </summary>
+        private static int MapHour(object raidSettings, out string source)
+        {
+            source = "the clock";
+
+            try
+            {
+                if (GameTypes.RaidSettings_SelectedLocation == null || GameTypes.Location_UnixDateTime == null)
+                    return DateTime.Now.Hour;
+
+                var location = GameTypes.RaidSettings_SelectedLocation.GetValue(raidSettings, null);
+                if (location == null) return DateTime.Now.Hour;
+
+                var unix = Convert.ToInt64(GameTypes.Location_UnixDateTime.GetValue(location));
+                if (unix <= 0) return DateTime.Now.Hour;
+
+                var hour = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+                    .AddSeconds(unix).Hour;
+
+                source = "the map";
+
+                // PAST is 1, and it is the game's night: the same map twelve hours round. Read as
+                // an int rather than against the enum type, because one value is all that is
+                // wanted and a missing type should not cost the map's hour as well.
+                if (GameTypes.RaidSettings_SelectedDateTime != null)
+                {
+                    var picked = Convert.ToInt32(
+                        GameTypes.RaidSettings_SelectedDateTime.GetValue(raidSettings));
+
+                    if (picked == 1)
+                    {
+                        hour = (hour + 12) % 24;
+                        source = "the map, shifted for night";
+                    }
+                }
+
+                return hour;
+            }
+            catch
+            {
+                source = "the clock";
+                return DateTime.Now.Hour;
+            }
+        }
+
         /// <summary>A short description of the raid's conditions, for the log and the report.</summary>
         internal static string Describe(Weather weather)
         {
             if (!weather.Known) return "conditions unknown";
 
             var parts = weather.HourOfDay.ToString("00") + ":00"
-                + (weather.HourFromClock ? " (from the clock; the raid has no time set)" : "");
+                + (string.IsNullOrEmpty(weather.HourSource) ? "" : " (from " + weather.HourSource + ")");
             if (weather.Fog > 0) parts += ", fog " + weather.Fog;
             if (weather.Rain > 0) parts += ", rain " + weather.Rain;
             if (weather.Cloudiness > 0) parts += ", cloud " + weather.Cloudiness;
@@ -292,6 +362,35 @@ namespace DeployScreen.Client
 
         /// <summary>Whether the character is currently carrying our key and rim.</summary>
         internal bool CharacterLit { get { return _rig != null; } }
+
+        /// <summary>
+        /// Takes the character down with the picture while a cancel is being waited out.
+        ///
+        /// He is lit by a rig masked to his own layer, so this reaches him and nothing else. A
+        /// character left at full key over a backdrop that has just gone dim is the one thing on
+        /// screen insisting nothing has happened, which is the opposite of what the dim is for.
+        ///
+        /// Scaled from what the raid asked for rather than set to a number, so the weather grade
+        /// is still underneath it and a night deploy dims from where it already was.
+        /// </summary>
+        internal void DimCharacter(float scale)
+        {
+            if (_rig == null) return;
+
+            foreach (var light in _rig.GetComponentsInChildren<Light>(true))
+            {
+                if (light == null) continue;
+
+                var full = light.name == "Rim"
+                    ? DeployScreenPlugin.StagingRimIntensity.Value
+                    : DeployScreenPlugin.StagingKeyIntensity.Value;
+
+                light.intensity = full * _lift * Mathf.Clamp01(scale);
+            }
+        }
+
+        /// <summary>What the exposure multiplied the configured intensities by, kept for the dim.</summary>
+        private float _lift = 1f;
 
         internal string Description
         {
@@ -432,16 +531,37 @@ namespace DeployScreen.Client
 
             var mask = 1 << layer;
 
+            // Exposure, which until now was computed and never read by anything. Grade builds it
+            // out of the hour, the fog, the rain and the cloud and clamps it to 0.25..1.6, and it
+            // is the one number that says how *bright* the destination is rather than what colour
+            // it is. The key and the rim were taking their colour from the raid and their
+            // brightness from a fixed setting, so a midnight deploy in a downpour lit the
+            // character exactly as hard as noon in clear weather -- right hue, wrong amount, and
+            // the disagreement between a character and the place behind him is the whole reason
+            // the composite reads as a cut-out.
+            //
+            // Through the same strength the scene grade uses, so the config numbers still mean
+            // what they say at strength 0 and the two halves of the picture move together.
+            var strength = Mathf.Clamp01(DeployScreenPlugin.StagingGradeStrength.Value);
+            var lift = Mathf.Lerp(1f, grade.Exposure, strength);
+            _lift = lift;
+
             _rig = new GameObject("DeployScreen Character Light");
             UnityEngine.Object.DontDestroyOnLoad(_rig);
 
             AddLight(_rig, "Key", grade.Key,
-                DeployScreenPlugin.StagingKeyIntensity.Value,
+                DeployScreenPlugin.StagingKeyIntensity.Value * lift,
                 Quaternion.Euler(32f, -38f, 0f), mask);
 
             AddLight(_rig, "Rim", grade.Rim,
-                DeployScreenPlugin.StagingRimIntensity.Value,
+                DeployScreenPlugin.StagingRimIntensity.Value * lift,
                 Quaternion.Euler(8f, 158f, 0f), mask);
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] character light: exposure=" + grade.Exposure.ToString("0.00")
+                + " lift=" + lift.ToString("0.00")
+                + " key=" + (DeployScreenPlugin.StagingKeyIntensity.Value * lift).ToString("0.00")
+                + " rim=" + (DeployScreenPlugin.StagingRimIntensity.Value * lift).ToString("0.00"));
         }
 
         private static void AddLight(GameObject parent, string name, Color colour, float intensity,

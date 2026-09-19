@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
@@ -32,6 +32,19 @@ namespace DeployScreen.Client
         private SceneDepth _depth;
         private StagingArea _staging;
         private ScreenLayout _layout;
+        private CountdownScreen _countdown;
+
+        /// <summary>
+        /// True between the deploy screen closing and the final countdown being done with. While
+        /// it is set the staging area is owed a restore rather than given one -- see ScreenClosed.
+        /// </summary>
+        private bool _holding;
+        private bool _fading;
+        private bool _closing;
+        private bool _cancelWasOffered;
+        private double _fadeAt;
+        private double _nextFadeSample;
+        private int _fadeSamples;
         private LoadEase _ease;
 
         /// <summary>
@@ -61,6 +74,7 @@ namespace DeployScreen.Client
             _statusHook = Patch(harmony, GameTypes.Loading_Status, nameof(Status));
             _startHook = Patch(harmony, GameTypes.World_Started, null, nameof(Started));
             Patch(harmony, GameTypes.Loading_Abort, nameof(Aborted));
+            Patch(harmony, GameTypes.Loading_CancelButton, nameof(CancelButton));
             _playerHook = Patch(harmony, GameTypes.Loading_ShowPlayer, nameof(SkipPlayer));
             if (GameTypes.BannersPanel_Show != null && GameTypes.BannersPanel_Show.ReturnType == typeof(Task))
                 _bannerHook = Patch(harmony, GameTypes.BannersPanel_Show, nameof(SkipBanners));
@@ -189,10 +203,211 @@ namespace DeployScreen.Client
             _instance.Mark("game-world-started");
         }
 
+        /// <summary>
+        /// The game deciding whether Back is available, on the timeline with everything else.
+        ///
+        /// The run this was written for is the one where nothing happened. The button logged three
+        /// OnMouseOver/OnMouseOut pairs and **no OnClick at all**, and the raid went ahead --
+        /// so the pointer was reaching the button and the press was not. Hover arriving while a
+        /// click does not is the shape of a button that is visible but not accepting, and this is
+        /// the call that decides that.
+        /// </summary>
+        private static void CancelButton(object __instance, bool __0)
+        {
+            if (_instance == null || !ReferenceEquals(_instance._screen, __instance)) return;
+
+            _instance.Mark("cancel button visibility=" + __0);
+
+            if (__0)
+            {
+                _instance._cancelWasOffered = true;
+                return;
+            }
+
+            // Only the game taking it away, and only once it had been offered: the screen sets it
+            // false on the way up, before there was ever anything to lose, and an abort of our own
+            // sets it false on the way out, where a notice would be telling the player about a
+            // button they just pressed.
+            if (!_instance._cancelWasOffered || _instance._fading || _instance._closing) return;
+
+            _instance._cancelWasOffered = false;
+
+            if (!DeployScreenPlugin.StagingSayCancelClosed.Value) return;
+
+            _instance._staging?.Notice(
+                "<color=#C8A45C>NO TURNING BACK</color>   the raid can no longer be cancelled");
+        }
+
+        /// <summary>
+        /// A line on the trace from outside this class, so the back button's own events land on
+        /// the same timeline as the screen's.
+        ///
+        /// They were going to the BepInEx log, which carries no timestamps, while everything that
+        /// would explain them -- loading-screen-disabled, the countdown, game-world-started -- was
+        /// going to the trace with a time against it. Two records of one sequence and no way to
+        /// interleave them is how a run gets read wrong.
+        /// </summary>
+        internal static void Note(string name)
+        {
+            if (_instance == null || !_instance._active) return;
+
+            _instance.Mark(name);
+        }
+
         private static void Aborted(object __instance)
         {
             if (_instance == null || !ReferenceEquals(_instance._screen, __instance)) return;
+
+            // Back is pressed here, and the screen does not go away here. Restoring now is what
+            // put the stock deploy screen on the display on the way out -- see HoldFade.
+            if (_instance._active && _instance.FadeGroup() != null)
+            {
+                _instance._fading = true;
+                _instance._fadeAt = _instance._clock.Elapsed.TotalSeconds;
+                _instance._nextFadeSample = _instance._fadeAt;
+                _instance._fadeSamples = 0;
+                _instance.Mark("cancel-requested, holding the art while the screen goes");
+
+                // Both of these are for the player rather than for the log. The wait that follows
+                // is the game's and can run to five seconds; without something answering the press
+                // immediately, an abort that worked is indistinguishable from one that did not.
+                _instance._staging?.BeginDimming();
+                _instance._staging?.Notice(
+                    "<color=#C8A45C>CANCELLING</color>   returning to the menu");
+                return;
+            }
+
             _instance.Finish("cancel-requested");
+        }
+
+        /// <summary>
+        /// The CanvasGroup the screen fades itself out with, which is how it closes.
+        ///
+        /// Worth writing down, because five sessions assumed otherwise. The screen is never
+        /// deactivated: LoadingScreenLifetime.OnDisable sits on its GameObject and has never once
+        /// fired, so loading-screen-disabled is absent from every log this mod has ever written.
+        /// Reading the game confirms it -- EFT.UI.Screens.UIScreen closes through
+        /// SoftHide(CanvasGroup, Action), which runs VisualExtensions.SoftChange on the group and
+        /// fades its alpha. The object stays active and fully present the whole time; only its
+        /// alpha moves. HideGameObject, the one path that would deactivate it, logs
+        /// "Closing screen: {0}" and that string appears in no log here at all.
+        ///
+        /// So ScreenClosed was watching for an event that this screen does not raise, and the
+        /// alpha is the signal that was there all along.
+        /// </summary>
+        private CanvasGroup FadeGroup()
+        {
+            var screen = _screen as Component;
+            return screen == null ? null : screen.GetComponent<CanvasGroup>();
+        }
+
+        /// <summary>
+        /// Keeps the art up until the screen has actually gone.
+        ///
+        /// The complaint was that pressing Back reverts to the default loading screen, and that is
+        /// exactly what was happening, for a reason that reads backwards until the paragraph above
+        /// is in hand. The abort fired, Finish restored in its finally, and the staging area came
+        /// down at once -- while the screen itself was still on the display at full alpha, because
+        /// nothing had closed it yet. Taking our own art off a screen that is still up does not
+        /// leave nothing, it leaves the game's own deploy screen, which is what was seen.
+        ///
+        /// So the restore is owed rather than run, the same bargain HoldCountdown already makes,
+        /// and settled the same way in Update. Three ways out and every one of them ends at
+        /// Finish, which restores in its finally: the screen finishes fading, the fade never
+        /// happens, or the raid starts anyway through Update's own first line.
+        ///
+        /// A second and a half caps it. SoftChange takes well under that, and art left sitting
+        /// over a menu nobody asked to look at is a worse failure than a visible cut.
+        /// </summary>
+        /// <summary>
+        /// The art dissolving into the menu instead of being cut away from in front of it.
+        ///
+        /// Every exit from the hold comes here rather than going straight to Finish. The staging
+        /// area puts the menu back behind its own art and hands over an alpha; this spends it over
+        /// a few frames and finishes underneath, so the last thing seen is the picture thinning
+        /// out onto the main menu rather than the main menu arriving.
+        ///
+        /// Anything that cannot dissolve -- no art up, the option off, a minimal screen -- takes
+        /// the old path unchanged, and the cap in HoldFade still bounds the whole thing.
+        /// </summary>
+        private void BeginClose()
+        {
+            _fading = false;
+
+            if (DeployScreenPlugin.StagingFadeOut.Value && _staging != null && _staging.BeginFade())
+            {
+                _closing = true;
+                Mark("fading the art back to the menu");
+                return;
+            }
+
+            Finish("cancel-requested", false);
+        }
+
+        private void HoldFade(double now)
+        {
+            var screen = _screen as Component;
+
+            // The object going inactive is the close itself -- UIInputNode.HideGameObject is
+            // gameObject.SetActive(false) and nothing else -- so it is checked directly rather
+            // than waited for through OnDisable. ScreenClosed cannot serve here: it returns early
+            // unless _active is still true, and Finish clears that, so on this path it could never
+            // have reported anything either way.
+            if (screen == null || !screen.gameObject.activeInHierarchy)
+            {
+                Mark("screen went away");
+                BeginClose();
+                return;
+            }
+
+            var group = FadeGroup();
+
+            if (group == null)
+            {
+                Mark("no canvas group to wait on, letting the art go");
+                BeginClose();
+                return;
+            }
+
+            if (group.alpha <= 0.02f)
+            {
+                Mark("screen faded out");
+                BeginClose();
+                return;
+            }
+
+            // What the first attempt got wrong. A second and a half was picked from how long
+            // SoftChange takes, but the fade is not what is being waited for: at abort + 1.5s the
+            // alpha was still 1 and the object still active, so the cap fired, the art came down
+            // on a screen that was still up, and the stock deploy screen appeared exactly as
+            // before. Aborting goes to the server and comes back, and that is the wait.
+            //
+            // So the cap is loose enough to cover a round trip, and the trajectory is recorded on
+            // the way rather than guessed at again: if this one is wrong too, the report says what
+            // the alpha was doing and when.
+            if (now >= _nextFadeSample && _fadeSamples < 16)
+            {
+                _fadeSamples++;
+                _nextFadeSample = now + 0.5;
+                Mark("waiting: alpha=" + group.alpha.ToString("0.00")
+                     + " active=" + screen.gameObject.activeInHierarchy
+                     + " at " + (now - _fadeAt).ToString("0.0") + "s");
+            }
+
+            if (now - _fadeAt < 20.0) return;
+
+            // Twenty, and no dissolve at the end of it. Six was picked when the round trip had
+            // measured 0.2s to 4.9s; the next one took 7.1 and the cap fired while the deploy
+            // screen was still up, so the art thinned off a live screen and the stock one showed
+            // through -- the exact failure the dissolve exists to prevent, caused by the guard
+            // meant to bound it.
+            //
+            // Past the cap the screen is still there, which is the one state the dissolve must
+            // not run in, so this restores plainly. That is no worse than the behaviour before any
+            // of this existed, and it is the honest thing to do when the assumption the transition
+            // rests on has already failed.
+            Mark("screen still up after 20s, letting the art go without a dissolve");
+            Finish("cancel-requested", false);
         }
 
         internal static void ScreenClosed(object screen)
@@ -201,7 +416,114 @@ namespace DeployScreen.Client
             if (_instance._closedAt >= 0) return;
             _instance._closedAt = _instance._clock.Elapsed.TotalSeconds;
             _instance.Mark("loading-screen-disabled");
+
+            // The deploy screen going dark is not the end of the wait. The final countdown comes
+            // up right after it and owns the last several seconds, and tearing the art down here
+            // is what made the picture vanish for the walk-out. So the restore is owed rather
+            // than run, and Update settles it when the countdown is done -- or when the raid
+            // starts, or when the thirty-second cap runs out, both of which reach Finish, which
+            // restores in a finally. Nothing can outlive the screen by holding here.
+            // Nothing else here while an abort is being seen out, and "nothing else" has to mean
+            // the restore as well as the countdown. Guarding only the countdown was a bug of
+            // exactly the kind this method invites: skipping the hold dropped straight through to
+            // Restore, which tore the art down on the spot -- the hard cut the dissolve exists to
+            // remove -- and cleared _fading on the way, so HoldFade never ran again and the raid
+            // sat until the thirty-second cap. The trace reads: click at 22.161,
+            // loading-screen-disabled at 23.282, and then nothing at all.
+            //
+            // HoldFade owns this path start to finish. It is watching activeInHierarchy, which is
+            // the same close this method is reacting to, and it ends at BeginClose and then Finish.
+            if (_instance._fading || _instance._closing) return;
+
+            if (_instance.HoldForCountdown())
+            {
+                _instance._holding = true;
+                _instance.Mark("holding the art for the countdown");
+                return;
+            }
+
             _instance.Restore();
+        }
+
+        /// <summary>
+        /// Whether there is anything worth holding. Only the staging area hangs art, and only a
+        /// staging area that actually built any has something the countdown can stand on.
+        /// </summary>
+        private bool HoldForCountdown()
+        {
+            return _mode == LoadingScreenMode.Staging
+                && _staging != null && _staging.Built
+                && DeployScreenPlugin.StagingHoldCountdown.Value;
+        }
+
+        /// <summary>
+        /// The hold, one frame at a time.
+        ///
+        /// Three ways out, and every one of them gives the art back: the countdown finishes, the
+        /// countdown never arrives, or the raid starts -- the last through Update's own first
+        /// line, which reaches Finish, which restores in a finally.
+        /// </summary>
+        private void HoldCountdown(double now)
+        {
+            if (_countdown == null)
+            {
+                var root = CountdownRoot();
+
+                if (root == null)
+                {
+                    // A second and a half is generous: on the run this was built from, the
+                    // countdown was up on the frame after the deploy screen went dark. If it is
+                    // not coming -- a game version that dropped it, a flow that skips it -- the
+                    // art should not sit over a menu nobody asked to look at.
+                    if (now - _closedAt >= 1.5)
+                    {
+                        Mark("no countdown screen, letting the art go");
+                        Restore();
+                    }
+
+                    return;
+                }
+
+                var screen = new CountdownScreen();
+
+                // The screen can be active a frame before its rect has a size. Arranging against
+                // an empty rect would put everything in the corner of nothing, so it says so and
+                // this comes back next frame.
+                if (!screen.Apply(root, _screen as Component)) return;
+
+                _countdown = screen;
+                Mark("countdown: " + _countdown.Description);
+                return;
+            }
+
+            if (!_countdown.Showing)
+            {
+                Mark("countdown-finished");
+                Restore();
+                return;
+            }
+
+            _countdown.Keep();
+        }
+
+        /// <summary>
+        /// 'Matchmaker Final Countdown', a sibling of the deploy screen. Found by name under the
+        /// same parent rather than patched: a Harmony hook would need a method name on a type
+        /// that is only known by its GameObject, and this is one Find on one transform for a few
+        /// seconds at the end of a load.
+        /// </summary>
+        private RectTransform CountdownRoot()
+        {
+            var screen = _screen as Component;
+            if (screen == null) return null;
+
+            var parent = screen.transform.parent;
+            if (parent == null) return null;
+
+            var found = parent.Find("Matchmaker Final Countdown") as RectTransform;
+            if (found == null || !found.gameObject.activeInHierarchy) return null;
+
+            return found;
         }
 
         private void Begin(object screen, object[] args)
@@ -220,6 +542,13 @@ namespace DeployScreen.Client
             _bannersSkipped = false;
             _presentation = null;
             _easeMetadata = null;
+            _holding = false;
+            _fading = false;
+            _closing = false;
+            _cancelWasOffered = false;
+            _fadeAt = 0;
+            _nextFadeSample = 0;
+            _fadeSamples = 0;
 
             // Every raid gets its own warning budget. Kept for the session, the first failure
             // silences every later one, and reports that stop appearing leave no log line at all.
@@ -329,7 +658,28 @@ namespace DeployScreen.Client
                 _depth?.Tick(now);
                 _staging?.Tick(now);
                 _layout?.Keep();
+
+                // After Keep, not inside it: the character is walked with the scene rather than
+                // held where he was put, and the drift is SceneDepth's number.
+                _layout?.DriftCharacter(_depth == null ? Vector2.zero : _depth.CharacterDrift);
                 StagingArea.WatchForCountdown(_screen as Component, now);
+                StagingArea.WatchForPreview(_screen as Component, now);
+                if (_holding) HoldCountdown(now);
+                if (_fading)
+                {
+                    _staging?.DimStep(Time.unscaledDeltaTime);
+                    HoldFade(now);
+                }
+
+                if (_closing)
+                {
+                    if (_staging == null || _staging.FadeStep(Time.unscaledDeltaTime))
+                    {
+                        Mark("faded to the menu");
+                        Finish("cancel-requested", false);
+                        return;
+                    }
+                }
                 if (_closedAt >= 0 && now - _closedAt >= 30) { Finish("screen-closed-without-confirmed-start", false); return; }
                 if (now >= 1800) { Finish("capture-timeout", false); return; }
                 _minimal?.Tick(now);
@@ -412,6 +762,16 @@ namespace DeployScreen.Client
             try { _depth?.Restore(); }
             catch (Exception e) { Warn(e); }
             _depth = null;
+
+            // Before both of the below, for the same reason the layout goes before the staging
+            // area: this screen was arranged around the art, so it goes back to its own shape
+            // while the art it was arranged around is still there.
+            _holding = false;
+            _fading = false;
+            _closing = false;
+            try { _countdown?.Restore(); }
+            catch (Exception e) { Warn(e); }
+            _countdown = null;
 
             // Before the staging area: the layout is arranged around the art, so the screen
             // goes back to its own shape before the art it was arranged around disappears.

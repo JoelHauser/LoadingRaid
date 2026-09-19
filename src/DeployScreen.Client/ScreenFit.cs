@@ -175,7 +175,14 @@ namespace DeployScreen.Client
 
             if (string.IsNullOrEmpty(saved)) return;
 
-            foreach (var entry in saved.Split(';'))
+            // The array overload on purpose. This assembly compiles against the game's own
+            // mscorlib -- Managed is on the search path -- and Unity's Mono carries several
+            // string methods plain .NET Framework does not: Split(char, StringSplitOptions) is
+            // one, and it is what the compiler picks from Split(';'). The game runs it fine; the
+            // test harness, which loads this DLL on .NET Framework, gets MissingMethodException
+            // and cannot check any of this code. Asking for the overload both runtimes have
+            // costs nothing and keeps the tests able to run.
+            foreach (var entry in saved.Split(new[] { ';' }))
             {
                 var equals = entry.IndexOf('=');
                 if (equals <= 0) continue;

@@ -1,8 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace DeployScreen.Client
 {
@@ -45,6 +46,16 @@ namespace DeployScreen.Client
     {
         /// <summary>How far apart the two art planes sit, as a multiple of the near distance.</summary>
         private const float DepthRatio = 2.6f;
+
+        /// <summary>
+        /// The frame's height in world units at the near plane -- the depth the haze hangs at, and
+        /// the depth the character is treated as standing at when the drift moves him.
+        ///
+        /// This is the number that turns a camera move into a distance on screen: something at
+        /// that depth shifts by <c>move / CharacterFrameHeight</c> of the frame. Zero when no art
+        /// is up, which is how SceneDepth knows there is nothing to be parallaxed against.
+        /// </summary>
+        internal static float CharacterFrameHeight;
 
         private readonly MapGrade _grade = new MapGrade();
 
@@ -158,6 +169,7 @@ namespace DeployScreen.Client
                     + " ortho=" + camera.orthographic);
 
                 TakeCameraVignette(camera);
+                TakeBackdropOcclusion(camera);
 
 
                 // The art is the whole point. With none for this map, the menu scene is left
@@ -386,11 +398,24 @@ namespace DeployScreen.Client
                     + "'Near plane distance' to see more of it.");
             }
 
+            // What a camera move is worth on screen at the near plane. Measured from the camera
+            // that is actually rendering this, not assumed, for the same reason the planes are.
+            CharacterFrameHeight = 2f * near * Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad);
+
+            // Kept for the probe: what draws the backdrop, and how far away the art is.
+            _backdropCamera = camera;
+            _artDistance = far;
+
             // Far: the map itself, washed toward the destination's light.
             var wash = Color.Lerp(Color.white, grade.Wash,
                 Mathf.Clamp01(DeployScreenPlugin.StagingGradeStrength.Value));
 
             BuildPlane(root, camera, aspect, "DeployScreen Map", far, farOverscan, sprite, wash, -100);
+
+            // What the picture is doing in the corners the writing goes in. Measured here
+            // because this is the one place that knows both the picture and the wash that will
+            // be laid over it, and the screen layout -- which builds the scrims -- runs after.
+            ArtTone.Measure(sprite, wash);
 
             // Near: a soft dark frame. Its only job is to be at a different depth from the map, so
             // that drifting the camera shears the two against each other -- which is the parallax
@@ -444,12 +469,21 @@ namespace DeployScreen.Client
             go.layer = VisibleLayer(camera, root);
             SetLayerRecursively(go, go.layer);
 
+            // The handle the fade pulls on. A CanvasGroup is free while its alpha is 1 and is the
+            // only thing here that can take the art down without touching the image, the sprite or
+            // the shader -- which matters, because the art plane is a world-space Canvas precisely
+            // so that no shader has to be guessed at.
+            _planeFades.Add(go.AddComponent<CanvasGroup>());
+
             var canvas = go.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
             canvas.worldCamera = camera;
             canvas.sortingOrder = order;
 
             var image = go.AddComponent(GameTypes.BackgroundImage);
+
+            _planeImages.Add(image);
+            _planeColours.Add(colour);
 
             if (GameTypes.Background_Sprite != null) GameTypes.Background_Sprite.SetValue(image, sprite, null);
             if (GameTypes.Background_Color != null) GameTypes.Background_Color.SetValue(image, colour, null);
@@ -870,6 +904,8 @@ namespace DeployScreen.Client
                 var view = GameTypes.Loading_PlayerModel.GetValue(screen) as Component;
                 if (view == null) return;
 
+                var seen = false;
+
                 foreach (var camera in view.GetComponentsInChildren<Camera>(true))
                 {
                     // The preview renders through its own PrismEffects, with its own vignette, and
@@ -877,7 +913,9 @@ namespace DeployScreen.Client
                     // frame over the art just as surely as the backdrop camera's were -- and it is
                     // the one that survived turning the other off.
                     TakeCameraVignette(camera);
+                    TakePreviewKey(camera);
                     SimplifyPreview(camera);
+                    TakeCommandBuffers(camera);
 
                     foreach (var component in camera.GetComponents<Component>())
                     {
@@ -898,9 +936,19 @@ namespace DeployScreen.Client
 
                             if (!field.Name.ToLowerInvariant().Contains("shadow")) continue;
 
+                            // Vector2 and int are in the list now, and the shift is why. The
+                            // player drew the outline of what is on screen: a blurred silhouette
+                            // of him *and his rifle*, offset up and to the right. That is a drop
+                            // shadow, and ShadowShift=(-0.03, -0.01) is the offset. Zeroing the
+                            // strengths and leaving the shift alone was leaving the one field
+                            // that decides whether the thing is visible beside him or hidden
+                            // behind him.
                             object now = null;
                             if (field.FieldType == typeof(bool)) now = false;
                             else if (field.FieldType == typeof(float)) now = 0f;
+                            else if (field.FieldType == typeof(int)) now = 0;
+                            else if (field.FieldType == typeof(Vector2)) now = Vector2.zero;
+                            else if (field.FieldType == typeof(Vector3)) now = Vector3.zero;
                             if (now == null) continue;
 
                             _shadowOwners.Add(component);
@@ -911,15 +959,29 @@ namespace DeployScreen.Client
                             changed++;
                         }
 
+                        // Worth saying, and this is the part that matters: SimplifyPreview runs a
+                        // few lines above and logs when it switches this component off. It did
+                        // not, which means the game already had it disabled -- so the dark shape
+                        // behind the PMC is not this, and zeroing its fields was never going to
+                        // remove it.
+                        var effect = component as Behaviour;
+                        var state = effect == null ? "not a behaviour"
+                            : effect.enabled ? "enabled" : "already off";
+
                         DeployScreenPlugin.Log.LogInfo(
                             "[DeployScreen] MaskAndShadow on '" + camera.name + "': " + found
-                            + " -- cleared " + changed + " shadow field(s)");
-                        return;
+                            + " -- cleared " + changed + " shadow field(s), component " + state);
+
+                        seen = true;
+                        break;
                     }
                 }
 
-                DeployScreenPlugin.Log.LogInfo(
-                    "[DeployScreen] no MaskAndShadow on the character preview; the blob is something else");
+                if (!seen)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] no MaskAndShadow on the character preview; the blob is something else");
+                }
             }
             catch (Exception error) { WarnOnce(error); }
         }
@@ -941,6 +1003,139 @@ namespace DeployScreen.Client
             _shadowOwners.Clear();
             _shadowWas.Clear();
             _shadowNames.Clear();
+
+            GiveBackCommandBuffers();
+        }
+
+        private readonly List<Camera> _bufferCameras = new List<Camera>();
+        private readonly List<CameraEvent> _bufferEvents = new List<CameraEvent>();
+        private readonly List<CommandBuffer> _buffers = new List<CommandBuffer>();
+
+        /// <summary>
+        /// Takes the command buffers off the preview camera, which is where the dark band has been
+        /// hiding for five sessions.
+        ///
+        /// A command buffer is not a component. `camera.AddCommandBuffer` attaches work to a
+        /// camera and that work keeps running when the component that attached it is disabled,
+        /// when its fields are zeroed, and when every Behaviour on the camera is switched off --
+        /// which is exactly the set of things that has been tried, and exactly why none of them
+        /// changed anything. Nothing in this file had ever asked the camera what it was carrying.
+        ///
+        /// Everything measured says this is it:
+        ///
+        /// - the plateau is `rgba 1,1,1,127` -- black at an alpha of exactly half, and
+        ///   `MaskAndShadow.ShadowStrength` is 0.5 on every stock instance
+        /// - it runs to about 250 pixels and is gone by 512, and `ShadowShift.x` is -0.05, which on
+        ///   a 5420-wide target is 271 pixels
+        /// - it is on one side only, which is what a shift does and a blur does not
+        /// - no single renderer owns it: hiding any one of the 42 takes at most 31 pixels of 203,
+        ///   because the buffer draws all of them into a mask and then offsets and blurs the whole
+        ///   mask, so each renderer only owns its own share
+        /// - with every renderer hidden the target is empty, so it is drawn from the character and
+        ///   not from anything else
+        ///
+        /// Zeroing `MaskAndShadow`'s fields never had a chance: the buffer was built while the
+        /// values were still stock, and a built buffer does not re-read them.
+        ///
+        /// Every buffer is recorded with the camera and the event it was attached to, so
+        /// `GiveBackCommandBuffers` can put it back exactly where it was. Behind the same
+        /// **Remove the cast shadow** option that has always owned this, and the names are logged
+        /// either way -- if taking all of them costs something else on screen, the log says which
+        /// one to spare.
+        /// </summary>
+        private void TakeCommandBuffers(Camera camera)
+        {
+            if (camera == null || !DeployScreenPlugin.StagingCastShadowOff.Value) return;
+
+            try
+            {
+                if (camera.commandBufferCount == 0)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] preview camera '" + camera.name
+                        + "' carries no command buffers; the band is something else again");
+                    return;
+                }
+
+                foreach (CameraEvent when in Enum.GetValues(typeof(CameraEvent)))
+                {
+                    CommandBuffer[] buffers;
+
+                    try { buffers = camera.GetCommandBuffers(when); }
+                    catch { continue; }
+
+                    if (buffers == null || buffers.Length == 0) continue;
+
+                    foreach (var buffer in buffers)
+                    {
+                        if (buffer == null) continue;
+
+                        var mine = TheShadow(buffer.name);
+
+                        DeployScreenPlugin.Log.LogInfo(
+                            "[DeployScreen] command buffer on '" + camera.name + "' at " + when
+                            + ": '" + buffer.name + "', " + buffer.sizeInBytes + " bytes -- "
+                            + (mine ? "removed" : "left alone"));
+
+                        if (!mine) continue;
+
+                        camera.RemoveCommandBuffer(when, buffer);
+
+                        _bufferCameras.Add(camera);
+                        _bufferEvents.Add(when);
+                        _buffers.Add(buffer);
+                    }
+                }
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
+        /// <summary>
+        /// Whether a command buffer is the cast shadow, by the name it gave itself.
+        ///
+        /// The first version took every buffer off the camera, which found the answer and was the
+        /// wrong thing to ship, for two reasons the very first log showed.
+        ///
+        /// The camera carried two: **'grab background'** at `BeforeGBuffer`, and **'grab alpha and
+        /// blur'** at `BeforeImageEffectsOpaque`. The second one is the shadow and says so -- grab
+        /// the silhouette out of the alpha, blur it, and that is the mask. The first is not, and
+        /// taking it is the likeliest reason the player's next words were that the PMC looked a
+        /// bit dark.
+        ///
+        /// The other reason is worse. That same log shows
+        /// `'[WeaponCamoAndStickers] Deferred Decals'` still attached at `BeforeLighting` -- another
+        /// mod's work, which survived only because it was added after this ran. On a load where the
+        /// order came out the other way, taking everything would have silently broken somebody
+        /// else's mod, and the weapon camo would have quietly stopped drawing with nothing to say
+        /// why.
+        ///
+        /// So: matched on the name, and anything unrecognised is logged and left where it is. A
+        /// buffer this does not remove is a buffer whose owner still gets to run.
+        /// </summary>
+        private static bool TheShadow(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+
+            var lower = name.ToLowerInvariant();
+
+            return lower.Contains("alpha") && lower.Contains("blur");
+        }
+
+        private void GiveBackCommandBuffers()
+        {
+            for (var i = _buffers.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    if (_bufferCameras[i] != null && _buffers[i] != null)
+                        _bufferCameras[i].AddCommandBuffer(_bufferEvents[i], _buffers[i]);
+                }
+                catch { }
+            }
+
+            _bufferCameras.Clear();
+            _bufferEvents.Clear();
+            _buffers.Clear();
         }
 
 
@@ -988,6 +1183,123 @@ namespace DeployScreen.Client
             catch (Exception error) { WarnOnce(error); }
         }
 
+        private readonly List<Camera> _keyedCameras = new List<Camera>();
+        private readonly List<Color> _keyedWas = new List<Color>();
+
+        /// <summary>
+        /// Stops the character being composited off an actual greenscreen.
+        ///
+        /// This is the halo, and the probe is what named it. The preview camera clears to
+        /// <c>RGBA(1.000, 0.000, 1.000, 0.000)</c> -- **magenta**, at zero alpha -- into a
+        /// 2734x2464 render texture, and the RawImage lays that over the art afterwards. Zero
+        /// alpha means the background contributes nothing where it is left alone. The trouble is
+        /// that nothing leaves it alone: every post-processing pass on that camera reads
+        /// neighbouring pixels and writes colour without regard for alpha, so each one drags
+        /// magenta inwards across the silhouette and drags the character outwards into the
+        /// magenta. What comes back is a band of part-transparent, magenta-contaminated pixels
+        /// following the character's outline -- a halo the shape of him, bright against a dark
+        /// map and washed-out against a light one, which is exactly what was reported twice.
+        ///
+        /// It is a chroma key, so the player's own words for it were right.
+        ///
+        /// The fix is not to fight the passes, it is to key against nothing: clear to the same
+        /// transparent, but black. Bleed from a black background is a faint dark edge instead of
+        /// a coloured glow, and an edge a pixel or two wide is what a cut-out is supposed to
+        /// have. One property, recorded and put back.
+        ///
+        /// Ruled out on the way here, each by something in the log rather than by argument: the
+        /// cast shadow (MaskAndShadow is disabled by the game before this mod sees it), ambient
+        /// occlusion (we switch it off and say so), every light that can see the preview layer
+        /// (all report shadows=None), bloom (useBloom=False already), and any surface inside the
+        /// preview to catch a shadow -- all 174 renderers the probe found are the character and
+        /// his kit.
+        /// </summary>
+        private void TakePreviewKey(Camera camera)
+        {
+            if (camera == null || !DeployScreenPlugin.StagingClearPreview.Value) return;
+
+            try
+            {
+                if (camera.clearFlags != CameraClearFlags.SolidColor) return;
+
+                var was = camera.backgroundColor;
+
+                // Only a coloured key, and only a transparent one. A camera clearing to something
+                // opaque is drawing a background on purpose and is none of our business, and one
+                // already clearing to black has nothing to contaminate anything with.
+                if (was.a > 0.001f) return;
+                if (was.r < 0.02f && was.g < 0.02f && was.b < 0.02f) return;
+
+                _keyedCameras.Add(camera);
+                _keyedWas.Add(was);
+
+                camera.backgroundColor = new Color(0f, 0f, 0f, 0f);
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] preview key on '" + camera.name + "': was " + was
+                    + ", cleared to transparent black");
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
+        private void GiveBackPreviewKey()
+        {
+            for (var i = _keyedCameras.Count - 1; i >= 0; i--)
+            {
+                try { if (_keyedCameras[i] != null) _keyedCameras[i].backgroundColor = _keyedWas[i]; }
+                catch { }
+            }
+
+            _keyedCameras.Clear();
+            _keyedWas.Clear();
+        }
+
+        /// <summary>
+        /// Switches off ambient occlusion on the camera that draws the backdrop.
+        ///
+        /// This file has known for a long time why AO is wrong here, and says so about the
+        /// preview camera a few lines down: it darkens where it believes geometry meets geometry,
+        /// and against a silhouette with nothing behind it what it finds to darken is the air
+        /// beside the silhouette. That reasoning was applied to the preview camera and never to
+        /// this one, which is the camera the photograph is drawn by -- and this one has it on.
+        ///
+        /// It is a screen-space effect, so what it darkens is whatever is in the frame when it
+        /// runs, and it follows that thing when the thing moves. The player turned the character
+        /// with the mouse and the dark shape turned with him, which is the observation that put
+        /// this camera in the frame at all: a shape that tracks his rotation is a shape derived
+        /// from his silhouette, and by then the preview render had been ruled out as the place it
+        /// could be coming from.
+        ///
+        /// Recorded and restored like everything else, and held down by KeepPreviewQuiet, so a
+        /// menu that switches it back on partway through the load does not win.
+        /// </summary>
+        private void TakeBackdropOcclusion(Camera camera)
+        {
+            if (camera == null || !DeployScreenPlugin.StagingBackdropAo.Value) return;
+
+            try
+            {
+                foreach (var component in camera.GetComponents<Component>())
+                {
+                    if (component == null || component.GetType().Name != "AmbientOcclusion") continue;
+
+                    var behaviour = component as Behaviour;
+                    if (behaviour == null) continue;
+
+                    _switchedOff.Add(behaviour);
+                    _switchedOffWas.Add(behaviour.enabled);
+
+                    if (!behaviour.enabled) continue;
+
+                    behaviour.enabled = false;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] ambient occlusion off on the backdrop camera " + camera.name);
+                }
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
         /// <summary>
         /// Switches off the two passes on the preview camera that draw darkness around the
         /// character rather than on it.
@@ -1019,30 +1331,146 @@ namespace DeployScreen.Client
                     // The art itself was measured covering every edge by 30px, so what is left is
                     // what is drawn on top of it.
                     var name = component.GetType().Name;
-                    if (name != "AmbientOcclusion" && name != "MaskAndShadow") continue;
+                    if (!Simplified(name)) continue;
 
                     var behaviour = component as Behaviour;
-                    if (behaviour == null || !behaviour.enabled) continue;
+                    if (behaviour == null) continue;
+
+                    // Recorded even when it is already off, and that is the point. Skipping those
+                    // meant a component the game switches back on once the character finishes
+                    // loading was never in the list and so was never held down. MaskAndShadow is
+                    // exactly that case: off at screen-show, and nothing here has ever looked at
+                    // it again.
+                    _switchedOff.Add(behaviour);
+                    _switchedOffWas.Add(behaviour.enabled);
+
+                    if (!behaviour.enabled) continue;
 
                     behaviour.enabled = false;
-                    _switchedOff.Add(behaviour);
 
                     DeployScreenPlugin.Log.LogInfo(
-                        "[DeployScreen] " + name + " off on '" + camera.name + "'");
+                        "[DeployScreen] " + name + " off on " + camera.name);
                 }
             }
             catch (Exception error) { WarnOnce(error); }
         }
 
+        /// <summary>
+        /// The effects on the preview camera that are switched off while the art is up.
+        ///
+        /// Two of them always: ambient occlusion darkens the air beside a silhouette when there
+        /// is no geometry for it to find, and MaskAndShadow draws a cast shadow onto a surface
+        /// that is not there once the menu room is hidden.
+        ///
+        /// The rest only when asked. The preview is a render with a transparent surround, and a
+        /// post stack does not know that: bloom bleeds a lit character outwards into the
+        /// transparency as a soft light halo, and grading and aberration tint what should be
+        /// nothing at all. Over a dim room nobody sees it. Over a photograph it is the halo that
+        /// makes the PMC look cut out and pasted on.
+        ///
+        /// Off by default because it also changes how the character himself looks -- these are
+        /// the effects BSG lights him for -- and that is a trade only the person looking at it
+        /// can make. Everything is restored either way.
+        /// </summary>
+        private static bool Simplified(string name)
+        {
+            if (name == "AmbientOcclusion" || name == "MaskAndShadow") return true;
+            if (!DeployScreenPlugin.StagingPlainPreview.Value) return false;
+
+            // Antialiasing is in the list because a post-process AA pass is a neighbour-sampling
+            // blur by another name, and neighbour-sampling is what drags the key colour along the
+            // character's outline in the first place.
+            return name == "PrismEffects" || name == "Bloom" || name == "DesaturateEffect"
+                || name == "ChromaticAberration" || name == "CameraMotionBlur"
+                || name == "Antialiasing";
+        }
+
+        private readonly List<bool> _switchedOffWas = new List<bool>();
+
         private void GiveBackPreview()
         {
             for (var i = _switchedOff.Count - 1; i >= 0; i--)
             {
-                try { if (_switchedOff[i] != null) _switchedOff[i].enabled = true; }
+                try { if (_switchedOff[i] != null) _switchedOff[i].enabled = _switchedOffWas[i]; }
                 catch { }
             }
 
             _switchedOff.Clear();
+            _switchedOffWas.Clear();
+        }
+
+        private readonly HashSet<string> _cameBack = new HashSet<string>();
+
+        /// <summary>
+        /// Holds the preview quiet, rather than switching it off once and walking away.
+        ///
+        /// This file already knows better and says so in ScreenLayout: "the game sets these again
+        /// when it changes state, and whatever writes last wins -- re-assert, do not set". That
+        /// lesson was learned for the screen furniture and never applied to the camera, and the
+        /// camera is the one with an asynchronous character arriving in the middle of it.
+        ///
+        /// Cheap enough to do every frame: an enabled check per component and a float compare per
+        /// field, over the handful of each that were recorded. It says so once per thing that
+        /// comes back, because a log line per frame would be worse than the bug.
+        /// </summary>
+        internal void KeepPreviewQuiet()
+        {
+            for (var i = 0; i < _switchedOff.Count; i++)
+            {
+                var one = _switchedOff[i];
+                if (one == null || !one.enabled) continue;
+
+                one.enabled = false;
+                CameBack(one.GetType().Name);
+            }
+
+            for (var i = 0; i < _shadowNames.Count; i++)
+            {
+                var field = _shadowNames[i];
+                var owner = _shadowOwners[i];
+                if (field == null || owner == null) continue;
+
+                try
+                {
+                    var now = field.GetValue(owner);
+                    if (now == null || IsZero(now)) continue;
+
+                    field.SetValue(owner, Zero(field.FieldType));
+                    CameBack(field.Name);
+                }
+                catch { }
+            }
+        }
+
+        private static bool IsZero(object value)
+        {
+            if (value is bool) return !(bool)value;
+            if (value is float) return Mathf.Abs((float)value) < 0.0001f;
+            if (value is int) return (int)value == 0;
+            if (value is Vector2) return ((Vector2)value).sqrMagnitude < 0.000001f;
+            if (value is Vector3) return ((Vector3)value).sqrMagnitude < 0.000001f;
+
+            return true;
+        }
+
+        private static object Zero(Type type)
+        {
+            if (type == typeof(bool)) return false;
+            if (type == typeof(float)) return 0f;
+            if (type == typeof(int)) return 0;
+            if (type == typeof(Vector2)) return Vector2.zero;
+            if (type == typeof(Vector3)) return Vector3.zero;
+
+            return null;
+        }
+
+        private void CameBack(string what)
+        {
+            if (!_cameBack.Add(what)) return;
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] the game switched " + what + " back on partway through the load, "
+                + "holding it off");
         }
 
         private void GiveBackCameraVignette()
@@ -1094,6 +1522,37 @@ namespace DeployScreen.Client
             DumpInto(view, 0);
 
             DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of character preview ---");
+        }
+
+        private static Camera _backdropCamera;
+        private static float _artDistance;
+
+        private static bool _watched;
+        private static double _watchFrom = -1;
+
+        /// <summary>
+        /// Attaches the back-button probe a few seconds into the screen.
+        ///
+        /// Not from DumpScreen with the rest of the dump. The game only makes the cancel button
+        /// available partway through -- ChangeCancelButtonVisibility, which the traces show firing
+        /// around four seconds -- and a listener added before that attaches to an inactive object
+        /// and hears nothing.
+        ///
+        /// This drove the dark-shape probes too, sampling twice because one sample cannot tell a
+        /// thing that is off from a thing that is off *yet*. They answered -- it was a command
+        /// buffer named 'grab alpha and blur' -- and went with the answer. What they found is in
+        /// CLAUDE.md; what they were is in the history.
+        /// </summary>
+        internal static void WatchForPreview(Component screen, double now)
+        {
+            if (screen == null || _watched) return;
+            if (!DeployScreenPlugin.ReportLayout.Value) return;
+
+            if (_watchFrom < 0) _watchFrom = now;
+            if (now - _watchFrom < 4.0) return;
+
+            _watched = true;
+            ReportBackButton(screen);
         }
 
         /// <summary>
@@ -1206,6 +1665,191 @@ namespace DeployScreen.Client
             }
         }
 
+        /// <summary>
+        /// Why Back does nothing, asked of the button rather than of the screen around it.
+        ///
+        /// Two raids, two different failures. With Rearrange the screen on, the click reached the
+        /// game: the report ended cancel-requested, and what failed after that was the screen
+        /// never closing. With it off, nothing fired at all -- no abort, no report, and the raid
+        /// went ahead. Rearranging is therefore not what breaks the abort, and the question splits
+        /// in two: does the click reach the button, and does the button's handler do anything.
+        ///
+        /// A listener on onClick answers the first half the moment it is pressed. The rest is
+        /// everything that can eat a UI click without leaving a trace: the rect the button
+        /// occupies in screen pixels, whether it is active and interactable, and every CanvasGroup
+        /// above it -- one with blocksRaycasts off, or alpha at zero, anywhere up the chain, takes
+        /// the click silently and leaves the button looking perfectly normal on screen. That is
+        /// the classic cause of exactly this symptom and nothing has looked for it yet.
+        ///
+        /// Through reflection because this project references the engine's UIModule and not the
+        /// game's UI library, which is the same rule the rest of the file keeps.
+        /// </summary>
+        private static void ReportBackButton(Component screen)
+        {
+            try
+            {
+                Transform button = null;
+
+                foreach (var candidate in screen.GetComponentsInChildren<Transform>(true))
+                {
+                    if (candidate == null || candidate.name != "BackButton") continue;
+
+                    button = candidate;
+                    break;
+                }
+
+                if (button == null)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back: nothing called BackButton under the screen");
+                    return;
+                }
+
+                var rect = button as RectTransform;
+
+                if (rect != null)
+                {
+                    var corners = new Vector3[4];
+                    rect.GetWorldCorners(corners);
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back: " + Describe(button.gameObject)
+                        + " active=" + button.gameObject.activeInHierarchy
+                        + " corners " + corners[0] + " to " + corners[2]
+                        + " on a " + UnityEngine.Screen.width + "x" + UnityEngine.Screen.height
+                        + " screen");
+                }
+
+                // Every component on the button, printed whatever it is. The first version of
+                // this skipped any component without an "interactable" property, on the
+                // assumption that a button is a Unity Button -- and this one is not. It is
+                // DefaultUIButton, DefaultUIButtonAnimation and TweenAnimatedButton, none of
+                // which matched, so the loop attached nothing and the raid it was built for
+                // answered nothing. Print first, filter never.
+                foreach (var component in button.GetComponents<Component>())
+                {
+                    if (component == null) continue;
+
+                    var type = component.GetType();
+                    var behaviour = component as Behaviour;
+                    var extra = new StringBuilder();
+
+                    var interactable = type.GetProperty("interactable");
+
+                    if (interactable != null)
+                    {
+                        try { Pair(extra, "interactable", interactable.GetValue(component, null)); }
+                        catch { }
+                    }
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back: component " + type.Name
+                        + " enabled=" + (behaviour == null ? "-" : behaviour.enabled.ToString())
+                        + (extra.Length == 0 ? "" : " " + extra));
+
+                    ListenForPress(component, type);
+                }
+
+                for (var t = button; t != null; t = t.parent)
+                {
+                    var group = t.GetComponent<CanvasGroup>();
+                    if (group == null) continue;
+
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back: CanvasGroup on " + Describe(t.gameObject)
+                        + " alpha=" + group.alpha.ToString("0.00")
+                        + " interactable=" + group.interactable
+                        + " blocksRaycasts=" + group.blocksRaycasts);
+                }
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogWarning(
+                    "[DeployScreen] could not read the back button: " + error.Message);
+            }
+        }
+
+        /// <summary>
+        /// A line in the log the moment the button is actually pressed.
+        ///
+        /// Matched on the base type rather than on the name "onClick", which is what the first
+        /// version did and why it found nothing. UnityEventBase lives in the engine's own
+        /// CoreModule, which this project references, and every click event in every UI library
+        /// derives from it -- Unity's Button, the game's DefaultUIButton, whatever a mod adds --
+        /// whether it is called onClick, OnClick or something else entirely. Private fields are
+        /// included because a game button usually keeps its event in one.
+        /// </summary>
+        private static void ListenForPress(Component button, Type type)
+        {
+            const BindingFlags Any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
+
+            foreach (var property in type.GetProperties(Any))
+            {
+                if (!ClickEvent(property.PropertyType) || !property.CanRead) continue;
+                if (property.GetIndexParameters().Length > 0) continue;
+
+                object held = null;
+                try { held = property.GetValue(button, null); } catch { }
+
+                Listen(held, type.Name + "." + property.Name);
+            }
+
+            foreach (var field in type.GetFields(Any))
+            {
+                if (!ClickEvent(field.FieldType)) continue;
+
+                object held = null;
+                try { held = field.GetValue(button); } catch { }
+
+                Listen(held, type.Name + "." + field.Name);
+            }
+        }
+
+        private static bool ClickEvent(Type type)
+        {
+            return type != null && typeof(UnityEngine.Events.UnityEventBase).IsAssignableFrom(type);
+        }
+
+        /// <summary>
+        /// AddListener is looked up with the no-argument UnityAction overload specifically. A
+        /// UnityEvent that carries a value has a different one, this finds nothing for it, and
+        /// skipping it is right: a click is the event with no argument.
+        /// </summary>
+        private static void Listen(object raised, string what)
+        {
+            if (raised == null) return;
+
+            try
+            {
+                var add = raised.GetType().GetMethod(
+                    "AddListener", new[] { typeof(UnityEngine.Events.UnityAction) });
+
+                if (add == null) return;
+
+                add.Invoke(raised, new object[]
+                {
+                    new UnityEngine.Events.UnityAction(() => Fired(what))
+                });
+
+                DeployScreenPlugin.Log.LogInfo("[DeployScreen] back: listening on " + what);
+            }
+            catch (Exception error)
+            {
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] back: could not listen on " + what + ": " + error.Message);
+            }
+        }
+
+        /// <summary>
+        /// One button event, on both records: the log for reading by eye, and the trace so it sits
+        /// on the same timeline as the screen closing and the raid starting.
+        /// </summary>
+        private static void Fired(string what)
+        {
+            DeployScreenPlugin.Log.LogInfo("[DeployScreen] back: " + what + " fired");
+            LoadingPerformance.Note("back: " + what);
+        }
+
         private static bool Keeps(GameObject target, Transform needed, string what)
         {
             if (needed == null || target == null) return false;
@@ -1282,9 +1926,41 @@ namespace DeployScreen.Client
 
         internal void Tick(double now)
         {
+            KeepPreviewQuiet();
+
             WatchArt(now);
 
-            if (_subCaptionText == null || _cards == null || _cards.Count == 0) return;
+            if (_subCaptionText == null) return;
+
+            // A notice outranks the intel while it is up. Intel is a slow cycle nobody is waiting
+            // on; this is the one line on the screen with a deadline behind it.
+            if (_notice != null)
+            {
+                if (_noticeUntil < 0)
+                {
+                    _noticeUntil = now + 6.0;
+                    DeployScreenPlugin.Log.LogInfo("[DeployScreen] notice: " + _notice);
+                }
+
+                // Every frame, not once. This row belongs to the game and the game writes to it;
+                // the intel only looks stable because it is rewritten every few seconds, which
+                // would hide an overwrite completely. A line that is meant to be read has to hold
+                // its own against that, and a TMP set on a loading screen costs nothing.
+                if (now < _noticeUntil)
+                {
+                    Write(_notice);
+                    return;
+                }
+
+                _notice = null;
+                _noticeUntil = -1;
+
+                // Straight back to the cycle rather than after another full interval, so the
+                // line does not sit empty on whatever the notice interrupted.
+                _nextCard = 0;
+            }
+
+            if (_cards == null || _cards.Count == 0) return;
             if (now < _nextCard) return;
 
             _nextCard = now + Mathf.Max(3f, DeployScreenPlugin.StagingIntelSeconds.Value);
@@ -1301,12 +1977,47 @@ namespace DeployScreen.Client
                 // line reads as a label and a value rather than as a sentence. Rich text is
                 // switched on for this field when the layout takes it; TMP prints the tags
                 // literally otherwise, which is why it is not assumed here.
-                var line = string.IsNullOrEmpty(card.Header)
+                Write(string.IsNullOrEmpty(card.Header)
                     ? card.Body
-                    : "<color=#C8A45C>" + card.Header + "</color>   " + card.Body;
-
-                _subCaptionText.SetValue(_subCaption, line ?? string.Empty, null);
+                    : "<color=#C8A45C>" + card.Header + "</color>   " + card.Body);
             }
+            catch (Exception error)
+            {
+                WarnOnce(error);
+                _subCaptionText = null;
+            }
+        }
+
+        private string _notice;
+        private double _noticeUntil = -1;
+
+        /// <summary>
+        /// One line, in the row the intel cycles through, for something the player needs to know
+        /// now rather than eventually.
+        ///
+        /// Built for the end of the abort window. The game decides how long backing out is offered
+        /// -- `MatchmakerPlayersController.MatchingAbortAvailability`, bound straight to
+        /// `ChangeCancelButtonVisibility` -- and when it stops it simply removes the button, on one
+        /// run 49 seconds before the raid actually started. Twice now that has been reported as
+        /// Back not working, because from the player's side an empty corner and a dead button look
+        /// identical.
+        ///
+        /// It borrows the row the same way the intel does rather than building anything: a
+        /// TextMeshPro object of its own would be a new thing to place, size and put back on a
+        /// screen this mod is already rearranging.
+        /// </summary>
+        internal void Notice(string text)
+        {
+            if (string.IsNullOrEmpty(text) || _subCaptionText == null) return;
+
+            _notice = text;
+            _noticeUntil = -1;
+        }
+
+        /// <summary>The one place the borrowed row is written, so the notice and the intel agree.</summary>
+        private void Write(string line)
+        {
+            try { _subCaptionText.SetValue(_subCaption, line ?? string.Empty, null); }
             catch (Exception error)
             {
                 WarnOnce(error);
@@ -1320,13 +2031,230 @@ namespace DeployScreen.Client
         /// Everything built is destroyed and everything hidden comes back. Safe to call twice and
         /// safe to call when Begin never got anywhere.
         /// </summary>
+        private readonly List<CanvasGroup> _planeFades = new List<CanvasGroup>();
+        private readonly List<Component> _planeImages = new List<Component>();
+        private readonly List<Color> _planeColours = new List<Color>();
+        private float _fade = 1f;
+        private float _fadeWaited;
+        private float _dim;
+        private bool _dimming;
+        private string _released;
+
+        /// <summary>
+        /// How far down the picture goes while a cancel is waited out.
+        ///
+        /// Was a quarter, and a quarter was wrong for a reason the timings make obvious: this is
+        /// not a flash, it is held for the whole wait, and that wait measured eleven seconds from
+        /// click to menu. Eleven seconds at a quarter brightness is not an acknowledgement, it is
+        /// a dark screen -- which is very close to what the stock deploy screen looks like, and
+        /// was reported as having defaulted back to it.
+        ///
+        /// Two thirds instead. Enough to register as a change at the moment of the press, not
+        /// enough to throw away the picture that is meant to be covering the wait.
+        /// </summary>
+        private const float Dimmed = 0.66f;
+
+        /// <summary>
+        /// Answers the press at once, while the game takes its time about the rest.
+        ///
+        /// The measured gap between the click and the screen actually closing is up to five
+        /// seconds -- a server round trip we wait on and do not control. Holding the art at full
+        /// brightness through it meant a press that had worked looked exactly like one that had
+        /// not, and it was reported as Back not working three times over while the trace showed
+        /// three clean aborts.
+        ///
+        /// Tint rather than alpha, and this is the point of it: lowering alpha would thin the art
+        /// and show the game's own deploy screen through it, which is the bug the dissolve exists
+        /// to avoid. Darkening the colour leaves the planes fully opaque, so nothing behind them
+        /// can appear early.
+        ///
+        /// A quarter, not zero. Four seconds of black is a worse hang than four seconds of
+        /// picture: the point is to say "heard you" and keep the scene alive underneath, not to
+        /// end the screen before the game has.
+        /// </summary>
+        internal void BeginDimming()
+        {
+            if (!_built || _planeImages.Count == 0) return;
+
+            _dimming = true;
+            _dim = 0f;
+        }
+
+        /// <summary>One frame of that. Silent when nothing asked for it.</summary>
+        internal void DimStep(float seconds)
+        {
+            if (!_dimming || GameTypes.Background_Color == null) return;
+
+            _dim = Mathf.Clamp01(_dim + seconds / Mathf.Max(0.05f, DeployScreenPlugin.StagingDimSeconds.Value));
+
+            var k = Mathf.Lerp(1f, Dimmed, _dim);
+
+            for (var i = 0; i < _planeImages.Count; i++)
+            {
+                var image = _planeImages[i];
+                if (image == null) continue;
+
+                var was = _planeColours[i];
+
+                try
+                {
+                    GameTypes.Background_Color.SetValue(
+                        image, new Color(was.r * k, was.g * k, was.b * k, was.a), null);
+                }
+                catch { }
+            }
+
+            try { _grade.DimCharacter(Mathf.Lerp(1f, Dimmed, _dim)); }
+            catch { }
+        }
+
+        /// <summary>
+        /// Puts the menu back behind the art and hands over the art's own alpha, so what follows
+        /// is a dissolve rather than a cut.
+        ///
+        /// Order is the whole of it. Restore destroys the planes first and un-hides the menu
+        /// furniture afterwards, which is right when nobody is looking -- but run while the player
+        /// is watching it is two pops in a row: the picture vanishes onto an empty room, and then
+        /// the room fills in. So the furniture comes back *first*, underneath art that is still
+        /// fully opaque and hiding it, and the grade goes back with it so the menu is already
+        /// lit as itself. Only then does the art thin out, and what it reveals is a main menu that
+        /// has been sitting there the whole time.
+        ///
+        /// False when there is nothing to dissolve, and the caller finishes the ordinary way.
+        /// </summary>
+        internal bool BeginFade()
+        {
+            if (!_built || _planeFades.Count == 0) return false;
+
+            var any = false;
+
+            foreach (var group in _planeFades)
+            {
+                if (group != null) any = true;
+            }
+
+            if (!any) return false;
+
+            foreach (var go in _hidden)
+            {
+                try { if (go != null) go.SetActive(true); }
+                catch (Exception error) { WarnOnce(error); }
+            }
+
+            _hidden.Clear();
+
+            try { _grade.Restore(); }
+            catch (Exception error) { WarnOnce(error); }
+
+            // And the backdrop, started here rather than left to the teardown. Putting the
+            // player's own choice back is a scene load; running it after the art had already gone
+            // meant the swap happened in full view, so pressing Back showed the map's backdrop,
+            // then their own arriving, then a hang, then the menu. Started now it happens behind
+            // art that is still solid, and FadeStep does not begin thinning until it is done.
+            //
+            // Safe to call twice: Restore returns immediately once _changed is false, and the
+            // teardown's own call lands after this one has already settled it.
+            try { EnvironmentState.Restore(); }
+            catch (Exception error) { WarnOnce(error); }
+
+            EnvironmentState.WatchForMenu();
+
+            _fade = 1f;
+            _fadeWaited = 0f;
+            _released = null;
+            return true;
+        }
+
+        /// <summary>
+        /// One frame of the dissolve. True when the art is gone and the rest of the teardown can
+        /// run behind it without anyone seeing the seam.
+        /// </summary>
+        internal bool FadeStep(float seconds)
+        {
+            if (_planeFades.Count == 0) return true;
+
+            // Nothing moves while the backdrop is still loading. The art is at full alpha and is
+            // the only thing on screen, which is the whole point: the swap the player used to
+            // watch happens behind it.
+            //
+            // Capped, because a scene load that never finishes must not leave the art parked over
+            // a menu nobody asked to look at -- the same bargain every other hold in this mod
+            // makes. Eight seconds is far longer than the swap has ever taken and still an end.
+            // Two things have to be true before the art may thin, and neither was being waited
+            // for properly. The backdrop swap has to have finished -- it is a scene load -- and
+            // the menu has to have actually come up behind it. Releasing on the first alone handed
+            // the screen to the stretch between them: the raid tearing down, quests re-requested,
+            // tabs re-added. The player's word for that was a waiting room, and the answer is that
+            // this mod should be the waiting room.
+            //
+            // Capped, and the cap says so in the report. A hold with no end would park the art
+            // over a menu nobody asked to look at, which is the failure every other hold here is
+            // written to avoid, and if this cap turns out to be wrong the line names which exit
+            // was taken rather than inviting another guess.
+            // Three ways out, whichever comes first, because the one that was supposed to end this
+            // never fired: the previous run held the full ten seconds and reported "cap", so
+            // ShowEnvironment(true) is not the menu coming back on this path.
+            //
+            // So the swap finishing is the floor, a linger past it covers the rebuild the player
+            // called a waiting room, and MenuShown stays in as an early release for the paths
+            // where it does fire. The linger is a duration rather than an event and is honest
+            // about being one -- it is tunable, and the report says which exit was taken.
+            var linger = Mathf.Max(0f, DeployScreenPlugin.StagingLingerSeconds.Value);
+
+            if (_fadeWaited < 10f
+                && (EnvironmentState.Settling
+                    || (!EnvironmentState.MenuShown && _fadeWaited < linger)))
+            {
+                _fadeWaited += seconds;
+                return false;
+            }
+
+            if (_released == null)
+            {
+                _released = _fadeWaited >= 10f ? "cap"
+                    : EnvironmentState.MenuShown ? "menu up" : "lingered";
+
+                LoadingPerformance.Note(
+                    "art held " + _fadeWaited.ToString("0.0") + "s for the menu (" + _released + ")");
+            }
+
+            _fade -= seconds / Mathf.Max(0.05f, DeployScreenPlugin.StagingFadeSeconds.Value);
+
+            var alpha = Mathf.Clamp01(_fade);
+
+            foreach (var group in _planeFades)
+            {
+                try { if (group != null) group.alpha = alpha; }
+                catch { }
+            }
+
+            return alpha <= 0f;
+        }
+
         internal void Restore()
         {
             _built = false;
+            _fadeWaited = 0f;
+            _dimming = false;
+            _dim = 0f;
+            _released = null;
+            _planeImages.Clear();
+            _planeColours.Clear();
+            _notice = null;
+            _noticeUntil = -1;
+            _planeFades.Clear();
+            _fade = 1f;
+
+            // The reading belongs to the picture that is going, not to the next one.
+            ArtTone.Forget();
+            _cameBack.Clear();
+            _backdropCamera = null;
+            CharacterFrameHeight = 0f;
 
             // First: it belongs to the camera rather than to anything built here, and the menu
             // is entitled to its own look the moment this screen is done with it.
             GiveBackCameraVignette();
+            GiveBackPreviewKey();
             GiveBackCastShadow();
             GiveBackPreview();
 

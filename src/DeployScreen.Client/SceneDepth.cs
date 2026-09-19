@@ -1,4 +1,5 @@
-using System;
+﻿using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace DeployScreen.Client
@@ -45,10 +46,30 @@ namespace DeployScreen.Client
         private Vector3 _appliedOffset;
         private Quaternion _appliedRotation = Quaternion.identity;
 
+        /// <summary>
+        /// Where the character should be this frame, as a fraction of the frame's height, if he
+        /// is standing in the place rather than printed on a picture of it.
+        ///
+        /// The backdrop is a real scene and the camera really moves across it, so everything in
+        /// the scene parallaxes for free. The PMC does not: he is a preview rendered by a second
+        /// camera and composited on top as a UI image, so while the world slides he is nailed to
+        /// the screen. That is worse than not moving at all -- the nearest thing in the frame is
+        /// the one moving least, which is the opposite of what an eye expects, and it reads as a
+        /// sticker on a photograph.
+        ///
+        /// So he is given the shift he would have had. At the near plane -- the depth the haze
+        /// hangs at, and the nearest thing the scene actually has -- that is the camera's own move
+        /// over the frame height there, negated because a camera moving right sends the world
+        /// left. Zero whenever there is no art up to be parallaxed against.
+        /// </summary>
+        internal Vector2 CharacterDrift { get; private set; }
+
         private Lit[] _lights;
+        private Camera _lens;
 
         private GameObject _shadow;
-        private bool _shadowTurnedOn;
+        private bool _shadowSet;
+        private bool _shadowWas;
 
         /// <summary>
         /// The PMC's poser, kept only so patrol can be turned off again. It is destroyed with the
@@ -72,7 +93,7 @@ namespace DeployScreen.Client
             {
                 return "camera=" + (_camera != null)
                     + "; lights=" + (_lights == null ? 0 : _lights.Length)
-                    + "; ground-shadow=" + _shadowTurnedOn
+                    + "; contact-shadow=" + (_shadowSet || _bootShadows.Count > 0 ? DeployScreenPlugin.DepthGroundShadow.Value + " on " + (_shadowSet ? 1 : 0) + "+" + _bootShadows.Count : "as found")
                     + "; patrol=" + _patrolSet
                     + "; overlay=" + _overlaySet;
             }
@@ -101,7 +122,11 @@ namespace DeployScreen.Client
                 TakePlayerModel(screen);
                 TakeOverlay();
 
-                _running = _camera != null || _lights != null || _shadowTurnedOn || _patrolSet || _overlaySet;
+                // The shadow rig counts even though nothing has been found yet: it cannot be found
+                // until the character loads, and Tick is what goes looking.
+                _running = _camera != null || _lights != null || _shadowSet || _patrolSet || _overlaySet
+                    || (_playerView != null
+                        && DeployScreenPlugin.DepthGroundShadow.Value != ContactShadow.AsFound);
 
                 if (_running) DeployScreenPlugin.Log.LogInfo("[DeployScreen] scene depth: " + Description);
             }
@@ -142,6 +167,12 @@ namespace DeployScreen.Client
             if (DeployScreenPlugin.DepthDrift.Value <= 0f && DeployScreenPlugin.DepthSway.Value <= 0f) return;
 
             _camera = GameTypes.EnvRoot_CameraContainer.GetValue(root) as Transform;
+
+            // The container is what moves; the camera inside it is what decides which way that
+            // move is on screen. They are not the same transform and there is no promise they
+            // share an orientation, so the drift is turned into a direction through this one
+            // rather than by assuming the container's x is the screen's x.
+            _lens = _camera == null ? null : _camera.GetComponentInChildren<Camera>();
         }
 
         private void TakeLights(Component root)
@@ -175,29 +206,29 @@ namespace DeployScreen.Client
         /// </summary>
         private void TakePlayerModel(Component screen)
         {
-            if (screen == null) return;
-            if (GameTypes.Loading_PlayerModel == null || GameTypes.PlayerModelView_Poser == null) return;
+            if (screen == null || GameTypes.Loading_PlayerModel == null) return;
 
             try
             {
                 var view = GameTypes.Loading_PlayerModel.GetValue(screen);
                 if (view == null) return;
 
-                var poser = GameTypes.PlayerModelView_Poser.GetValue(view, null);
+                // Kept first, and before anything that can fail. The character is loaded
+                // asynchronously, so at screen-show MenuPlayer -- and the shadow rig hanging off
+                // it -- does not exist yet, and neither necessarily does the poser. Tick goes
+                // looking once they do, and it can only do that if this was recorded. See
+                // TakeBootShadow.
+                _playerView = view as Component;
+
+                var poser = GameTypes.PlayerModelView_Poser == null
+                    ? null
+                    : GameTypes.PlayerModelView_Poser.GetValue(view, null);
+
                 if (poser == null) return;
 
                 _poser = poser;
 
-                if (DeployScreenPlugin.DepthGroundShadow.Value && GameTypes.MenuPoser_BottomShadow != null)
-                {
-                    _shadow = GameTypes.MenuPoser_BottomShadow.GetValue(poser) as GameObject;
-
-                    if (_shadow != null && !_shadow.activeSelf)
-                    {
-                        _shadow.SetActive(true);
-                        _shadowTurnedOn = true;
-                    }
-                }
+                TakeContactShadow(poser);
 
                 // Patrol is a write-only property -- there is no readable backing field -- so what
                 // it was before cannot be recovered. That is why it is opt-in and why Restore
@@ -212,6 +243,149 @@ namespace DeployScreen.Client
             {
                 WarnOnce(error);
             }
+        }
+
+        /// <summary>
+        /// The PMC's contact shadow, set to whichever of the three states was asked for.
+        ///
+        /// It used to be a bool that could only switch the thing on, which meant there was no way
+        /// to say "and I do not want it" -- and over a photograph that is a real thing to want.
+        /// A blob authored to sit under a character in a dim menu room does not necessarily sit
+        /// under him over a picture: the framing is different, the camera is at a different
+        /// height, and what grounded him in the room can read as a smear behind him instead.
+        ///
+        /// Whatever it was is recorded and put back, in both directions.
+        /// </summary>
+        private void TakeContactShadow(object poser)
+        {
+            var wanted = DeployScreenPlugin.DepthGroundShadow.Value;
+
+            if (wanted == ContactShadow.AsFound || GameTypes.MenuPoser_BottomShadow == null) return;
+
+            var shadow = GameTypes.MenuPoser_BottomShadow.GetValue(poser) as GameObject;
+            if (shadow == null) return;
+
+            var show = wanted == ContactShadow.Show;
+            if (shadow.activeSelf == show) return;
+
+            _shadow = shadow;
+            _shadowWas = shadow.activeSelf;
+            _shadowSet = true;
+
+            shadow.SetActive(show);
+
+            DeployScreenPlugin.Log.LogInfo(
+                "[DeployScreen] contact shadow '" + shadow.name + "' "
+                + (show ? "switched on" : "switched off") + " (was " + _shadowWas + ")");
+        }
+
+        /// <summary>
+        /// The shadow rig that is actually on the character, as opposed to the one the field
+        /// name promised.
+        ///
+        /// `MenuPlayerPoser.BottomShadow` -- the field this mod has been reaching for since the
+        /// beginning -- points at a GameObject that is **inactive** on this build. That is why
+        /// setting the contact shadow to Hide changed nothing and the log said "as found": there
+        /// was nothing there to hide.
+        ///
+        /// What is actually drawing is `MenuPlayer/BootShadow`, five quads -- Over, Left, Right,
+        /// Over (1), Over (2) -- all active, all `Unlit/Transparent Colored`, the largest of them
+        /// 2.83 units across against a character about 1.8 tall. The probe found them the moment
+        /// it stopped filtering by path and started filtering by shader; they had been in front
+        /// of it the whole time, under MenuPlayer, which the old filter skipped.
+        ///
+        /// Found by name rather than by field, because the field lied. Whole subtrees are toggled
+        /// -- the root of each run of shadow-named objects, not each child -- and each one is
+        /// recorded with what it was so Restore can put it back either way.
+        ///
+        /// Driven from Tick rather than from Begin, and that is the whole reason the first attempt
+        /// did nothing: `ShowPlayerModel` is async, so at screen-show there is no MenuPlayer yet
+        /// and nothing named shadow to find. The log said so -- no rig line at all, and
+        /// `contact-shadow=as found`. The probe only ever saw these because it runs four seconds
+        /// in, which is exactly the trap it was moved late to avoid, and then this walked into it.
+        ///
+        /// Searching stops as soon as anything is found; after that the objects it holds are
+        /// re-asserted instead, which costs an activeSelf check each and no allocation.
+        /// </summary>
+        private void TakeBootShadow(Component view)
+        {
+            var wanted = DeployScreenPlugin.DepthGroundShadow.Value;
+
+            if (view == null || wanted == ContactShadow.AsFound) return;
+
+            var show = wanted == ContactShadow.Show;
+
+            foreach (var child in view.GetComponentsInChildren<Transform>(true))
+            {
+                if (child == null) continue;
+                if (child.name.IndexOf("shadow", StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+                // The root of the run only. BootShadow's children are all called shadow-something
+                // too, and toggling the parent takes them with it.
+                var parent = child.parent;
+                if (parent != null && parent.name.IndexOf("shadow", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+
+                if (child.gameObject.activeSelf == show) continue;
+
+                _bootShadows.Add(child.gameObject);
+                _bootShadowWas.Add(child.gameObject.activeSelf);
+
+                child.gameObject.SetActive(show);
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] shadow rig '" + child.name + "' "
+                    + (show ? "switched on" : "switched off") + " (was " + !show + ")");
+            }
+        }
+
+        private readonly List<GameObject> _bootShadows = new List<GameObject>();
+        private readonly List<bool> _bootShadowWas = new List<bool>();
+        private Component _playerView;
+        private double _bootShadowNext;
+
+        /// <summary>
+        /// Looks for the shadow rig until it exists, then holds it where it was put.
+        /// </summary>
+        private void WatchBootShadow(double now)
+        {
+            var wanted = DeployScreenPlugin.DepthGroundShadow.Value;
+            if (wanted == ContactShadow.AsFound || _playerView == null) return;
+
+            var show = wanted == ContactShadow.Show;
+
+            if (_bootShadows.Count == 0)
+            {
+                if (now < _bootShadowNext) return;
+
+                // Four times a second while the character is still loading. Once anything is
+                // found this branch is never taken again, so the walk is not a running cost.
+                _bootShadowNext = now + 0.25;
+                TakeBootShadow(_playerView);
+                return;
+            }
+
+            for (var i = 0; i < _bootShadows.Count; i++)
+            {
+                var one = _bootShadows[i];
+                if (one == null || one.activeSelf == show) continue;
+
+                one.SetActive(show);
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] shadow rig '" + one.name + "' came back, switching it off again");
+            }
+        }
+
+        private void GiveBackBootShadow()
+        {
+            for (var i = _bootShadows.Count - 1; i >= 0; i--)
+            {
+                try { if (_bootShadows[i] != null) _bootShadows[i].SetActive(_bootShadowWas[i]); }
+                catch { }
+            }
+
+            _bootShadows.Clear();
+            _bootShadowWas.Clear();
         }
 
         /// <summary>
@@ -256,6 +430,7 @@ namespace DeployScreen.Client
 
                 DriveCamera(t);
                 DriveLights(t);
+                WatchBootShadow(now);
             }
             catch (Exception error)
             {
@@ -266,12 +441,24 @@ namespace DeployScreen.Client
 
         /// <summary>
         /// Layered sines at frequencies that do not share a period, so the motion never settles
-        /// into a visible loop. Slow on purpose: this should read as the room breathing, not as a
-        /// camera move.
+        /// into a visible loop.
+        ///
+        /// These were slow on purpose -- the room breathing rather than a camera move -- and that
+        /// went too far. At speed 1 the components run from a 44-second period to a 170-second
+        /// one, so a one-minute load shows less than a single cycle of the slowest of them and the
+        /// screen reads as a still photograph. The player's word for it was "static", which is
+        /// exactly right.
+        ///
+        /// Speed is the lever rather than drift, and the difference matters. RequiredOverscan
+        /// grows the art planes to cover whatever sweep the drift asks for, so a bigger drift is
+        /// paid for in picture: the plane is built larger and you see a smaller part of it. The
+        /// same sweep played faster costs nothing at all.
         /// </summary>
         private void DriveCamera(float t)
         {
             if (_camera == null) return;
+
+            t *= Mathf.Max(0.01f, DeployScreenPlugin.DepthSpeed.Value);
 
             var drift = DeployScreenPlugin.DepthDrift.Value;
             var sway = DeployScreenPlugin.DepthSway.Value;
@@ -293,6 +480,26 @@ namespace DeployScreen.Client
 
             _appliedOffset = offset;
             _appliedRotation = rotation;
+
+            // The sway is not compensated for. A rotation shifts near and far by the same angle,
+            // so it is not parallax and the character is no more wrong for it than the scene is
+            // -- and at the default 0.12 degrees it is worth about a tenth of what the drift is.
+            var frame = StagingArea.CharacterFrameHeight;
+            var taste = Mathf.Clamp(DeployScreenPlugin.DepthCharacter.Value, 0f, 2f);
+
+            if (frame <= 0.0001f || taste <= 0f)
+            {
+                CharacterDrift = Vector2.zero;
+                return;
+            }
+
+            // The offset is written in the container's parent space. What the character needs is
+            // right and up as the lens sees them, so it goes out to world and back in through the
+            // camera. Negated on the way: a camera moving right sends the world left.
+            var world = _camera.parent == null ? offset : _camera.parent.TransformVector(offset);
+            var seen = _lens == null ? offset : _lens.transform.InverseTransformVector(world);
+
+            CharacterDrift = new Vector2(-seen.x, -seen.y) * (taste / frame);
         }
 
         /// <summary>
@@ -325,6 +532,9 @@ namespace DeployScreen.Client
         /// </summary>
         internal void Restore()
         {
+            CharacterDrift = Vector2.zero;
+            _lens = null;
+
             _running = false;
 
             try
@@ -357,12 +567,15 @@ namespace DeployScreen.Client
 
             try
             {
-                if (_shadowTurnedOn && _shadow != null) _shadow.SetActive(false);
+                if (_shadowSet && _shadow != null) _shadow.SetActive(_shadowWas);
+                GiveBackBootShadow();
+                _playerView = null;
+                _bootShadowNext = 0;
             }
             catch (Exception error) { WarnOnce(error); }
 
             _shadow = null;
-            _shadowTurnedOn = false;
+            _shadowSet = false;
 
             try
             {
