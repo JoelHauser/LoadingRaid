@@ -2165,6 +2165,37 @@ art held 10.0s for the menu (cap)
 Which is the difference between a fix and a guess. If `ShowEnvironment(true)` turns out not to fire
 on this path at all, every run will say `cap` and that is the answer rather than a mystery.
 
+#### The raid's hour, and why testing it at night proves nothing
+
+Each map carries one time, and night is that same clock twelve hours round -- which is exactly what
+`RaidSettings.SelectedDateTime` (`JsonType.EDateTime`, CURR=0 / PAST=1) selects. From this
+database's `Location.UnixDateTime`:
+
+| day | night | maps |
+| --- | --- | --- |
+| ~11:50 | ~23:50 | Factory, Sandbox, Streets, Reserve |
+| ~14:45 | ~02:45 | Customs, Interchange, Woods |
+| 13:45 | 01:45 | Shoreline |
+| 15:04 | 03:04 | Laboratory |
+| **18:09** | 06:09 | **Lighthouse** |
+
+Two clusters rather than one, with Shoreline and Lighthouse off on their own. Lighthouse is the one
+worth having: 18:09 is an evening grade, so it should come out gold where everything else is flat
+midday light.
+
+**The first run after the fix looked identical, and that is the trap.** It read
+`conditions=23:00 (from the map, shifted for night)` -- the fix working -- on Streets at night,
+against a wall clock near midnight. Old fallback and new reading both landed on night, exposure went
+0.37 to 0.38, and nothing appeared to change. Anything testing this has to be a **day** raid, and
+Streets at 11:00 against 23:00 is the largest swing on offer.
+
+Worth recording as a limit rather than leaving it to be rediscovered: `UnixDateTime` is a seed, not
+a live clock. `EFT.GameDateTime` advances it against real time by `TimeFactor`, so a real raid's
+hour drifts through a session, and everything that holds one -- `GameWorld`, `BaseLocalGame`,
+`BotOwner` -- exists only in a raid. At deploy time the seed plus the day/night toggle is the best
+reading available, and it is right about the thing that matters, which is whether the destination is
+lit or dark.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
