@@ -108,6 +108,7 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> StagingSayCancelClosed;
         internal static ConfigEntry<float> StagingFadeSeconds;
         internal static ConfigEntry<float> StagingDimSeconds;
+        internal static ConfigEntry<float> StagingLingerSeconds;
         internal static ConfigEntry<bool> StagingSimplePreview;
         internal static ConfigEntry<bool> StagingPlainPreview;
         internal static ConfigEntry<bool> StagingBackdropAo;
@@ -570,6 +571,19 @@ namespace DeployScreen.Client
                     + "happening rather than as a button that did nothing. It darkens rather than "
                     + "fades, so nothing behind the art can show through early.",
                     new AcceptableValueRange<float>(0.1f, 2f)));
+
+            StagingLingerSeconds = Config.Bind(
+                "Staging area",
+                "Seconds to linger after cancelling",
+                2.5f,
+                new ConfigDescription(
+                    "After the deploy screen closes the game spends a while putting the menu back "
+                    + "together -- the raid torn down, quests re-requested, tabs re-added. The art "
+                    + "stays up over that instead of handing you to it, and this is how long it "
+                    + "waits past the backdrop finishing before it dissolves. Raise it if the menu "
+                    + "is still assembling when the picture goes; lower it if the picture sits "
+                    + "there after the menu is plainly ready.",
+                    new AcceptableValueRange<float>(0f, 8f)));
 
             StagingVignetteOff = Config.Bind(
                 "Staging area",

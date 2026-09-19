@@ -95,6 +95,12 @@ namespace DeployScreen.Client
         {
             if (__0) _menuShown = true;
 
+            // On the trace this was added for, MenuShown never became true and the hold ran to its
+            // cap, so ShowEnvironment(true) is not the menu returning -- or is not called on the
+            // cancel path at all. Printed with its argument rather than reasoned about, because
+            // one line in the next report settles which.
+            LoadingPerformance.Note("ShowEnvironment(" + __0 + ")");
+
             if (!__0 || !_pending || _applying) return;
 
             _pending = false;

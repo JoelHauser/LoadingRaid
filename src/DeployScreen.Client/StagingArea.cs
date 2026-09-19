@@ -3537,7 +3537,19 @@ namespace DeployScreen.Client
             // over a menu nobody asked to look at, which is the failure every other hold here is
             // written to avoid, and if this cap turns out to be wrong the line names which exit
             // was taken rather than inviting another guess.
-            if (_fadeWaited < 10f && (EnvironmentState.Settling || !EnvironmentState.MenuShown))
+            // Three ways out, whichever comes first, because the one that was supposed to end this
+            // never fired: the previous run held the full ten seconds and reported "cap", so
+            // ShowEnvironment(true) is not the menu coming back on this path.
+            //
+            // So the swap finishing is the floor, a linger past it covers the rebuild the player
+            // called a waiting room, and MenuShown stays in as an early release for the paths
+            // where it does fire. The linger is a duration rather than an event and is honest
+            // about being one -- it is tunable, and the report says which exit was taken.
+            var linger = Mathf.Max(0f, DeployScreenPlugin.StagingLingerSeconds.Value);
+
+            if (_fadeWaited < 10f
+                && (EnvironmentState.Settling
+                    || (!EnvironmentState.MenuShown && _fadeWaited < linger)))
             {
                 _fadeWaited += seconds;
                 return false;
@@ -3545,7 +3557,8 @@ namespace DeployScreen.Client
 
             if (_released == null)
             {
-                _released = _fadeWaited >= 10f ? "cap" : "menu up";
+                _released = _fadeWaited >= 10f ? "cap"
+                    : EnvironmentState.MenuShown ? "menu up" : "lingered";
 
                 LoadingPerformance.Note(
                     "art held " + _fadeWaited.ToString("0.0") + "s for the menu (" + _released + ")");

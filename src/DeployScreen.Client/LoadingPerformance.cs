@@ -394,10 +394,20 @@ namespace DeployScreen.Client
                      + " at " + (now - _fadeAt).ToString("0.0") + "s");
             }
 
-            if (now - _fadeAt < 6.0) return;
+            if (now - _fadeAt < 20.0) return;
 
-            Mark("screen neither faded nor closed, letting the art go");
-            BeginClose();
+            // Twenty, and no dissolve at the end of it. Six was picked when the round trip had
+            // measured 0.2s to 4.9s; the next one took 7.1 and the cap fired while the deploy
+            // screen was still up, so the art thinned off a live screen and the stock one showed
+            // through -- the exact failure the dissolve exists to prevent, caused by the guard
+            // meant to bound it.
+            //
+            // Past the cap the screen is still there, which is the one state the dissolve must
+            // not run in, so this restores plainly. That is no worse than the behaviour before any
+            // of this existed, and it is the honest thing to do when the assumption the transition
+            // rests on has already failed.
+            Mark("screen still up after 20s, letting the art go without a dissolve");
+            Finish("cancel-requested", false);
         }
 
         internal static void ScreenClosed(object screen)
