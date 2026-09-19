@@ -2164,11 +2164,34 @@ Panel/Name` and left the corner stock. `LabelsUnder` now sorts a panel's labels 
 takes the big one and the next, which survives a rename where a path does not. The names it finds
 are logged, so the next build's are not hunted for.
 
-**Back does not return to the menu.** Confirmed on 2026-09-18 with `Rearrange the screen` on: the
-abort fires, the report ends `cancel-requested`, and there is no `loading-screen-disabled` line
-anywhere in the log, so `ScreenClosed` never runs and the screen is never disabled. With
-rearranging **off** the button does not even fire, which rules `ScreenLayout` out as the cause --
-see the table in **Back: two different failures** above. The player describes the symptom as
+**Back reverting to the default loading screen -- fixed.** The screen is **never deactivated**, and
+that was the wrong assumption underneath five sessions of this. `LoadingScreenLifetime.OnDisable`
+sits on the screen's own GameObject and has never once fired, which is why `loading-screen-disabled`
+appears in no log this mod has ever written.
+
+Reading the game says the same. `EFT.UI.Screens.UIScreen` closes through
+`SoftHide(CanvasGroup, Action)`, which runs `VisualExtensions.SoftChange` on the group and fades its
+**alpha**; the object stays active and fully present throughout. `HideGameObject` -- the one path
+that would deactivate it -- logs `"Closing screen: {0}"`, and that string is in no log here at all.
+`ScreenClosed` was watching for an event this screen does not raise.
+
+So the symptom reads backwards until that is in hand. `AbortMatching` fired, `Finish` restored in
+its `finally`, and the staging area came down at once -- while the screen was still on the display
+at full alpha, because nothing had closed it yet. **Taking our art off a screen that is still up
+does not leave nothing; it leaves the game's own deploy screen**, which is exactly what was
+reported.
+
+`HoldFade` makes the same bargain `HoldCountdown` already makes: on abort the restore is owed
+rather than run, and `Update` settles it when the screen's CanvasGroup alpha reaches zero. Three
+ways out, all ending at `Finish`, which restores in its `finally`: the fade finishes, no CanvasGroup
+is there to wait on, or a second and a half passes. `SoftChange` takes well under that, and art
+left over a menu nobody asked to look at is a worse failure than a visible cut.
+
+Two things found along the way and worth keeping. `MatchmakerTimeHasCome.ChangeCancelButtonVisibility(bool)`
+is why `BackButton` reads `active=False` at the 4s probe -- the game brings the button up partway
+through, so clicking early hits nothing, and that is the whole of "I pressed Back and nothing
+happened". And the press itself was never broken: `DefaultUIButton.OnClick` fires and the abort
+follows. The player describes the symptom as
 "it reverts back to the default loading screen", and that is exactly what the two facts predict
 together: `Finish` restores the staging in its `finally`, which takes the art down, while the
 screen object itself stays up -- so what is left on screen is the stock deploy screen. `ScreenLayout` is

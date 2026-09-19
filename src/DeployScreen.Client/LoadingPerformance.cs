@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
@@ -39,6 +39,8 @@ namespace DeployScreen.Client
         /// it is set the staging area is owed a restore rather than given one -- see ScreenClosed.
         /// </summary>
         private bool _holding;
+        private bool _fading;
+        private double _fadeAt;
         private LoadEase _ease;
 
         /// <summary>
@@ -199,7 +201,81 @@ namespace DeployScreen.Client
         private static void Aborted(object __instance)
         {
             if (_instance == null || !ReferenceEquals(_instance._screen, __instance)) return;
+
+            // Back is pressed here, and the screen does not go away here. Restoring now is what
+            // put the stock deploy screen on the display on the way out -- see HoldFade.
+            if (_instance._active && _instance.FadeGroup() != null)
+            {
+                _instance._fading = true;
+                _instance._fadeAt = _instance._clock.Elapsed.TotalSeconds;
+                _instance.Mark("cancel-requested, holding the art while the screen goes");
+                return;
+            }
+
             _instance.Finish("cancel-requested");
+        }
+
+        /// <summary>
+        /// The CanvasGroup the screen fades itself out with, which is how it closes.
+        ///
+        /// Worth writing down, because five sessions assumed otherwise. The screen is never
+        /// deactivated: LoadingScreenLifetime.OnDisable sits on its GameObject and has never once
+        /// fired, so loading-screen-disabled is absent from every log this mod has ever written.
+        /// Reading the game confirms it -- EFT.UI.Screens.UIScreen closes through
+        /// SoftHide(CanvasGroup, Action), which runs VisualExtensions.SoftChange on the group and
+        /// fades its alpha. The object stays active and fully present the whole time; only its
+        /// alpha moves. HideGameObject, the one path that would deactivate it, logs
+        /// "Closing screen: {0}" and that string appears in no log here at all.
+        ///
+        /// So ScreenClosed was watching for an event that this screen does not raise, and the
+        /// alpha is the signal that was there all along.
+        /// </summary>
+        private CanvasGroup FadeGroup()
+        {
+            var screen = _screen as Component;
+            return screen == null ? null : screen.GetComponent<CanvasGroup>();
+        }
+
+        /// <summary>
+        /// Keeps the art up until the screen has actually gone.
+        ///
+        /// The complaint was that pressing Back reverts to the default loading screen, and that is
+        /// exactly what was happening, for a reason that reads backwards until the paragraph above
+        /// is in hand. The abort fired, Finish restored in its finally, and the staging area came
+        /// down at once -- while the screen itself was still on the display at full alpha, because
+        /// nothing had closed it yet. Taking our own art off a screen that is still up does not
+        /// leave nothing, it leaves the game's own deploy screen, which is what was seen.
+        ///
+        /// So the restore is owed rather than run, the same bargain HoldCountdown already makes,
+        /// and settled the same way in Update. Three ways out and every one of them ends at
+        /// Finish, which restores in its finally: the screen finishes fading, the fade never
+        /// happens, or the raid starts anyway through Update's own first line.
+        ///
+        /// A second and a half caps it. SoftChange takes well under that, and art left sitting
+        /// over a menu nobody asked to look at is a worse failure than a visible cut.
+        /// </summary>
+        private void HoldFade(double now)
+        {
+            var group = FadeGroup();
+
+            if (group == null)
+            {
+                Mark("no canvas group to wait on, letting the art go");
+                Finish("cancel-requested", false);
+                return;
+            }
+
+            if (group.alpha <= 0.02f)
+            {
+                Mark("screen faded out");
+                Finish("cancel-requested", false);
+                return;
+            }
+
+            if (now - _fadeAt < 1.5) return;
+
+            Mark("screen did not fade, letting the art go");
+            Finish("cancel-requested", false);
         }
 
         internal static void ScreenClosed(object screen)
@@ -323,6 +399,8 @@ namespace DeployScreen.Client
             _presentation = null;
             _easeMetadata = null;
             _holding = false;
+            _fading = false;
+            _fadeAt = 0;
 
             // Every raid gets its own warning budget. Kept for the session, the first failure
             // silences every later one, and reports that stop appearing leave no log line at all.
@@ -439,6 +517,7 @@ namespace DeployScreen.Client
                 StagingArea.WatchForCountdown(_screen as Component, now);
                 StagingArea.WatchForPreview(_screen as Component, now);
                 if (_holding) HoldCountdown(now);
+                if (_fading) HoldFade(now);
                 if (_closedAt >= 0 && now - _closedAt >= 30) { Finish("screen-closed-without-confirmed-start", false); return; }
                 if (now >= 1800) { Finish("capture-timeout", false); return; }
                 _minimal?.Tick(now);
@@ -526,6 +605,7 @@ namespace DeployScreen.Client
             // area: this screen was arranged around the art, so it goes back to its own shape
             // while the art it was arranged around is still there.
             _holding = false;
+            _fading = false;
             try { _countdown?.Restore(); }
             catch (Exception e) { Warn(e); }
             _countdown = null;
