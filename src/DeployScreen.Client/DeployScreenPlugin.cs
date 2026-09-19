@@ -88,7 +88,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.8.0";
+        public const string PluginVersion = "1.9.0";
 
         internal static ManualLogSource Log;
 
@@ -575,14 +575,16 @@ namespace DeployScreen.Client
             StagingLingerSeconds = Config.Bind(
                 "Staging area",
                 "Seconds to linger after cancelling",
-                1.5f,
+                0.4f,
                 new ConfigDescription(
                     "After the deploy screen closes the game spends a while putting the menu back "
                     + "together -- the raid torn down, quests re-requested, tabs re-added. The art "
-                    + "stays up over that instead of handing you to it, and this is how long it "
-                    + "waits past the backdrop finishing before it dissolves. Raise it if the menu "
-                    + "is still assembling when the picture goes; lower it if the picture sits "
-                    + "there after the menu is plainly ready.",
+                    + "stays up over the whole of that and does not dissolve until the main menu "
+                    + "is actually on screen, so you are never handed the half-built one.\n"
+                    + "This is only the pause after the menu arrives, to let it draw before the "
+                    + "picture thins onto it. It is not the wait itself -- that ends when the menu "
+                    + "does, however long it takes. Raise it if you catch the menu still settling "
+                    + "through the dissolve.",
                     new AcceptableValueRange<float>(0f, 8f)));
 
             StagingVignetteOff = Config.Bind(

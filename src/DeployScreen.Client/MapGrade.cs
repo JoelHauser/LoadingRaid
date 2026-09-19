@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Reflection;
 using UnityEngine;
 
 namespace DeployScreen.Client
@@ -98,18 +99,38 @@ namespace DeployScreen.Client
         /// <summary>Neutral, for a map with no entry -- no colour opinion, just the rim.</summary>
         private static readonly Grade Neutral = G(0xC6C6C6, 0x7E8A96, 1.00f, 0xC0C0C0);
 
-        /// <summary>This raid's time and weather, as read off RaidSettings before deploy.</summary>
+        /// <summary>
+        /// This raid's time and weather, settled before deploy.
+        ///
+        /// The weather figures are normalised to 0..1 here rather than kept in the units they
+        /// were read in, because there are two sources with different scales -- a custom raid's
+        /// enums and the live node's floats -- and every reader downstream wants the same
+        /// question answered: how much. Converting once, at the edge, is what keeps the grade
+        /// from having to know which of the two it got.
+        /// </summary>
         internal struct Weather
         {
             internal bool Known;
+
+            /// <summary>The raid's hour as a fraction, so 18:09 grades as dusk and not as 18:00.</summary>
+            internal float Hour;
+
+            /// <summary>The same time, for the log and the report.</summary>
             internal int HourOfDay;
+            internal int MinuteOfHour;
+
             internal bool HourFromClock;
 
-            /// <summary>Where the hour came from -- the map, the map shifted for night, or the clock.</summary>
+            /// <summary>Where the hour came from, in words, for the log.</summary>
             internal string HourSource;
-            internal int Rain;        // ERainType     NoRain .. Shower
-            internal int Fog;         // EFogType      NoFog  .. Continuous
-            internal int Cloudiness;  // ECloudiness   Clear  .. Thundercloud
+
+            /// <summary>Where the weather came from, in words, or null if none could be read.</summary>
+            internal string WeatherSource;
+
+            internal float Rain;   // 0 = dry,   1 = shower
+            internal float Fog;    // 0 = clear, 1 = continuous
+            internal float Cloud;  // 0 = clear, 1 = thundercloud
+            internal float Wind;   // 0 = still, 1 = hurricane
         }
 
         /// <summary>Night light: what everything drifts toward in the small hours.</summary>
@@ -142,25 +163,41 @@ namespace DeployScreen.Client
 
             // --- hour of day -------------------------------------------------------------
             // Daylight from about 06:00 to 19:00, with an hour of transition at each end.
-            var hour = Mathf.Repeat(weather.HourOfDay, 24f);
+            var hour = Mathf.Repeat(weather.Hour, 24f);
             var daylight = Mathf.Clamp01(Mathf.Min((hour - 4.5f) / 2.5f, (20.5f - hour) / 2.5f));
 
-            // Golden hour: strongest where daylight is climbing or falling, absent at noon and
-            // at midnight. A raid at 06:00 or 19:00 should look like it.
-            var goldenness = Mathf.Clamp01(1f - Mathf.Abs(daylight - 0.5f) * 2.4f) * daylight;
+            // The low sun: strongest where daylight is climbing or falling, absent at noon and at
+            // midnight. A raid at 06:00 or 19:00 should look like it.
+            var lowSun = Mathf.Clamp01(1f - Mathf.Abs(daylight - 0.5f) * 2.4f) * daylight;
+
+            // Which side of the day that low sun is on. Dawn and dusk are the same sun height and
+            // they do not look remotely alike: morning is cold and pink because the air has been
+            // still all night, evening is amber because the ground has been heating it all day.
+            // Grading them the same makes an 18:09 Lighthouse deploy look like an 06:09 one, and
+            // the whole reason for reading the raid's own hour was that those are different raids.
+            var evening = hour >= 12f;
+            var dawnness = evening ? 0f : lowSun;
+            var duskness = evening ? lowSun : 0f;
 
             grade.Key = Color.Lerp(NightKey, grade.Key, daylight);
             grade.Rim = Color.Lerp(NightRim, grade.Rim, daylight * 0.75f + 0.25f);
             grade.Wash = Color.Lerp(NightKey, grade.Wash, daylight * 0.8f + 0.2f);
 
-            grade.Key = Color.Lerp(grade.Key, Warm(grade.Key), goldenness * 0.55f);
-            grade.Wash = Color.Lerp(grade.Wash, Warm(grade.Wash), goldenness * 0.35f);
+            grade.Key = Color.Lerp(grade.Key, Warm(grade.Key), duskness * 0.55f);
+            grade.Wash = Color.Lerp(grade.Wash, Warm(grade.Wash), duskness * 0.35f);
+
+            grade.Key = Color.Lerp(grade.Key, Rose(grade.Key), dawnness * 0.45f);
+            grade.Wash = Color.Lerp(grade.Wash, Rose(grade.Wash), dawnness * 0.30f);
+
+            // First light is colder and dimmer than last light at the same sun height.
+            grade.Rim = Color.Lerp(grade.Rim, Cool(grade.Rim), dawnness * 0.35f);
+            grade.Exposure *= Mathf.Lerp(1f, 0.92f, dawnness);
 
             // Night is darker, but not so dark the art disappears; the rim carries it instead.
             grade.Exposure *= Mathf.Lerp(0.42f, 1f, daylight);
 
             // --- fog ---------------------------------------------------------------------
-            var fog = Mathf.Clamp01(weather.Fog / 4f);
+            var fog = Mathf.Clamp01(weather.Fog);
             if (fog > 0f)
             {
                 var grey = Grey(grade.Key);
@@ -171,7 +208,7 @@ namespace DeployScreen.Client
             }
 
             // --- rain --------------------------------------------------------------------
-            var rain = Mathf.Clamp01(weather.Rain / 4f);
+            var rain = Mathf.Clamp01(weather.Rain);
             if (rain > 0f)
             {
                 grade.Key = Color.Lerp(grade.Key, Cool(Desaturate(grade.Key, 0.35f)), rain * 0.65f);
@@ -180,7 +217,7 @@ namespace DeployScreen.Client
             }
 
             // --- cloud -------------------------------------------------------------------
-            var cloud = Mathf.Clamp01(weather.Cloudiness / 5f);
+            var cloud = Mathf.Clamp01(weather.Cloud);
             if (cloud > 0f)
             {
                 // Overcast has no direction: the key and the rim converge.
@@ -197,6 +234,13 @@ namespace DeployScreen.Client
         private static Color Warm(Color c) { return new Color(Mathf.Min(1f, c.r * 1.14f), c.g * 1.02f, c.b * 0.82f, 1f); }
         private static Color Cool(Color c) { return new Color(c.r * 0.88f, c.g * 0.96f, Mathf.Min(1f, c.b * 1.12f), 1f); }
 
+        /// <summary>
+        /// First light: red lifted, green pulled down, and the blue left alone. Warm cannot serve
+        /// here -- it warms by taking blue away, and run at dawn that gives a sunset. What makes
+        /// the morning the morning is that it keeps its cold.
+        /// </summary>
+        private static Color Rose(Color c) { return new Color(Mathf.Min(1f, c.r * 1.10f), c.g * 0.94f, Mathf.Min(1f, c.b * 1.04f), 1f); }
+
         private static Color Grey(Color c)
         {
             var l = c.r * 0.299f + c.g * 0.587f + c.b * 0.114f;
@@ -209,54 +253,38 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
-        /// This raid's weather off the RaidSettings the screen was handed. Unknown rather than
-        /// guessed when it cannot be read: the per-map grade on its own is a good answer, and a
-        /// made-up midnight would not be.
+        /// This raid's time and weather, off the two things the deploy screen is handed: the
+        /// RaidSettings and the session.
+        ///
+        /// Both halves have the same shape -- a custom raid states what it wants, and an ordinary
+        /// raid states nothing and has to be read from the live game. So each is tried in that
+        /// order, and which one answered is recorded, because a light that cannot be traced back
+        /// to a reading is a light nobody can argue with.
         /// </summary>
-        internal static Weather ReadWeather(object raidSettings)
+        internal static Weather ReadWeather(object raidSettings, object session)
         {
             var weather = default(Weather);
-
-            if (raidSettings == null || !GameTypes.WeatherReady) return weather;
+            if (raidSettings == null) return weather;
 
             try
             {
-                var settings = GameTypes.RaidSettings_TimeAndWeather.GetValue(raidSettings);
-                if (settings == null) return weather;
+                GameTypes.BindSession(session);
 
-                // -1 is the game's "this raid has no time set", which is every PvE raid the
-                // player has not given one. Taken literally it wraps to 23:00 and lights the
-                // whole screen for midnight whatever the hour really is, so fall back to the
-                // clock -- what 1.5.0 did -- and say in the log which of the two it was.
-                var hour = Convert.ToInt32(GameTypes.Weather_HourOfDay.GetValue(settings));
+                object settings = null;
+                if (GameTypes.WeatherReady)
+                    settings = GameTypes.RaidSettings_TimeAndWeather.GetValue(raidSettings);
 
-                if (hour >= 0 && hour <= 23)
-                {
-                    weather.HourOfDay = hour;
-                }
-                else
-                {
-                    // -1 is the ordinary case, not the exception. HourOfDay is only filled in for
-                    // a custom raid, so every normal deploy arrived here and fell back to the wall
-                    // clock -- which is why the screen was lit for whatever time it happened to be
-                    // in the room rather than for the raid.
-                    //
-                    // The raid's real hour is the map's own clock, shifted if the player picked
-                    // the other half of the day. Location.UnixDateTime is the in-game time for
-                    // that map (Customs sits at 14:41), and RaidSettings.SelectedDateTime is the
-                    // CURR/PAST toggle from the location screen, which is EFT's twelve-hour day
-                    // and night. Read together they are what the raid will actually look like.
-                    weather.HourOfDay = MapHour(raidSettings, out weather.HourSource);
-                }
+                // Whether the player stated this raid's conditions, decided once and used by
+                // both halves. HourOfDay is the only field that carries a sentinel; see StatedHour.
+                var stated = StatedHour(settings) >= 0;
 
-                weather.HourFromClock = weather.HourSource == "the clock";
-                weather.Rain = Convert.ToInt32(GameTypes.Weather_RainType.GetValue(settings));
-                weather.Fog = Convert.ToInt32(GameTypes.Weather_FogType.GetValue(settings));
+                var hourKnown = ReadHour(raidSettings, session, settings, stated, ref weather);
+                ReadConditions(session, settings, stated, ref weather);
 
-                if (GameTypes.Weather_Cloudiness != null)
-                    weather.Cloudiness = Convert.ToInt32(GameTypes.Weather_Cloudiness.GetValue(settings));
-
-                weather.Known = true;
+                // Unknown rather than guessed. If neither the raid nor the session could be read
+                // then the wall clock is all that is left, and the map's own grade is a better
+                // answer than a time taken from the room the player is sitting in.
+                weather.Known = hourKnown || weather.WeatherSource != null;
                 return weather;
             }
             catch
@@ -266,51 +294,193 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
-        /// The hour this raid will actually be at, from the map and the day/night toggle.
-        /// Falls back to the wall clock only when neither can be read.
+        /// Factory is shown against a fixed pair rather than the running clock, so it is the one
+        /// map where the hour is not the session's. 15:28 and 03:28 are the game's own constants,
+        /// off LocationConditionsPanel.
         /// </summary>
-        private static int MapHour(object raidSettings, out string source)
-        {
-            source = "the clock";
+        private static readonly DateTime FactoryDay = new DateTime(2016, 8, 4, 15, 28, 0);
+        private static readonly DateTime FactoryNight = new DateTime(2016, 8, 4, 3, 28, 0);
 
+        /// <summary>
+        /// The hour this raid will be at.
+        ///
+        /// There is **one clock**, and it is the session's. Every map is shown against it, which
+        /// is the thing the previous version of this got wrong: it read Location.UnixDateTime and
+        /// gave each map its own hour, so Customs deployed at 14:45 and Streets at 11:50 on the
+        /// same evening. The player is never offered those. What they are offered is two readings
+        /// of the single clock the location screen prints -- as it stands, or twelve hours back --
+        /// and the screen should be lit for whichever of the two they picked and nothing else.
+        ///
+        /// Order: a custom raid's stated hour, then Factory's fixed pair, then the session clock,
+        /// then the wall clock because something has to be said.
+        /// </summary>
+        /// <summary>
+        /// The hour the player stated for this raid, or -1 for "they stated nothing".
+        ///
+        /// **This is the only field in TimeAndWeatherSettings that can answer that question**, and
+        /// finding that out cost a live run. The struct is not left at -1 across the board when a
+        /// raid states nothing: something sets HourOfDay to -1 and leaves everything else at zero,
+        /// and zero is a perfectly valid ERainType, EFogType and ECloudinessType -- NoRain, NoFog
+        /// and Clear. So a test of "is RainType set" can never distinguish an unset struct from a
+        /// clear day, which is exactly the mistake 1.9.0 shipped with: the enum path won every
+        /// ordinary raid, reported dead clear, and the live weather was never once read.
+        ///
+        /// The hour is the tell, for the weather as much as for itself.
+        /// </summary>
+        private static int StatedHour(object settings)
+        {
             try
             {
-                if (GameTypes.RaidSettings_SelectedLocation == null || GameTypes.Location_UnixDateTime == null)
-                    return DateTime.Now.Hour;
+                if (settings == null || GameTypes.Weather_HourOfDay == null) return -1;
+
+                var hour = Convert.ToInt32(GameTypes.Weather_HourOfDay.GetValue(settings));
+                return hour >= 0 && hour <= 23 ? hour : -1;
+            }
+            catch { return -1; }
+        }
+
+        /// <returns>False when nothing but the wall clock answered.</returns>
+        private static bool ReadHour(object raidSettings, object session, object settings, bool stated, ref Weather weather)
+        {
+            // A custom raid states its hour outright, and a stated hour beats an inferred one.
+            if (stated)
+            {
+                Set(ref weather, StatedHour(settings), 0, "the raid's own setting");
+                return true;
+            }
+
+            var night = Picked(raidSettings) == 1;
+
+            if (IsFactory(raidSettings))
+            {
+                var fixedTime = night ? FactoryNight : FactoryDay;
+                Set(ref weather, fixedTime.Hour, fixedTime.Minute,
+                    night ? "Factory at night" : "Factory by day");
+                return true;
+            }
+
+            if (GameTypes.Session_LocationTime != null && session != null)
+            {
+                var now = (DateTime)GameTypes.Session_LocationTime.GetValue(session, null);
+
+                // PAST is the other half of the day. The game subtracts twelve hours rather than
+                // adding them -- the same clock face either way, but this matches what the
+                // conditions panel printed, and agreeing with the player's screen is the point.
+                if (night) now = now.AddHours(-12);
+
+                Set(ref weather, now.Hour, now.Minute,
+                    night ? "the game clock, twelve hours back" : "the game clock");
+                return true;
+            }
+
+            var wall = DateTime.Now;
+            Set(ref weather, wall.Hour, wall.Minute, "the clock");
+            weather.HourFromClock = true;
+            return false;
+        }
+
+        private static void Set(ref Weather weather, int hour, int minute, string source)
+        {
+            weather.HourOfDay = hour;
+            weather.MinuteOfHour = minute;
+            weather.Hour = hour + minute / 60f;
+            weather.HourSource = source;
+        }
+
+        /// <summary>The day/night toggle, as an int so a missing enum type costs nothing.</summary>
+        private static int Picked(object raidSettings)
+        {
+            try
+            {
+                if (GameTypes.RaidSettings_SelectedDateTime == null) return 0;
+                return Convert.ToInt32(GameTypes.RaidSettings_SelectedDateTime.GetValue(raidSettings));
+            }
+            catch { return 0; }
+        }
+
+        private static bool IsFactory(object raidSettings)
+        {
+            try
+            {
+                if (GameTypes.RaidSettings_SelectedLocation == null || GameTypes.Location_Id == null)
+                    return false;
 
                 var location = GameTypes.RaidSettings_SelectedLocation.GetValue(raidSettings, null);
-                if (location == null) return DateTime.Now.Hour;
+                if (location == null) return false;
 
-                var unix = Convert.ToInt64(GameTypes.Location_UnixDateTime.GetValue(location));
-                if (unix <= 0) return DateTime.Now.Hour;
-
-                var hour = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)
-                    .AddSeconds(unix).Hour;
-
-                source = "the map";
-
-                // PAST is 1, and it is the game's night: the same map twelve hours round. Read as
-                // an int rather than against the enum type, because one value is all that is
-                // wanted and a missing type should not cost the map's hour as well.
-                if (GameTypes.RaidSettings_SelectedDateTime != null)
-                {
-                    var picked = Convert.ToInt32(
-                        GameTypes.RaidSettings_SelectedDateTime.GetValue(raidSettings));
-
-                    if (picked == 1)
-                    {
-                        hour = (hour + 12) % 24;
-                        source = "the map, shifted for night";
-                    }
-                }
-
-                return hour;
+                var id = GameTypes.Location_Id.GetValue(location) as string;
+                return id != null && id.StartsWith("factory4", StringComparison.OrdinalIgnoreCase);
             }
-            catch
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Rain, fog, cloud and wind, as fractions of their worst.
+        ///
+        /// A custom raid states them as enums. An ordinary raid does not state them at all --
+        /// RainType, FogType and CloudinessType all read -1, which is why for six versions the
+        /// exposure only ever moved with the hour. The live weather is somewhere else entirely:
+        /// the server sends it at menu time and the session holds it as a WeatherNode, and it is
+        /// the same node the location screen picked its weather icon from. So the player has
+        /// already been shown this raid's weather; the deploy screen was simply looking in the
+        /// wrong place for it.
+        ///
+        /// The node's floats are on the game's own scales, and the bounds here are read off
+        /// WeatherNode.GetWeatherTypeByNode rather than guessed: Cloudness runs -1 clear to +1
+        /// thundercloud, Rain crosses 1 at a drizzle and 3 at a downpour, and fog density sits at
+        /// 0.004 when there is none and 0.1 when it is thick.
+        /// </summary>
+        private static void ReadConditions(object session, object settings, bool stated, ref Weather weather)
+        {
+            // A custom raid's stated weather. The gate is the *hour*, not RainType -- see
+            // StatedHour for why testing the weather fields themselves cannot work.
+            if (stated && settings != null && GameTypes.Weather_RainType != null && GameTypes.Weather_FogType != null)
             {
-                source = "the clock";
-                return DateTime.Now.Hour;
+                var rain = Convert.ToInt32(GameTypes.Weather_RainType.GetValue(settings));
+
+                if (rain >= 0)
+                {
+                    var fog = Convert.ToInt32(GameTypes.Weather_FogType.GetValue(settings));
+                    var cloud = GameTypes.Weather_Cloudiness != null
+                        ? Convert.ToInt32(GameTypes.Weather_Cloudiness.GetValue(settings))
+                        : 0;
+                    var wind = GameTypes.Weather_WindType != null
+                        ? Convert.ToInt32(GameTypes.Weather_WindType.GetValue(settings))
+                        : 0;
+
+                    weather.Rain = Mathf.Clamp01(rain / 4f);        // NoRain .. Shower
+                    weather.Fog = Mathf.Clamp01(Math.Max(fog, 0) / 4f);   // NoFog .. Continuous
+                    weather.Cloud = Mathf.Clamp01(Math.Max(cloud, 0) / 5f); // Clear .. Thundercloud
+                    weather.Wind = Mathf.Clamp01(Math.Max(wind, 0) / 4f);   // Light .. Hurricane
+                    weather.WeatherSource = "the raid's own setting";
+                    return;
+                }
             }
+
+            if (!GameTypes.WeatherNodeReady || GameTypes.Session_Weather == null || session == null) return;
+
+            var node = GameTypes.Session_Weather.GetValue(session, null);
+
+            // Null until the first /client/weather reply lands. It arrives during the menu
+            // prepare, long before any deploy, but a raid loaded out of a fresh session could
+            // still beat it, and no weather is a better answer than an invented one.
+            if (node == null) return;
+
+            weather.Cloud = Mathf.Clamp01(Mathf.InverseLerp(-1f, 1f, Single(GameTypes.Node_Cloudness, node)));
+            weather.Rain = Mathf.Clamp01(Mathf.InverseLerp(0f, 4f, Single(GameTypes.Node_Rain, node)));
+            weather.Fog = Mathf.Clamp01(Mathf.InverseLerp(0.004f, 0.1f, Single(GameTypes.Node_ScatteringFog, node)));
+
+            if (GameTypes.Node_Wind != null)
+                weather.Wind = Mathf.Clamp01(Mathf.InverseLerp(0f, 4f, Single(GameTypes.Node_Wind, node)));
+
+            weather.WeatherSource = "the live weather";
+        }
+
+        private static float Single(FieldInfo field, object node)
+        {
+            if (field == null || node == null) return 0f;
+            try { return Convert.ToSingle(field.GetValue(node)); }
+            catch { return 0f; }
         }
 
         /// <summary>A short description of the raid's conditions, for the log and the report.</summary>
@@ -318,13 +488,20 @@ namespace DeployScreen.Client
         {
             if (!weather.Known) return "conditions unknown";
 
-            var parts = weather.HourOfDay.ToString("00") + ":00"
+            var parts = weather.HourOfDay.ToString("00") + ":" + weather.MinuteOfHour.ToString("00")
                 + (string.IsNullOrEmpty(weather.HourSource) ? "" : " (from " + weather.HourSource + ")");
-            if (weather.Fog > 0) parts += ", fog " + weather.Fog;
-            if (weather.Rain > 0) parts += ", rain " + weather.Rain;
-            if (weather.Cloudiness > 0) parts += ", cloud " + weather.Cloudiness;
+
+            if (string.IsNullOrEmpty(weather.WeatherSource)) return parts + ", weather unread";
+
+            parts += ", " + weather.WeatherSource + ":";
+            parts += " cloud " + Tenths(weather.Cloud);
+            if (weather.Fog > 0f) parts += ", fog " + Tenths(weather.Fog);
+            if (weather.Rain > 0f) parts += ", rain " + Tenths(weather.Rain);
+            if (weather.Wind > 0f) parts += ", wind " + Tenths(weather.Wind);
             return parts;
         }
+
+        private static string Tenths(float value) { return value.ToString("0.00"); }
 
         private static Grade G(int key, int rim, float exposure, int wash)
         {

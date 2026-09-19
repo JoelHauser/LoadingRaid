@@ -88,6 +88,8 @@ namespace DeployScreen.Client
         {
             if (_texture != null || _failed) return _texture;
 
+            var started = System.Diagnostics.Stopwatch.StartNew();
+
             try
             {
                 var bytes = File.ReadAllBytes(Path);
@@ -109,6 +111,10 @@ namespace DeployScreen.Client
                 texture.wrapMode = TextureWrapMode.Clamp;
 
                 _texture = texture;
+
+                BannerArt.DecodeMillis += started.Elapsed.TotalMilliseconds;
+                BannerArt.DecodeCount++;
+
                 return _texture;
             }
             catch (Exception error)
@@ -191,6 +197,19 @@ namespace DeployScreen.Client
     /// </summary>
     internal static class BannerArt
     {
+        /// <summary>
+        /// What decoding pictures has cost this session, in milliseconds, and how many were
+        /// decoded. Both only ever go up; a reader takes two readings and subtracts.
+        ///
+        /// This exists because "the art is stalling the load" was argued for two versions from
+        /// whole-run gap totals taken in different sessions, which cannot settle it: a map's own
+        /// scene integration is seconds of main-thread work and swamps anything this mod does.
+        /// A number here ends the argument in one run -- either the decode is a visible slice of
+        /// the load or it is a rounding error, and until now nobody could say which.
+        /// </summary>
+        internal static double DecodeMillis;
+        internal static int DecodeCount;
+
         private static readonly string[] Extensions = { ".png", ".jpg", ".jpeg" };
 
         private static readonly Dictionary<string, List<BannerImage>> Cache =

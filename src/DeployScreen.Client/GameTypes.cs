@@ -106,6 +106,42 @@ namespace DeployScreen.Client
         /// <summary>ShowEnvironment(bool) -- also what sets _lastVisibleStateEnvironment.</summary>
         internal static MethodInfo EnvironmentUI_ShowEnvironment;
 
+        /// <summary>
+        /// EFT.UI.MenuScreen -- the main menu itself, the one with PLAY and CHARACTER on it.
+        ///
+        /// This is the end of the wait after an abort, and naming it correctly is the whole fix.
+        /// ShowEnvironment(true) was standing in for it and does not fire on the cancel path, so
+        /// the art was thinning out onto a menu that had not arrived: the backdrop scene was back
+        /// but the menu was still being rebuilt, and that gap is what the player kept calling a
+        /// waiting room.
+        ///
+        /// Awake is caught to hold the instance -- it is made once and lives for the session, so
+        /// the alternative is scanning for it, which this mod does not do. Show is caught because
+        /// it names the moment in the log.
+        /// </summary>
+        internal static Type MenuScreen;
+        internal static MethodInfo MenuScreen_Awake;
+        internal static MethodInfo MenuScreen_Show;
+
+        /// <summary>
+        /// The two spinners that mean the client is still waiting on something.
+        ///
+        /// After an abort the screen is the menu room, blurred, with a small wheel turning in the
+        /// bottom right and no screen up at all. That wheel is the thing to wait for -- it is the
+        /// game saying "not finished" in the only place it says it -- and there are two objects it
+        /// could be, so both are read and the trace says which one was actually turning.
+        ///
+        /// OperationQueueIndicator sits beside the deploy screen under 'Menu UI/UI' and is the one
+        /// sibling that is always active; only its _loader child toggles. PreloaderUI is a
+        /// singleton with a _loader of its own.
+        /// </summary>
+        internal static Type OperationQueueIndicator;
+        internal static FieldInfo QueueIndicator_Loader;
+
+        internal static Type PreloaderUI;
+        internal static PropertyInfo PreloaderUI_Instance;
+        internal static FieldInfo PreloaderUI_Loader;
+
         /// <summary>EnableOverlay(bool) -- the game's own readability scrim, alpha 0.4.</summary>
         internal static MethodInfo EnvironmentUI_EnableOverlay;
 
@@ -208,6 +244,25 @@ namespace DeployScreen.Client
         /// <summary>This raid's time and weather can be read.</summary>
         internal static bool WeatherReady { get; private set; }
 
+        // ------------------------------------------- the weather the player was shown
+
+        /// <summary>
+        /// EFT.Weather.WeatherNode -- the live weather, fetched from the server at menu time and
+        /// kept on the session. This is the source the location screen's own weather icon is
+        /// chosen from, so reading it is reading what the player was looking at a moment ago.
+        ///
+        /// Note the game's spellings: <c>Cloudness</c> and <c>ScaterringFogDensity</c>. Both are
+        /// misspelt in BSG's own field names and both have to be matched exactly.
+        /// </summary>
+        internal static Type WeatherNode;
+        internal static FieldInfo Node_Cloudness;
+        internal static FieldInfo Node_Rain;
+        internal static FieldInfo Node_ScatteringFog;
+        internal static FieldInfo Node_Wind;
+
+        /// <summary>The live weather node can be read off a session.</summary>
+        internal static bool WeatherNodeReady { get; private set; }
+
         // ----------------------------------------------------------- raid screens
 
         internal static Type OfflineRaidScreen;
@@ -219,13 +274,53 @@ namespace DeployScreen.Client
         internal static PropertyInfo RaidSettings_SelectedLocation;
 
         /// <summary>
-        /// RaidSettings.SelectedDateTime, a JsonType.EDateTime of CURR=0 or PAST=1, and
-        /// Location.UnixDateTime, the map's own in-game clock. Together they are the raid's real
-        /// hour: TimeAndWeatherSettings.HourOfDay is only filled in for a custom raid and reads -1
-        /// for every ordinary one, which is why the screen has been lit by the wall clock.
+        /// RaidSettings.SelectedDateTime -- a JsonType.EDateTime of CURR=0 or PAST=1, which is
+        /// the whole of the time choice the player is offered. The clock those two options are
+        /// shown against is the session's, not the map's; see Session_LocationTime.
         /// </summary>
         internal static FieldInfo RaidSettings_SelectedDateTime;
-        internal static FieldInfo Location_UnixDateTime;
+
+        /// <summary>
+        /// The raid's clock, read off the session the deploy screen was handed.
+        ///
+        /// IMatchmakerSession&lt;RaidSettings&gt;.GetCurrentLocationTime takes no location: there is
+        /// one clock for the whole game and every map is shown against it. It is what the location
+        /// screen's own conditions panel prints, and the player's choice is only which of two
+        /// readings of it they want -- CURR as it stands, PAST twelve hours back.
+        ///
+        /// Resolved from the session instance's own type rather than from the interface, because a
+        /// PropertyInfo on an open generic interface cannot be invoked.
+        /// </summary>
+        internal static PropertyInfo Session_LocationTime;
+
+        /// <summary>IMatchmakerSession.Weather -- the live WeatherNode, or null before it arrives.</summary>
+        internal static PropertyInfo Session_Weather;
+
+        private static Type _sessionTypeSeen;
+
+        /// <summary>
+        /// Binds the two session properties to whatever concrete session this install uses --
+        /// EftClientBackendSession normally, ClientBackendSessionEmulator in the emulator. Both
+        /// declare them public and virtual, so the instance's own type is enough. Cheap to call
+        /// every raid: the lookup only runs when the type changes.
+        /// </summary>
+        internal static void BindSession(object session)
+        {
+            if (session == null) return;
+
+            var type = session.GetType();
+            if (type == _sessionTypeSeen) return;
+
+            _sessionTypeSeen = type;
+            Session_LocationTime = AccessTools.Property(type, "GetCurrentLocationTime");
+            Session_Weather = AccessTools.Property(type, "Weather");
+
+            if (Session_LocationTime == null)
+                Missing("session.GetCurrentLocationTime (the raid's hour falls back to the clock)");
+
+            if (Session_Weather == null)
+                Missing("session.Weather (the light will not follow the weather)");
+        }
 
         internal static MethodInfo Loading_Show, Loading_Status, Loading_Abort, World_Started;
 
@@ -383,7 +478,6 @@ namespace DeployScreen.Client
         private static bool ResolveIntel()
         {
             Location_MongoId = AccessTools.Field(Location, "_Id");
-            Location_UnixDateTime = AccessTools.Field(Location, "UnixDateTime");
             Location_Name = AccessTools.Field(Location, "Name");
             Location_EscapeTimeLimit = AccessTools.Field(Location, "EscapeTimeLimit");
             Location_AveragePlayTime = AccessTools.Field(Location, "AveragePlayTime");
@@ -519,6 +613,43 @@ namespace DeployScreen.Client
             EnvironmentUI_EnableOverlay =
                 AccessTools.Method(EnvironmentUI, "EnableOverlay", new[] { typeof(bool) });
 
+            // The main menu. Optional: without it the dissolve falls back to its cap, which is
+            // the behaviour that was already there rather than a new failure.
+            MenuScreen = AccessTools.TypeByName("EFT.UI.MenuScreen");
+            if (MenuScreen != null)
+            {
+                MenuScreen_Awake = AccessTools.Method(MenuScreen, "Awake");
+
+                // Two Show overloads: the controller one from the screen base, and the real one
+                // carrying the profile. The three-argument one is the menu actually coming up.
+                foreach (var method in MenuScreen.GetMethods(AccessTools.all))
+                {
+                    if (method.Name != "Show" || method.GetParameters().Length != 3) continue;
+                    MenuScreen_Show = method;
+                    break;
+                }
+            }
+
+            if (MenuScreen_Show == null)
+                Missing("EFT.UI.MenuScreen.Show (the art will hold to its cap after an abort)");
+
+            OperationQueueIndicator = AccessTools.TypeByName("EFT.UI.OperationQueueIndicator");
+            if (OperationQueueIndicator != null)
+                QueueIndicator_Loader = AccessTools.Field(OperationQueueIndicator, "_loader");
+
+            PreloaderUI = AccessTools.TypeByName("EFT.UI.PreloaderUI");
+            if (PreloaderUI != null)
+            {
+                PreloaderUI_Instance = PreloaderUI.GetProperty("Instance",
+                    BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+                PreloaderUI_Loader = AccessTools.Field(PreloaderUI, "_loader");
+            }
+
+            // Optional, both of them: without either the hold falls back to waiting for a screen,
+            // which is where it already was.
+            if (QueueIndicator_Loader == null && PreloaderUI_Loader == null)
+                Missing("a loading spinner to wait on (OperationQueueIndicator or PreloaderUI)");
+
             // Optional, and fail-open: this only ever narrows what we are willing to ask for.
             var solver = AccessTools.TypeByName("EFT.CustomizationSolver");
             var singleton = AccessTools.TypeByName("Comfort.Common.Singleton`1");
@@ -649,7 +780,25 @@ namespace DeployScreen.Client
                 && Weather_FogType != null
                 && Weather_RainType != null;
 
-            if (!WeatherReady) Missing("RaidSettings.TimeAndWeatherSettings (the light will not follow the raid's time or weather)");
+            if (!WeatherReady) Missing("RaidSettings.TimeAndWeatherSettings (a custom raid's own time and weather cannot be read)");
+
+            // The live node. TimeAndWeatherSettings is only filled in for a custom raid; this is
+            // where an ordinary raid's weather actually lives, and the two are read in that order.
+            WeatherNode = AccessTools.TypeByName("EFT.Weather.WeatherNode");
+            if (WeatherNode != null)
+            {
+                Node_Cloudness = AccessTools.Field(WeatherNode, "Cloudness");
+                Node_Rain = AccessTools.Field(WeatherNode, "Rain");
+                Node_ScatteringFog = AccessTools.Field(WeatherNode, "ScaterringFogDensity");
+                Node_Wind = AccessTools.Field(WeatherNode, "Wind");
+            }
+
+            WeatherNodeReady = WeatherNode != null
+                && Node_Cloudness != null
+                && Node_Rain != null
+                && Node_ScatteringFog != null;
+
+            if (!WeatherNodeReady) Missing("EFT.Weather.WeatherNode (the light will not follow the weather)");
         }
 
         /// <summary>The Show overload that takes a RaidSettings, whatever else it takes.</summary>

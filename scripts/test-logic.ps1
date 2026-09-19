@@ -483,12 +483,23 @@ try {
     $forRaid = $gradeType.GetMethod('ForRaid', $static)
     $weatherType = $asm.GetType('DeployScreen.Client.MapGrade+Weather', $true)
 
+    # The three weather figures are normalised to 0..1 inside ReadWeather, so the sweep below
+    # still reads in the game's own units and is converted here -- rain and fog out of 4, cloud
+    # out of 5, which are the enum ranges ERainType, EFogType and ECloudinessType span.
     function NewWeather($hour, $rain, $fog, $cloud) {
         $w = [Activator]::CreateInstance($weatherType)
         # Fields are internal on a struct, so they are set through boxed reflection and the
         # boxed copy is what gets passed back. (Setting them on the unboxed value silently
         # writes to a temporary -- the same shape of trap as the internal-field read earlier.)
-        foreach ($pair in @(@('Known',$true), @('HourOfDay',[int]$hour), @('Rain',[int]$rain), @('Fog',[int]$fog), @('Cloudiness',[int]$cloud))) {
+        $values = @(
+            @('Known',       $true),
+            @('Hour',        [float]$hour),
+            @('HourOfDay',   [int]$hour),
+            @('Rain',        [float]($rain / 4.0)),
+            @('Fog',         [float]($fog / 4.0)),
+            @('Cloud',       [float]($cloud / 5.0))
+        )
+        foreach ($pair in $values) {
             $weatherType.GetField($pair[0], $instance).SetValue($w, $pair[1])
         }
         return $w
@@ -575,6 +586,27 @@ try {
     $oneAm = [float]$fExp.GetValue((GradeFor 'woods' 1 0 0 0))
     Check 'an out-of-range hour wraps' ([Math]::Abs($wrapped - $oneAm) -lt 0.001) `
         "25:00 gave $([Math]::Round($wrapped,3)), 01:00 gave $([Math]::Round($oneAm,3))"
+
+    # Dawn and dusk are the same sun height and must not grade the same, or Lighthouse's 18:09
+    # and 06:09 -- the one map where the two are the choice on offer -- look identical.
+    $dawnKey = $fKey.GetValue((GradeFor 'lighthouse' 6 0 0 0))
+    $duskKey = $fKey.GetValue((GradeFor 'lighthouse' 18 0 0 0))
+    Check 'dawn and dusk do not grade the same' `
+        (([Math]::Abs($dawnKey.r - $duskKey.r) + [Math]::Abs($dawnKey.b - $duskKey.b)) -gt 0.01) `
+        "dawn $([Math]::Round($dawnKey.r,3))/$([Math]::Round($dawnKey.b,3)), dusk $([Math]::Round($duskKey.r,3))/$([Math]::Round($duskKey.b,3))"
+
+    # ...and specifically: the evening is the warm one. Blue-minus-red is the measure, because
+    # warming works by taking blue away while the morning keeps its cold.
+    Check 'dusk is the warmer of the two' `
+        ((($duskKey.b - $duskKey.r)) -lt (($dawnKey.b - $dawnKey.r))) `
+        "dusk b-r $([Math]::Round($duskKey.b - $duskKey.r,3)), dawn b-r $([Math]::Round($dawnKey.b - $dawnKey.r,3))"
+
+    # Minutes have to reach the curve: 18:00 and 18:59 are a long way apart in a sunset, and the
+    # whole reason Hour is a float is that Lighthouse deploys at :09 and not on the hour.
+    $sixPm = [float]$fExp.GetValue((GradeFor 'lighthouse' 18 0 0 0))
+    $sevenPm = [float]$fExp.GetValue((GradeFor 'lighthouse' 18.75 0 0 0))
+    Check 'a fractional hour moves the grade' ([Math]::Abs($sixPm - $sevenPm) -gt 0.001) `
+        "18:00 gave $([Math]::Round($sixPm,3)), 18:45 gave $([Math]::Round($sevenPm,3))"
 }
 catch { Check 'raid light checks ran' $false $_.Exception.GetBaseException().Message }
 

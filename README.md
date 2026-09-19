@@ -120,11 +120,18 @@ fight it, the staging area uses the three things that make a composite convincin
   is switched off, so you're looking at the destination rather than at a mall shutter with the
   destination behind it.
 
-**It's lit for the raid, not just the map.** Time of day, fog, rain and cloud are all decided before
-you deploy, so a 03:00 foggy Woods and a clear midday one don't look the same: night pulls everything
-toward moonlight and leans on the rim light to keep your PMC readable, fog greys things down and eats
-the contrast, rain cools and darkens. Turn off **Follow the raid's weather** if you'd rather each map
-always looked the same.
+**It's lit for the raid, not just the map.** The screen takes the time from the same clock the
+location screen showed you -- whichever of the two times you picked -- and the weather from the same
+forecast its weather icon came from. So a 03:00 foggy Woods and a clear midday one don't look the
+same: night pulls everything toward moonlight and leans on the rim light to keep your PMC readable,
+fog greys things down and eats the contrast, rain cools and darkens, and heavy cloud flattens the
+light until it has no direction at all.
+
+Dawn and dusk are told apart rather than treated as one low sun. Evening is amber; morning keeps its
+cold and comes out pink and a little dimmer. On Lighthouse, where the choice on offer is 18:09
+against 06:09, that's the whole difference between the two raids.
+
+Turn off **Follow the raid's weather** if you'd rather each map always looked the same.
 
 The banner panel steps aside — its pictures are the world now — and the map briefing, bosses,
 extracts and your tasks cycle slowly in the line beneath the location name.

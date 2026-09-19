@@ -72,6 +72,30 @@ namespace DeployScreen.Client
                 var title = Find(root, "Location Name Panel/Name");
                 var intel = Find(root, "CaptionsHolder/SubCation");
 
+                // The map name and the intel line under it have to start on the same pixel, and
+                // placing their two containers at the same x is not enough to do it. The label is
+                // inset inside its own panel:
+                //
+                //     Location Name Panel @130,-170 109x27
+                //       Background @20,1 184x29     <- hidden above
+                //       Icon [off] @-9,12 49x49     <- off already
+                //       Name @25,0                  <- still clearing them both
+                //
+                // That +25 exists to clear a 49px icon and sit on a backing plate. Both are gone
+                // by the time this runs, and what is left is a title that starts 25 units right
+                // of everything beneath it -- which reads as a mistake because it is one.
+                //
+                // Pinned rather than nudged: the pivot goes to the left edge and x to zero, so
+                // the glyphs start at the panel's own left edge whatever the inset happened to
+                // be. Only x moves; the pivot's y and the anchored y are kept, because the
+                // vertical placement is correct already and this is not the thing to risk on it.
+                if (title != null)
+                {
+                    Place(title, TopLeft,
+                        new Vector2(0f, title.pivot.y),
+                        new Vector2(0f, title.anchoredPosition.y));
+                }
+
                 Resize(title, 44f);
 
                 // A place names itself in capitals, spaced, the way a title card does.

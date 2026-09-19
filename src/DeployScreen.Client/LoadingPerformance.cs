@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -25,9 +26,30 @@ namespace DeployScreen.Client
         private bool _active, _started, _warned;
         private bool _previewSkipped, _bannersSkipped;
         private double _closedAt = -1, _nextMemorySample;
-        private long _managedStart, _managedPeak, _workingStart, _workingPeak;
+        private long _managedStart, _managedPeak, _nativeStart, _nativePeak;
+
+        /// <summary>
+        /// What the art had cost by the time this load started, so the run's own share is a
+        /// subtraction. The prewarm happens on the previous screen and is deliberately outside
+        /// the window: the question is what landed *during* the load.
+        /// </summary>
+        private double _decodeMillisAtStart;
+        private int _decodeCountAtStart;
+
+        /// <summary>
+        /// One id for the whole game session, and a count of loads within it -- overall and for
+        /// this map. Comparing a cold load against a warm one needs the two runs to be from one
+        /// session, and until now that was a label the player had to remember to type. Nobody
+        /// did, so every comparison in the repo so far pooled runs from different sessions with
+        /// different bot loads and settled nothing.
+        /// </summary>
+        private static readonly string SessionId =
+            DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
+
+        private static int _loadsThisSession;
+        private static readonly System.Collections.Generic.Dictionary<string, int> LoadsPerMap =
+            new System.Collections.Generic.Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private int _gc0, _gc1, _gc2;
-        private Process _process;
         private MinimalScreen _minimal;
         private SceneDepth _depth;
         private StagingArea _staging;
@@ -572,21 +594,25 @@ namespace DeployScreen.Client
             _session = null;
             _weather = default(MapGrade.Weather);
             _mapId = null;
+            object raidSettings = null;
+
             foreach (var arg in args)
             {
                 if (arg == null) continue;
                 if (GameTypes.RaidSettings != null && GameTypes.RaidSettings.IsInstanceOfType(arg))
                 {
+                    raidSettings = arg;
                     _location = GameTypes.RaidSettings_SelectedLocation?.GetValue(arg, null);
                     if (_location != null) _mapId = GameTypes.Location_Id?.GetValue(_location) as string;
-
-                    // Time of day and weather are settled before deploy, so the staging area can
-                    // be lit for this raid rather than for the map in general.
-                    _weather = MapGrade.ReadWeather(arg);
                     continue;
                 }
                 if (_session == null && !(arg is Component)) _session = arg;
             }
+
+            // After the loop, not inside it: the raid's hour and its weather both come off the
+            // session, and the session may be the argument after the settings. Reading as soon as
+            // the RaidSettings turned up is how the clock stayed unread for a version.
+            if (raidSettings != null) _weather = MapGrade.ReadWeather(raidSettings, _session);
 
             if (!DeployScreenPlugin.RecordLoading.Value) return;
 
@@ -595,12 +621,28 @@ namespace DeployScreen.Client
             _trace = new LoadTrace(Application.isFocused);
             _gc0 = GC.CollectionCount(0); _gc1 = GC.CollectionCount(1); _gc2 = GC.CollectionCount(2);
             _managedStart = _managedPeak = GC.GetTotalMemory(false);
-            _workingStart = _workingPeak = 0;
-            try { _process = Process.GetCurrentProcess(); _workingStart = _workingPeak = _process.WorkingSet64; } catch { }
+
+            // Process.WorkingSet64 is not implemented on the Mono this game ships and returned 0
+            // in every report ever written here, which left the one number that would have shown
+            // texture memory blank. Unity's own counter is native memory -- where textures live --
+            // and it works in a release build.
+            _nativeStart = _nativePeak = Native();
+
+            _decodeMillisAtStart = BannerArt.DecodeMillis;
+            _decodeCountAtStart = BannerArt.DecodeCount;
+
+            _loadsThisSession++;
+            int soFar;
+            LoadsPerMap.TryGetValue(map, out soFar);
+            LoadsPerMap[map] = soFar + 1;
+            _mapLoadIndex = soFar + 1;
+
             _nextMemorySample = 5;
-            _metadata = "\"schemaVersion\":1,\"version\":" + LoadTrace.Quote(DeployScreenPlugin.PluginVersion)
+            _metadata = "\"schemaVersion\":2,\"version\":" + LoadTrace.Quote(DeployScreenPlugin.PluginVersion)
                 + ",\"runId\":" + LoadTrace.Quote(_runId) + ",\"mode\":" + LoadTrace.Quote(_mode.ToString())
                 + ",\"map\":" + LoadTrace.Quote(map) + ",\"label\":" + LoadTrace.Quote(DeployScreenPlugin.TestLabel.Value)
+                + ",\"sessionId\":" + LoadTrace.Quote(SessionId)
+                + ",\"sessionLoadIndex\":" + _loadsThisSession + ",\"mapLoadIndex\":" + _mapLoadIndex
                 + ",\"resolution\":" + LoadTrace.Quote(Screen.width + "x" + Screen.height)
                 + ",\"phaseHook\":" + Bool(_statusHook) + ",\"raidStartHook\":" + Bool(_startHook)
                 + ",\"previewSkipHook\":" + Bool(_playerHook) + ",\"bannerSkipHook\":" + Bool(_bannerHook)
@@ -695,14 +737,17 @@ namespace DeployScreen.Client
         private void SampleMemory()
         {
             _managedPeak = Math.Max(_managedPeak, GC.GetTotalMemory(false));
-            try
-            {
-                if (_process == null) return;
-                _process.Refresh();
-                _workingPeak = Math.Max(_workingPeak, _process.WorkingSet64);
-            }
-            catch { } // Memory counters are optional, never a reason to fail a raid.
+            _nativePeak = Math.Max(_nativePeak, Native());
         }
+
+        /// <summary>Unity's reserved native memory, or 0 where the counter is unavailable.</summary>
+        private static long Native()
+        {
+            try { return UnityEngine.Profiling.Profiler.GetTotalReservedMemoryLong(); }
+            catch { return 0; } // Memory counters are optional, never a reason to fail a raid.
+        }
+
+        private int _mapLoadIndex;
 
         private void Finish(string outcome, bool finalFrame = true)
         {
@@ -720,7 +765,10 @@ namespace DeployScreen.Client
                     var metadata = _metadata + Presentation + Easing
                         + ",\"outcome\":" + LoadTrace.Quote(outcome)
                         + ",\"managedStartBytes\":" + _managedStart + ",\"managedSampledPeakBytes\":" + _managedPeak
-                        + ",\"workingSetStartBytes\":" + _workingStart + ",\"workingSetSampledPeakBytes\":" + _workingPeak
+                        + ",\"nativeStartBytes\":" + _nativeStart + ",\"nativeSampledPeakBytes\":" + _nativePeak
+                        + ",\"artDecodeMs\":"
+                        + (BannerArt.DecodeMillis - _decodeMillisAtStart).ToString("0.0", CultureInfo.InvariantCulture)
+                        + ",\"artDecodeCount\":" + (BannerArt.DecodeCount - _decodeCountAtStart)
                         + ",\"gcCollections\":[" + (GC.CollectionCount(0) - _gc0) + "," + (GC.CollectionCount(1) - _gc1)
                         + "," + (GC.CollectionCount(2) - _gc2) + "]";
                     var folder = _folder;
@@ -744,7 +792,6 @@ namespace DeployScreen.Client
             {
                 Restore();
                 _screen = null; _banners = null;
-                _process?.Dispose(); _process = null;
                 _clock.Stop();
             }
         }

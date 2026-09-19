@@ -184,6 +184,11 @@ Check 'EFT.UI.EnvironmentUI' 'prop'   'Instantiated'  'via MonoBehaviourSingleto
 Check 'EFT.UI.EnvironmentUI' 'method' 'SetEnvironmentAsync'
 Check 'EFT.UI.EnvironmentUI' 'method' 'ShowEnvironment'
 Check 'EFT.UI.EnvironmentUI' 'method' 'EnableOverlay'
+Check 'EFT.UI.MenuScreen'                'method' 'Awake'   'the main menu instance is caught here'
+Check 'EFT.UI.MenuScreen'                'method' 'Show'    'the end of the wait after an abort'
+# The wheel bottom-right after an abort. Both candidates, because the trace names which one turns.
+Check 'EFT.UI.OperationQueueIndicator'    'field'  '_loader' 'the spinner beside the deploy screen'
+Check 'EFT.UI.PreloaderUI'               'field'  '_loader' 'the other candidate spinner'
 Check 'EFT.UI.EnvironmentUI' 'field'  '_environments'
 Check 'EFT.UI.EnvironmentUI' 'field'  '_currentEnvironment'
 Check 'EFT.UI.EnvironmentUI' 'field'  '_lastVisibleStateEnvironment'
@@ -229,6 +234,30 @@ Check 'EFT.TimeAndWeatherSettings' 'field' 'WindType'
 Check 'EFT.Weather.ERainType'       '' ''
 Check 'EFT.Weather.EFogType'        '' ''
 Check 'EFT.Weather.ECloudinessType' '' ''
+Check 'EFT.RaidSettings'           'field' 'SelectedDateTime' 'CURR/PAST, the whole time choice'
+
+Write-Host "`n=== the clock the player is shown, and the live weather ==="
+# One clock for the whole game: GetCurrentLocationTime takes no location, and PAST is simply
+# twelve hours back off it. Resolved at runtime from the session instance's own type, so both
+# concrete sessions are checked here rather than the interface.
+Check 'EFT.IMatchmakerSession`1'   'prop'    'GetCurrentLocationTime' 'the one clock'
+Check 'EFT.IMatchmakerSession`1'   'prop'    'Weather'
+Check 'EFT.EftClientBackendSession' 'prop'    'GetCurrentLocationTime'
+Check 'EFT.EftClientBackendSession' 'prop'    'Weather'
+Check 'EFT.ClientBackEndEmulator+ClientBackendSessionEmulator' 'prop'    'GetCurrentLocationTime'
+Check 'EFT.ClientBackEndEmulator+ClientBackendSessionEmulator' 'prop'    'Weather'
+
+# BSG's own misspellings. Cloudness and ScaterringFogDensity are the field names in the game;
+# correcting either of them here turns the weather off.
+Check 'EFT.Weather.WeatherNode'    'field' 'Cloudness'  'misspelt in the game, match it exactly'
+Check 'EFT.Weather.WeatherNode'    'field' 'Rain'
+Check 'EFT.Weather.WeatherNode'    'field' 'ScaterringFogDensity' 'misspelt in the game'
+Check 'EFT.Weather.WeatherNode'    'field' 'Wind'
+
+# Factory is the one map shown against a fixed pair rather than the clock, and MapGrade hard-codes
+# the two times. If these ever stop being constants, the hard-coding is wrong.
+Check 'EFT.UI.Matchmaker.LocationConditionsPanel' 'prop'    'FactoryDayTime'  '15:28, hard-coded in MapGrade'
+Check 'EFT.UI.Matchmaker.LocationConditionsPanel' 'prop'    'FactoryNightTime' '03:28, hard-coded in MapGrade'
 
 Write-Host ""
 if ($script:fail -gt 0) {

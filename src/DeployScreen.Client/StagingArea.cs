@@ -64,6 +64,17 @@ namespace DeployScreen.Client
         private readonly List<GameObject> _hidden = new List<GameObject>();
 
         private Component _screen;
+
+        /// <summary>
+        /// The deploy screen's parent, taken at Begin and kept.
+        ///
+        /// It cannot be read at BeginFade: by then the screen has gone and the Component compares
+        /// null, so asking for its parent there returned nothing and the sibling watch armed with
+        /// zero screens to watch -- `watching=0` in the trace, which is also why the queue
+        /// indicator was never found.
+        /// </summary>
+        private Transform _screensParent;
+
         private Camera _camera;
         private Transform _planeRoot;
         private Transform _playerModel;
@@ -128,6 +139,9 @@ namespace DeployScreen.Client
             MapGrade.Weather weather)
         {
             _screen = screen;
+
+            try { _screensParent = screen != null ? screen.transform.parent : null; }
+            catch { _screensParent = null; }
 
             try
             {
@@ -2036,6 +2050,35 @@ namespace DeployScreen.Client
         private readonly List<Color> _planeColours = new List<Color>();
         private float _fade = 1f;
         private float _fadeWaited;
+
+        /// <summary>When the menu came up, as a point on _fadeWaited, or -1 before it has.</summary>
+        private float _menuUpAt = -1f;
+
+        /// <summary>The next _fadeWaited at which the hold reports what it is still waiting on.</summary>
+        private float _nextHoldSample;
+
+        /// <summary>How many art planes still exist. Unity nulls a destroyed component for us.</summary>
+        private int LivePlanes()
+        {
+            var alive = 0;
+
+            foreach (var group in _planeFades)
+            {
+                if (group != null) alive++;
+            }
+
+            return alive;
+        }
+
+        /// <summary>
+        /// The end of the hold whatever happens. The art waiting for a screen that never arrives
+        /// is the one failure worse than letting go early, because there is no way out of it.
+        ///
+        /// Ten was not enough: a Shoreline abort still had nothing up at ten seconds, and the cap
+        /// fired into the empty menu room that the hold exists to cover. Twenty is past anything
+        /// measured and is still an end.
+        /// </summary>
+        private const float HoldCapSeconds = 20f;
         private float _dim;
         private bool _dimming;
         private string _released;
@@ -2157,10 +2200,12 @@ namespace DeployScreen.Client
             try { EnvironmentState.Restore(); }
             catch (Exception error) { WarnOnce(error); }
 
-            EnvironmentState.WatchForMenu();
+            EnvironmentState.WatchForMenu(_screensParent, _screen);
 
             _fade = 1f;
             _fadeWaited = 0f;
+            _menuUpAt = -1f;
+            _nextHoldSample = 4f;
             _released = null;
             return true;
         }
@@ -2173,46 +2218,89 @@ namespace DeployScreen.Client
         {
             if (_planeFades.Count == 0) return true;
 
-            // Nothing moves while the backdrop is still loading. The art is at full alpha and is
-            // the only thing on screen, which is the whole point: the swap the player used to
-            // watch happens behind it.
+            // Nothing moves until the menu is genuinely there. The art is at full alpha and is
+            // the only thing on screen, which is the whole point: everything the player used to
+            // watch -- the backdrop swapping, the raid tearing down, the menu rebuilding -- now
+            // happens behind it.
             //
-            // Capped, because a scene load that never finishes must not leave the art parked over
-            // a menu nobody asked to look at -- the same bargain every other hold in this mod
-            // makes. Eight seconds is far longer than the swap has ever taken and still an end.
-            // Two things have to be true before the art may thin, and neither was being waited
-            // for properly. The backdrop swap has to have finished -- it is a scene load -- and
-            // the menu has to have actually come up behind it. Releasing on the first alone handed
-            // the screen to the stretch between them: the raid tearing down, quests re-requested,
-            // tabs re-added. The player's word for that was a waiting room, and the answer is that
-            // this mod should be the waiting room.
+            // Two gates, in order, and the second is the one that was missing:
             //
-            // Capped, and the cap says so in the report. A hold with no end would park the art
-            // over a menu nobody asked to look at, which is the failure every other hold here is
-            // written to avoid, and if this cap turns out to be wrong the line names which exit
-            // was taken rather than inviting another guess.
-            // Three ways out, whichever comes first, because the one that was supposed to end this
-            // never fired: the previous run held the full ten seconds and reported "cap", so
-            // ShowEnvironment(true) is not the menu coming back on this path.
+            //   Settling    the backdrop swap is a scene load, and thinning mid-load shows it.
+            //   MenuShown   the main menu is actually on screen.
             //
-            // So the swap finishing is the floor, a linger past it covers the rebuild the player
-            // called a waiting room, and MenuShown stays in as an early release for the paths
-            // where it does fire. The linger is a duration rather than an event and is honest
-            // about being one -- it is tunable, and the report says which exit was taken.
-            var linger = Mathf.Max(0f, DeployScreenPlugin.StagingLingerSeconds.Value);
+            // The previous version had no second gate that worked. It stood a *duration* in for
+            // it -- hold a second and a half, then go -- because the signal it was using,
+            // ShowEnvironment(true), never fires on the cancel path. Two live Lighthouse aborts
+            // both released on that timer and reported "lingered", which means the art thinned
+            // out over a restored backdrop with no menu on it yet. That gap is the waiting room.
+            // A duration cannot fix it: the rebuild takes as long as it takes, and any number
+            // short enough not to feel like a hang is too short to cover a slow one.
+            //
+            // So MenuShown now asks EFT.UI.MenuScreen itself, and the linger is demoted to what
+            // it should always have been: a short grace *after* the menu is up, because Show
+            // returns a frame or two before the menu is drawn, and dissolving into a half-built
+            // menu looks much the same as dissolving into none.
+            var grace = Mathf.Max(0f, DeployScreenPlugin.StagingLingerSeconds.Value);
 
-            if (_fadeWaited < 10f
-                && (EnvironmentState.Settling
-                    || (!EnvironmentState.MenuShown && _fadeWaited < linger)))
+            if (_fadeWaited < HoldCapSeconds)
             {
-                _fadeWaited += seconds;
-                return false;
+                if (EnvironmentState.Settling)
+                {
+                    _fadeWaited += seconds;
+                    return false;
+                }
+
+                if (!EnvironmentState.MenuShown)
+                {
+                    // Holding is only worth anything while there is art to hold. The planes are
+                    // parented to the environment root, and BeginFade starts a swap of exactly
+                    // that root -- so if the swap takes them with it, every second of this hold is
+                    // spent covering the screen with nothing while the player watches the thing
+                    // the hold exists to hide. Counted rather than assumed, and if the count is
+                    // zero there is nothing to wait for and the teardown may as well get on.
+                    if (LivePlanes() == 0)
+                    {
+                        _released = "the art is gone -- nothing left to hold";
+                        LoadingPerformance.Note(
+                            "art held " + _fadeWaited.ToString("0.0") + "s for the menu ("
+                            + _released + ")");
+                        return true;
+                    }
+
+                    // Sampled on the way, because a cap on its own says only that the wait was
+                    // longer than the cap. If twenty seconds turns out not to be enough either,
+                    // the shape of the wait is in the trace rather than needing another raid.
+                    if (_fadeWaited >= _nextHoldSample)
+                    {
+                        _nextHoldSample = _fadeWaited + 4f;
+                        LoadingPerformance.Note(
+                            "still holding at " + _fadeWaited.ToString("0.0") + "s: "
+                            + EnvironmentState.MenuState()
+                            + " planes=" + LivePlanes() + "/" + _planeFades.Count);
+                    }
+
+                    _fadeWaited += seconds;
+                    return false;
+                }
+
+                if (_menuUpAt < 0f) _menuUpAt = _fadeWaited;
+
+                if (_fadeWaited - _menuUpAt < grace)
+                {
+                    _fadeWaited += seconds;
+                    return false;
+                }
             }
 
             if (_released == null)
             {
-                _released = _fadeWaited >= 10f ? "cap"
-                    : EnvironmentState.MenuShown ? "menu up" : "lingered";
+                // With the gate on the menu itself there are only two honest endings left. A
+                // "cap" now means MenuScreen never came up either, which is a different bug from
+                // the one this replaced and wants a different answer -- so it is worth being able
+                // to tell them apart in one line of a report.
+                _released = _fadeWaited >= HoldCapSeconds && !EnvironmentState.MenuShown
+                    ? "cap -- nothing came up, " + EnvironmentState.MenuState()
+                    : EnvironmentState.MenuState();
 
                 LoadingPerformance.Note(
                     "art held " + _fadeWaited.ToString("0.0") + "s for the menu (" + _released + ")");
@@ -2235,6 +2323,7 @@ namespace DeployScreen.Client
         {
             _built = false;
             _fadeWaited = 0f;
+            _menuUpAt = -1f;
             _dimming = false;
             _dim = 0f;
             _released = null;

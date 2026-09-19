@@ -1,6 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
+using UnityEngine;
 
 namespace DeployScreen.Client
 {
@@ -63,6 +65,22 @@ namespace DeployScreen.Client
 
         internal static void Install(Harmony harmony)
         {
+            // The main menu coming back. Installed independently of the environment patch: they
+            // answer different questions and one being unavailable should not cost the other.
+            if (GameTypes.MenuScreen_Awake != null)
+            {
+                harmony.Patch(
+                    GameTypes.MenuScreen_Awake,
+                    postfix: new HarmonyMethod(AccessTools.Method(typeof(EnvironmentState), nameof(AfterMenuAwake))));
+            }
+
+            if (GameTypes.MenuScreen_Show != null)
+            {
+                harmony.Patch(
+                    GameTypes.MenuScreen_Show,
+                    postfix: new HarmonyMethod(AccessTools.Method(typeof(EnvironmentState), nameof(AfterMenuShow))));
+            }
+
             if (GameTypes.EnvironmentUI_ShowEnvironment == null) return;
 
             // The menu bringing its environment back is exactly when a deferred restore is safe
@@ -73,34 +91,225 @@ namespace DeployScreen.Client
         }
 
         private static bool _menuShown;
+        private static Component _menuScreen;
+
+        /// <summary>The deploy screen's siblings and whether each was already up when armed.</summary>
+        private static Dictionary<GameObject, bool> _siblings;
 
         /// <summary>
-        /// Whether the menu has brought its environment up since the watch was armed.
+        /// Whether the main menu is actually on screen.
         ///
         /// This is the end of the wait nobody had a name for. After the deploy screen closes there
         /// is a stretch where the raid is being torn down and the menu rebuilt -- quests
         /// re-requested, tabs re-added, the environment re-shown -- and the player called it a
-        /// waiting room, which is exactly what it looks like. Finishing before it meant handing
-        /// over to that instead of to the menu.
+        /// waiting room, which is exactly what it looks like. Finishing before it hands the screen
+        /// to that instead of to the menu.
         ///
-        /// ShowEnvironment(true) is the game saying the menu's own backdrop is up, and it is
-        /// already patched here for the deferred restore, so this costs one bool.
+        /// **The first attempt asked the wrong object.** ShowEnvironment(true) is the menu's 3D
+        /// backdrop coming up, not the menu, and on the cancel path it never fires at all -- two
+        /// live traces released on the linger instead, which is to say the art thinned out over a
+        /// backdrop with no menu on it. The waiting room *was* the mod letting go early.
+        ///
+        /// **Two more attempts failed before the trace was made to say anything useful.** Watching
+        /// MenuScreen.Show and MenuScreen being active ran to the cap on two Woods aborts, and
+        /// switching to its CanvasGroup alpha ran to the cap again on Shoreline. That third run
+        /// finally printed what it was looking at:
+        ///
+        ///     menu watch armed: active=False alpha=1.00 shown=False
+        ///     art held 10.0s ... (cap, active=False alpha=1.00 shown=False)
+        ///
+        /// which is the opposite of the guess: MenuScreen **is** deactivated, its alpha is never
+        /// touched, and it was still off ten seconds after the deploy screen went away.
+        ///
+        /// **Naming one screen was the mistake all along.** The screens under 'Menu UI/UI' are
+        /// Trading, Ragfair, the Matchmaker ones and the Hideout ones -- the main menu is not
+        /// among them, and after an abort the game may land on any of them or on none yet. That
+        /// last case is the bug: for those ten seconds nothing at all was up, and an empty menu
+        /// room with no screen on it is exactly what the player has been calling a waiting room.
+        ///
+        /// So the question is no longer "is the main menu up" but **"has the game put anything
+        /// up yet"**, which is what the player actually waits for. Any screen beside the deploy
+        /// screen turning on counts, plus MenuScreen wherever it lives, and the one that answered
+        /// is named in the trace.
         /// </summary>
-        internal static bool MenuShown { get { return _menuShown; } }
+        /// <summary>
+        /// Whether the art may stop covering for the game yet.
+        ///
+        /// Two conditions, and the second came from a screenshot rather than a trace: something
+        /// has to be up, **and** nothing may still be spinning. The picture the player sent is the
+        /// menu room blurred, no screen on it, and a small wheel turning bottom right -- which is
+        /// the client still working. Handing them that is the whole complaint, and it is the wheel
+        /// that says so.
+        /// </summary>
+        internal static bool MenuShown { get { return Arrived() != null && Busy() == null; } }
 
-        /// <summary>Starts the watch. Armed when the art begins waiting, not before.</summary>
-        internal static void WatchForMenu() { _menuShown = false; }
+        /// <summary>
+        /// The name of whatever is still turning, or null when nothing is.
+        ///
+        /// Both candidates are read rather than one picked: after three wrong guesses about which
+        /// object speaks for this menu, the trace names the one that actually answered.
+        /// </summary>
+        internal static string Busy()
+        {
+            try
+            {
+                if (_queueLoader != null && _queueLoader.activeInHierarchy) return "queue";
+                if (_preloaderLoader != null && _preloaderLoader.activeInHierarchy) return "preloader";
+                return null;
+            }
+            catch { return null; }
+        }
+
+        private static GameObject _queueLoader;
+        private static GameObject _preloaderLoader;
+
+        /// <summary>
+        /// Finds the two spinners once per watch. Cheap and deliberately not cached across raids:
+        /// the indicator lives beside the deploy screen and the preloader is a singleton, and
+        /// either could be rebuilt between one raid and the next.
+        /// </summary>
+        private static void FindSpinners(Transform screens)
+        {
+            _queueLoader = null;
+            _preloaderLoader = null;
+
+            try
+            {
+                if (screens != null && GameTypes.OperationQueueIndicator != null
+                    && GameTypes.QueueIndicator_Loader != null)
+                {
+                    foreach (Transform child in screens)
+                    {
+                        if (child == null) continue;
+
+                        var indicator = child.GetComponent(GameTypes.OperationQueueIndicator);
+                        if (indicator == null) continue;
+
+                        _queueLoader = GameTypes.QueueIndicator_Loader.GetValue(indicator) as GameObject;
+                        break;
+                    }
+                }
+            }
+            catch { _queueLoader = null; }
+
+            try
+            {
+                if (GameTypes.PreloaderUI_Instance != null && GameTypes.PreloaderUI_Loader != null)
+                {
+                    var preloader = GameTypes.PreloaderUI_Instance.GetValue(null, null);
+                    if (preloader != null)
+                        _preloaderLoader = GameTypes.PreloaderUI_Loader.GetValue(preloader) as GameObject;
+                }
+            }
+            catch { _preloaderLoader = null; }
+        }
+
+        /// <summary>
+        /// The name of whatever the game has put on screen since the watch was armed, or null
+        /// while there is still nothing.
+        ///
+        /// Two places are looked at, because the thing the player is waiting for can be either:
+        /// the screens beside the deploy screen, and the main menu, which is not one of them.
+        /// </summary>
+        private static string Arrived()
+        {
+            try
+            {
+                if (_menuShown) return "MenuScreen.Show";
+
+                if (_menuScreen != null && _menuScreen.gameObject.activeInHierarchy)
+                    return "MenuScreen";
+
+                if (_siblings != null)
+                {
+                    foreach (var pair in _siblings)
+                    {
+                        // Only ones that were off when we armed: something already up is not the
+                        // game answering the abort, it is furniture that never went away.
+                        if (pair.Value) continue;
+                        if (pair.Key == null || !pair.Key.activeInHierarchy) continue;
+                        return pair.Key.name;
+                    }
+                }
+
+                return null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Starts the watch. Armed when the art begins waiting, not before.
+        ///
+        /// The parent is the deploy screen's own, so its siblings are the screens the game
+        /// chooses between on the way out. Their state is snapshotted here: only a screen that
+        /// was off and comes on counts as the game moving.
+        /// </summary>
+        internal static void WatchForMenu(Transform screens, Component deployScreen)
+        {
+            _menuShown = false;
+            _siblings = null;
+
+            try
+            {
+                if (screens != null)
+                {
+                    _siblings = new Dictionary<GameObject, bool>();
+
+                    foreach (Transform child in screens)
+                    {
+                        if (child == null) continue;
+                        if (deployScreen != null && child == deployScreen.transform) continue;
+
+                        _siblings[child.gameObject] = child.gameObject.activeInHierarchy;
+                    }
+                }
+            }
+            catch { _siblings = null; }
+
+            FindSpinners(screens);
+            LoadingPerformance.Note("menu watch armed: " + MenuState());
+
+            if (_siblings == null || _siblings.Count == 0)
+                LoadingPerformance.Note("menu watch: no sibling screens to watch");
+        }
+
+        /// <summary>
+        /// What is on screen right now, for the trace. Three attempts at this failed by asking one
+        /// property and believing it, so the line carries what was actually read.
+        /// </summary>
+        internal static string MenuState()
+        {
+            try
+            {
+                var up = Arrived();
+                var watched = _siblings == null ? 0 : _siblings.Count;
+
+                return "up=" + (up ?? "nothing")
+                    + " busy=" + (Busy() ?? "no")
+                    + " menu=" + (_menuScreen == null ? "missing"
+                        : _menuScreen.gameObject.activeInHierarchy ? "active" : "off")
+                    + " spinners=" + (_queueLoader != null ? "queue" : "-")
+                    + (_preloaderLoader != null ? "+preloader" : "")
+                    + " watching=" + watched;
+            }
+            catch { return "unreadable"; }
+        }
+
+        private static void AfterMenuAwake(object __instance)
+        {
+            _menuScreen = __instance as Component;
+        }
+
+        private static void AfterMenuShow(object __instance)
+        {
+            if (_menuScreen == null) _menuScreen = __instance as Component;
+
+            _menuShown = true;
+            LoadingPerformance.Note("main menu up");
+        }
 
         private static void AfterShowEnvironment(bool __0)
         {
-            if (__0) _menuShown = true;
-
-            // On the trace this was added for, MenuShown never became true and the hold ran to its
-            // cap, so ShowEnvironment(true) is not the menu returning -- or is not called on the
-            // cancel path at all. Printed with its argument rather than reasoned about, because
-            // one line in the next report settles which.
-            LoadingPerformance.Note("ShowEnvironment(" + __0 + ")");
-
             if (!__0 || !_pending || _applying) return;
 
             _pending = false;

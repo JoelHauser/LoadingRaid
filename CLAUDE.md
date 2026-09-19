@@ -13,19 +13,28 @@ corrected; nothing has been tested.
 
 | | |
 | --- | --- |
-| SPT install | `C:\HUH` |
+| SPT install | `H:\SPT4.1.X` (the notes below said `C:\HUH` through 1.8.0; that install is gone) |
 | SPT version | 4.1.5 |
 | EFT client | `0.16.9.5.40743` |
 | BepInEx | 5.4.23.5, HarmonyLib **2.9.0** |
 | Built | 1.3.1 on 2026-09-16, clean, 0 warnings; `scripts\test-logic.ps1` 31 passed; `scripts\test-performance.ps1` 11 checks passed; both exit 0 |
 
 ```
-scripts\pack.ps1 -SPTPath C:\HUH
-scripts\pack.ps1 -SPTPath C:\HUH -Install
-scripts\test-logic.ps1 -SPTPath C:\HUH     # the game-independent logic, against real files
-scripts\test-performance.ps1             # diagnostic accounting and comparison, no engine needed
-scripts\compare-loading.ps1              # summarizes installed plugin's diagnostic reports
+scripts\pack.ps1 -SPTPath H:\SPT4.1.X
+scripts\pack.ps1 -SPTPath H:\SPT4.1.X -Install
+scripts\test-logic.ps1 -SPTPath H:\SPT4.1.X      # the game-independent logic, against real files
+scripts\test-performance.ps1                    # diagnostic accounting, no engine needed
+scripts\compare-loading.ps1                     # summarizes the installed plugin's reports
+scripts\test-gametypes.ps1 -Assembly H:\SPT4.1.X\EscapeFromTarkov_Data\Managed\Assembly-CSharp.dll -SPTPath H:\SPT4.1.X
 ```
+
+**`-SPTPath` is not optional.** The csproj still defaults to `C:\HUH`, which does not exist on this
+machine, and the failure is an MSBuild error about BepInEx rather than anything about the path.
+
+**This install has been launched, and that is worth more than it sounds.** The `Assembly-CSharp.dll`
+in `Managed` is already the patched one -- 16,233,472 bytes against the original's 15,994,432 -- so
+`test-gametypes.ps1` can be pointed straight at it and `hpatchz` is not needed at all. Every
+game-name check in 1.9.0 was made against that file.
 
 **Run those through PowerShell, not Bash** -- same `C:HUH` mangling trap as CamoPatch,
 BarrelHealing and SPT-Casino.
@@ -1575,6 +1584,12 @@ looks a great deal like the stock deploy screen and was reported as one.
 
 ### The raid's hour comes from the map
 
+> **Superseded in 1.9.0, and wrong twice over.** There is one game clock and the location screen
+> shows two readings of it -- see **The clock is the game's, not the map's**. Worse,
+> `Location.UnixDateTime` is not a clock at all: **it seeds spawn points**, and the table of per-map
+> times below is a table of spawn-point seeds. See **What UnixDateTime is actually for**. The first
+> paragraph still holds -- that is the bug this was solving -- and nothing else here does.
+
 `TimeAndWeatherSettings.HourOfDay` is only filled in for a custom raid and reads **-1** for every
 ordinary one, so the fallback was doing all the work and the screen was lit by the wall clock.
 
@@ -1602,8 +1617,10 @@ advances it against real time by `TimeFactor`, and everything holding one -- `Ga
 `BaseLocalGame`, `BotOwner` -- exists only inside a raid. At deploy time the seed plus the toggle is
 the best reading available, and it is right about the thing that matters.
 
-**Weather is still not read.** `RainType`, `FogType` and `CloudinessType` live on the same object
-that returns -1, so an ordinary raid reports clear because as far as the client is concerned it is.
+**Weather is still not read.** *(Fixed in 1.9.0 -- the live weather is on the session, not in
+RaidSettings. See **Weather: it was never in RaidSettings**.)* `RainType`, `FogType` and
+`CloudinessType` live on the same object that returns -1, so an ordinary raid reports clear because
+as far as the client is concerned it is.
 `Grade.Exposure` -- built from hour, fog, rain and cloud -- was computed and read by nothing until
 the character light started multiplying by it, so a night deploy in a downpour used to light the PMC
 exactly as hard as clear noon.
@@ -1752,13 +1769,28 @@ screen whose middle is empty left the frame reading as an afterthought.
 **Back: the window, the press, and the way out** above. The probes that found them have been
 deleted; what they were is in the history.
 
-**Weather still reaches nothing.** The hour now comes from the map, but `RainType`, `FogType` and
-`CloudinessType` read -1 on an ordinary raid, so `Grade.Exposure` only ever varies by time of day.
-If SPT keeps live weather somewhere the client can see at menu time, that is where to look.
+**Weather -- done in 1.9.0.** It was on the session all along: `session.Weather` is a `WeatherNode`
+the server sends at menu time, and it is the same one the location screen's weather icon comes from.
 
-**The day grade is untested in game.** The hour fix has only ever been exercised at night, where it
-agreed with the wall clock it replaced. A Streets raid at Day (11:00 against 23:00) is the largest
-swing available and the first real test of it.
+**The hour -- redone in 1.9.0**, and the 1.8.0 answer was wrong: one game clock, two readings of it,
+Factory excepted. See **The clock is the game's, not the map's**.
+
+**The clock and the weather are both tested and correct.** Two Lighthouse runs, one session --
+see **The two Lighthouse runs** below. Nothing in the time or weather path is open.
+
+**Dawn and dusk are still untested**, and not for want of trying: the two runs landed on 23:55 and
+12:03, which are night and midday. The low-sun path only runs between about 04:30-07:30 and
+17:30-20:30, and **which hours the game offers is not a choice the player has** -- it is wherever
+the one global clock happens to be, and the pair is always twelve hours apart.
+
+The clock was measured at roughly **7x real time** (8 game minutes across 74 real seconds), so the
+pair sweeps the whole day in about three and a half real hours and both bands come round on their
+own. Any raid where the conditions line reads an hour in those ranges is the test; `Rose` is on the
+morning side and `Warm` on the evening one, and they should not look alike.
+
+**The cold-versus-warm question is answerable now** and the first pair is in **The two Lighthouse
+runs**. What is still missing is a *completed* pair -- both runs there were aborted, so the load
+totals are not load times.
 
 **Names on the countdown were already wrong.** `Player Name Panel/Name` is in the dump this was
 written from and is not in the running build: the first run logged `not found: Player Name
@@ -1824,6 +1856,468 @@ ContentSizeFitter and a LayoutElement, and hides four objects the game may expec
 **First-load stutter.** 3.8 MB PNGs became ~500 KB JPEGs, which ought to help, but it has not been
 shown: Reserve ran 7 gaps / 3.9s on PNGs and 54 gaps / 40.2s on JPEGs, in different sessions with
 different bot loads. A clean test is the same map twice in one session.
+
+## 1.9.0: one clock, real weather, and what the hitching measurements actually say
+
+### The clock is the game's, not the map's -- 1.8.0 was wrong about this
+
+1.8.0 replaced the wall clock with `Location.UnixDateTime`, and the section above --
+**The raid's hour comes from the map** -- is kept because the reasoning in it is instructive and
+the conclusion is not. Each map does carry its own `UnixDateTime`, and that table of per-map times
+is real. **The player is never offered those times.**
+
+`EFT.UI.Matchmaker.LocationConditionsPanel` is the panel on the location screen with the clock and
+the weather icon on it, and it is the whole of what the player is shown before they commit. Reading
+it settles the question:
+
+```
+GetCurrentLocationTime  ->  IMatchmakerSession<RaidSettings>.GetCurrentLocationTime
+```
+
+It takes **no location**. There is one clock for the whole game, every map is displayed against it,
+and `UpdateConditions` prints exactly two readings of it: the time as it stands for `CURR`, and
+`AddHours(-12)` for `PAST`. That pair is the entire time choice EFT offers.
+
+So the hour now comes off the session the deploy screen is already handed --
+`MatchmakerTimeHasCome.Show(IEftSession, RaidSettings, MatchmakerPlayersController)` -- and
+`Location.UnixDateTime` is gone from the mod entirely, along with `GameTypes.Location_UnixDateTime`.
+
+Two things that survive from the per-map version, both because they are still true:
+
+- **Factory is the exception.** `LocationConditionsPanel.Set` special-cases `factory4_day` and
+  `factory4_night` and shows a fixed pair instead of the clock: **15:28** and **03:28**. Those two
+  constants are hard-coded in `MapGrade` now, and `test-gametypes.ps1` checks the properties they
+  came from still exist, so if BSG ever stops treating Factory specially the hard-coding gets
+  caught rather than quietly disagreeing with the screen.
+- **A custom raid states its own hour**, and a stated hour beats an inferred one. The order is:
+  `TimeAndWeatherSettings.HourOfDay` when it is 0..23, then Factory's pair, then the session clock,
+  then the wall clock because something has to be said. Which one answered is in the log and the
+  report.
+
+Minutes reach the grade now. `Weather.Hour` is a float, so a raid at :09 grades at :09 rather than
+on the hour.
+
+### What UnixDateTime is actually for
+
+Worth having in full, because 1.8.0 built a whole feature on it. `Location.UnixDateTime` is read in
+exactly **one** place in the entire client outside `LocationExportInfo`, and it is this:
+
+```
+BaseLocalGame`1/CG_Run::MoveNext
+    ldfld    JsonType.LocationSettings/Location::UnixDateTime
+    call     EFT.DateTimeExtensions::LocalDateTimeFromUnixTime(double)
+    newobj   System.Nullable`1<System.DateTime>::.ctor
+    ...
+    call     EFT.Game.Spawning.SpawnPointsCollection::CreateFromScene(Nullable<DateTime>, SpawnPointParams[])
+```
+
+**It seeds spawn point selection.** Some spawn points are gated by time of day, and that nullable
+DateTime is how `CreateFromScene` decides which ones are eligible. It is not the raid's clock, it
+never was, and it reaches nothing the player looks at.
+
+So the per-map table in the section above -- Lighthouse at 18:09, Customs at 14:45 -- is a table of
+**spawn seeds**. "Lighthouse is an evening map" was never true of anything; it was a number
+belonging to a different system entirely, read by mistake, and then reasoned about for a version as
+if it described light. The first Lighthouse test is what exposed it: it came back 23:55, not 18:09,
+because there is no 18:09 to come back.
+
+The raid's own clock is `EFT.GameDateTime`, and the menu's is the session's `GetCurrentLocationTime`
+-- which is what the conditions panel prints and what 1.9.0 reads.
+
+### Dawn and dusk are not the same light
+
+The old curve had one `goldenness` term, symmetric about noon, so 06:00 and 18:00 came out
+identical. They are the same sun height and they look nothing alike: the evening is amber because
+the ground has been heating the air all day, the morning is cold and pink because it has not.
+
+`lowSun` is now split by which side of noon it falls on. Dusk warms through `Warm`, which works by
+taking blue away. Dawn goes through a new `Rose`, which lifts red and pulls green down and **leaves
+the blue alone**, plus a little cool on the rim and a 0.92 exposure trim -- first light is dimmer
+than last light at the same height. Running `Warm` at dawn would just have produced a second sunset,
+which is the trap this is avoiding.
+
+Lighthouse is the map that makes it visible: 18:09 against 06:09 is the one place EFT offers the
+two sides of the day as the actual choice.
+
+### Weather: it was never in RaidSettings
+
+`RainType`, `FogType` and `CloudinessType` read **-1** on every ordinary raid, which is why
+`Grade.Exposure` had only ever moved with the hour. They are not where an ordinary raid's weather
+lives. This is:
+
+```
+EftClientBackendSession.GetWeatherAndTime()  ->  "/client/weather"  ->  session.Weather : WeatherNode
+```
+
+Fetched during `DataPrepareOperation`, long before any deploy, and held on the session. It is the
+same node `LocationConditionsPanel` picks its `UI/WeatherIcons/` sprite from -- so **the player has
+already been shown this raid's weather**; the deploy screen was looking in the wrong place for it.
+
+`WeatherNode` carries floats, not enums, and the scales are read off the game's own
+`GetWeatherTypeByNode` rather than guessed:
+
+| field | clear | worst | game's own breakpoints |
+| --- | --- | --- | --- |
+| `Cloudness` | -1 | +1 | -0.7 clear, -0.4 partly, 0.7 full, 1.0 thunder |
+| `Rain` | 0 | 4 | 1 drizzle, 2, 3 downpour |
+| `ScaterringFogDensity` | 0.004 | 0.1+ | 0.004 none, 0.1 thick |
+| `Wind` | 0 | 4 | 1, 2 |
+
+**Match BSG's spelling exactly.** The fields are `Cloudness` and `ScaterringFogDensity`. Both are
+misspelt in the game and correcting either one turns the weather back off, silently. `test-gametypes.ps1`
+pins both.
+
+`MapGrade.Weather` now holds `Rain`, `Fog`, `Cloud` and `Wind` as **0..1**, normalised at the point
+of reading, because there are two sources with different units and every reader downstream is asking
+the same question. The precedence is the same shape as the hour's: a custom raid's enums if
+`RainType >= 0`, otherwise the live node, and `WeatherSource` says which in the log.
+
+### The hitching: what twenty reports actually say
+
+Read across every capture in the diagnostics folder, the shape is the same on every map and every
+version since 1.7.0:
+
+| map | load | longest single gap | total gap | peak managed |
+| --- | --- | --- | --- | --- |
+| Customs | 91.6s | 13.9s | 45.2s | 4511 MiB |
+| Shoreline | 88.6s | 14.3s | 41.4s | 3775 MiB |
+| Woods | 77.2s | 14.0s | 38.5s | 3467 MiB |
+| Interchange | 62.7s | 16.5s | 32.7s | 1890 MiB |
+| Factory | 49.5s | 13.9s | 27.0s | 1544 MiB |
+| Labyrinth | 33.9s | 10.8s | 17.4s | 1286 MiB |
+
+**There is a single 10-16 second frame in every load**, and roughly half of every load is frames
+over 100 ms. Load time tracks peak managed heap almost exactly. That is Unity integrating a scene
+on the main thread, it is the thing **The hitching on the deploy screen** below already identified,
+and no mod can move it.
+
+A 4K JPEG decode is tens of milliseconds. Against a 13-second frame it is not the story, and it
+never could have been -- which is why comparing whole-run gap totals between a PNG session and a
+JPEG session settled nothing, and was never going to.
+
+So 1.9.0 adds no new lever. It fixes the three things that made the question unanswerable:
+
+1. **The art's cost is now a number.** `BannerArt.DecodeMillis` and `DecodeCount` accumulate across
+   the session; the report takes a reading at the start of the load and subtracts, and writes
+   `artDecodeMs` and `artDecodeCount`. Set against `focusedGapSeconds` in the same report, one run
+   now says whether the art is a visible slice of the load or a rounding error. The prewarm on the
+   previous screen is deliberately outside the window -- the question is what lands *during* the
+   load.
+2. **Cold and warm separate themselves.** Every report carries `sessionId`, `sessionLoadIndex` and
+   `mapLoadIndex`. `compare-loading.ps1` groups on the session and on first-versus-repeat without
+   anyone setting a Test label -- and **never pools runs from different game sessions**, which was
+   the flaw in every comparison in this repo before now. `-AllSessions` overrides it and the help
+   says why you should not.
+3. **The memory counter was dead.** `Process.WorkingSet64` is not implemented on the Mono this game
+   ships and returned **0 in every report ever written here** -- so the one figure that would have
+   shown texture memory was blank the whole time, which is a poor position from which to argue
+   about the cost of pictures. It is `UnityEngine.Profiling.Profiler.GetTotalReservedMemoryLong()`
+   now, which is native memory and works in a release build. `System.Diagnostics.Process` is gone.
+
+Report schema is **2**. `workingSetStartBytes` / `workingSetSampledPeakBytes` are replaced by
+`nativeStartBytes` / `nativeSampledPeakBytes`; schema-1 captures still read, and group as
+`Warmth: unknown` in a session of their own so they cannot pool with new ones.
+
+**None of this is a fix for the hitching, and it is not meant to be.** It is the instrumentation
+that makes the remaining question -- is any of this mod's doing -- answerable in one run instead of
+never.
+
+### The waiting room was us letting go early
+
+The player kept reporting that Back "cuts to the default waiting room before going to the main
+menu", through several rounds of fixes. The two Lighthouse aborts finally named it, in one word of
+the report:
+
+```
+art held 1.7s for the menu (lingered)
+art held 2.2s for the menu (lingered)
+```
+
+**`lingered`, not `menu up`.** The dissolve was gated on `EnvironmentState.MenuShown`, which was a
+postfix on `EnvironmentUI.ShowEnvironment(true)` -- and that is the menu's **3D backdrop** coming
+up, not the menu. On the cancel path it never fires at all. So the gate never closed, the hold fell
+through to a 1.5s timer, and the art thinned out over a restored backdrop with **no menu on it
+yet**. The stretch after that -- raid tearing down, quests re-requested, tabs re-added -- is the
+waiting room, and the mod was handing the player straight to it.
+
+Which means the previous fix had the diagnosis right and the instrument wrong. Its own comment said
+"this mod should be the waiting room"; it just never found out whether it was.
+
+**A duration cannot fix this.** The rebuild takes as long as it takes, and any number short enough
+not to feel like a hang is too short to cover a slow one. Both traces are that failure at 1.5s.
+
+So the gate now asks the menu itself. `EFT.UI.MenuScreen` is the screen with PLAY and CHARACTER on
+it, and it is caught two ways because neither alone is enough:
+
+- `MenuScreen.Awake` holds the instance. It is made once per session, so the alternative is
+  scanning for it, which this mod does not do.
+- `MenuScreen.Show(Profile, MatchmakerPlayersController, ESessionMode)` names the moment, and logs
+  `main menu up` so the next trace says when.
+- `MenuShown` also returns true if the held instance is active now and was not when the watch was
+  armed, which covers a menu that came up without the call being seen.
+
+The linger is demoted to what it should always have been: a short grace **after** the menu is up,
+because `Show` returns a frame or two before the menu is drawn. Default drops 1.5s -> **0.4s**, and
+it is no longer the wait -- the wait ends when the menu does, however long that takes.
+
+The cap stays at ten seconds and its meaning is now sharper. With the gate on the menu itself there
+are only two honest endings, and the report distinguishes them:
+
+| it reads | what happened |
+| --- | --- |
+| `menu up` | working |
+| `cap -- the menu never came up` | `MenuScreen` never showed either, which is a different bug |
+
+`ShowEnvironment` keeps its patch -- it still does the deferred backdrop restore -- but no longer
+pretends to know where the menu is, and its per-call log line is gone.
+
+Two Woods aborts later, that was still wrong, and the trace said so again:
+
+```
+art held 10.0s for the menu (cap -- the menu never came up)
+```
+
+`Show` never fires and the object never goes inactive, and the reason is the thing this mod had
+**already learned about the deploy screen and then failed to apply to this one**:
+`EFT.UI.Screens.UIScreen` closes through `SoftHide`, which fades a `CanvasGroup` **alpha** and
+leaves the GameObject active throughout. `MenuScreen` is never hidden and never re-shown -- it sits
+behind the matchmaker at alpha 0 and fades back up. Asking whether it is *active* was always going
+to return true, which is why the arming check that required it to have been inactive could never
+release.
+
+So the test is the alpha, the same property `FadeGroup` already watches on the way in:
+
+```csharp
+group = _menuScreen.GetComponent<CanvasGroup>();
+return group == null ? true : group.alpha >= 0.9f;
+```
+
+`Show` is kept -- it costs nothing and would name the moment if it ever fired -- and the watch now
+logs what it is actually looking at when armed, and again at the cap:
+
+```
+menu watch armed: active=True alpha=0.00 shown=False
+art held 10.0s for the menu (cap -- the menu never came up, active=True alpha=0.00 shown=False)
+```
+
+An alpha in that line is the difference between "the menu is not up yet" and "we cannot see the
+menu at all", and those want opposite fixes. Three attempts at this have each failed by believing a
+property without printing it.
+
+A Shoreline abort then ran to the cap again, and this time the line said why:
+
+```
+menu watch armed: active=False alpha=1.00 shown=False
+art held 10.0s for the menu (cap, active=False alpha=1.00 shown=False)
+```
+
+The opposite of the guess. `MenuScreen` **is** deactivated, its alpha is never touched, and it was
+still off ten seconds after the deploy screen went away.
+
+**Naming one screen was the mistake in all three attempts.** The sibling dump this mod already
+writes shows what is actually under `Menu UI/UI`:
+
+```
+Trading Screen [off], Merchants List [off], Ragfair Screen [off], ...
+Matchmaker Location Selection [off], Matchmaker Time Has Come [off], ...
+Operation Queue Indicator, HideoutAreaTransferItemsScreen [off], ...
+```
+
+The main menu is **not among them**, every one of them is off, and after an abort the game may
+land on any of them or -- for ten seconds and counting -- on none at all. That last case is the
+bug. An empty menu room with no screen on it whatsoever is exactly what the player has been calling
+a waiting room, and no amount of naming the right screen would have found it.
+
+So the question is no longer "is the main menu up" but **"has the game put anything up yet"**,
+which is what the player is actually waiting for:
+
+- every sibling of the deploy screen is snapshotted when the watch arms, and any that was off and
+  comes on counts;
+- `MenuScreen` is still checked, because it lives somewhere else and is a valid ending;
+- whichever answered is named in the trace.
+
+The cap goes to **twenty seconds**, because ten demonstrably was not enough, and the hold reports
+what it is still waiting on every four seconds on the way. If twenty is wrong too, the shape of the
+wait is in the trace rather than needing another raid to find out.
+
+### The screenshot finished the diagnosis
+
+A trace could say nothing was up. It could not say what the player was looking at instead, and a
+screenshot did: the menu room, blurred almost to black, no screen on it at all, and **a small wheel
+turning in the bottom right**.
+
+That wheel is the client still working, and it is the only place the game says so on this path. So
+the release needs a second condition that no amount of screen-watching would have supplied:
+
+```
+release when   something is up   AND   nothing is still spinning
+```
+
+There are two objects it could be and no reason to guess again, so both are read and the trace
+names the one that actually turned:
+
+- `EFT.UI.OperationQueueIndicator` sits beside the deploy screen under `Menu UI/UI` and is the one
+  sibling always active -- only its `_loader` child toggles, which is why the sibling sweep saw it
+  as furniture rather than as a signal.
+- `EFT.UI.PreloaderUI` is a singleton with a `_loader` of its own.
+
+`EOperationQueueStatus` (`Idle`, `AwaitingResponse`, `Error`) is the state behind the first one and
+is worth knowing about if the `_loader` ever stops being the right thing to read.
+
+The hold line now carries both halves, so one abort says which condition was the slow one:
+
+```
+still holding at 4.0s: up=nothing busy=queue menu=off spinners=queue+preloader watching=22
+```
+
+### What the runs then ruled out, and where this stands
+
+Three more aborts, and the useful part is what they eliminated.
+
+```
+menu watch armed: up=nothing busy=no menu=off spinners=-+preloader watching=0
+menu watch: no sibling screens to watch
+still holding at  4.2s: ... busy=preloader ... watching=0 planes=2/2
+still holding at 18.7s: ... busy=preloader ... watching=0 planes=2/2
+art held 21.4s for the menu (cap -- nothing came up, ... busy=preloader ...)
+```
+
+**The art is alive the whole time -- `planes=2/2` at every sample.** The planes are parented to the
+environment root and `BeginFade` swaps that root, so the obvious guess was that the swap destroys
+them and the hold spends twenty seconds covering the screen with nothing. It does not. That is
+ruled out, and ruling it out is worth more than it sounds: it means the hold is working and the
+problem is what the art *looks like* while it holds, not whether it is there.
+
+**`watching=0` survived the fix meant to cure it.** `_screensParent` is now captured in `Begin`,
+while the screen is certainly alive, and the sibling list still arms empty -- so the parent is not
+simply being read too late and the capture itself is not doing what it should. Unresolved. The
+queue indicator is inside that same sweep, which is why `spinners=-` and why the one candidate
+that best matches a small wheel bottom-right has still never actually been read.
+
+**`busy=preloader` for the full twenty-one seconds, never clearing.** Either the client really is
+busy that long, or `PreloaderUI._loader` is active permanently and its visibility lives elsewhere
+-- the same shape of mistake as `Operation Queue Indicator`, whose container is always active while
+only its `_loader` child toggles. Not yet distinguished.
+
+**The open lead, untested:** the abort calls `BeginDimming`, which ramps every plane's colour
+toward `Dimmed` and leaves it there. Nothing un-dims it, and the hold then sits on that for twenty
+seconds. The screenshot the player sent -- near-black, blurred, vertical shapes that could be the
+Woods treeline -- is consistent with **being our own art at full dim** rather than with the menu
+room behind it. If that is right then the fix is not another signal at all: it is that the dim is a
+transition and the hold turned it into a destination, and the art should come back up to full while
+it waits. `planes=2/2` is what makes this the leading explanation, because it says there is
+something there to be looking at.
+
+That is where this was left: hold working, art present, four signals investigated, and the most
+likely answer now that the art is visible-but-dimmed rather than absent.
+
+### The map name was inset by a plate that is not there
+
+The name started 25 units right of the intel line beneath it, and placing the two containers at the
+same x never fixed it because the misalignment is inside one of them:
+
+```
+Location Name Panel @130,-170 109x27
+  Background @20,1 184x29     <- hidden by this mod
+  Icon [off] @-9,12 49x49     <- already off in the stock screen
+  Name @25,0                  <- still clearing both of them
+```
+
+The +25 is there to clear a 49px icon and sit on a backing plate, and by the time the layout runs
+neither exists. The label is pinned now -- pivot to the left edge, x to zero -- so the glyphs start
+at the panel's own left edge whatever the inset happened to be. Only x moves: the pivot's y and the
+anchored y are kept, because the vertical placement was already right and is not worth risking.
+
+Worth noting how it was found. The number came out of the layout dump this mod already writes, not
+out of measuring a screenshot -- the dump prints every rect with its offset, which is what it is
+for.
+
+### The two Lighthouse runs
+
+One session, same map, one after the other. This is the run the whole version was built for.
+
+```
+                       run 1 (mapLoadIndex 1)        run 2 (mapLoadIndex 2)
+conditions   23:55 (from the game clock)    12:03 (from the game clock, twelve hours back)
+weather      the live weather: cloud 0.58   the live weather: cloud 1.00, rain 1.00
+exposure     0.38                           0.70
+art decode   11.1 ms, 1 picture             0.0 ms, 0 pictures
+gaps         12, 10.13s, longest 2.84s      10, 3.61s, longest 1.17s
+```
+
+**The weather reaches the grade, for the first time in the mod's life.** `the live weather` is the
+node path; the values are real and they moved between two runs a minute apart.
+
+**The arithmetic is exact, which is the part worth trusting.** Lighthouse's table exposure is 0.95:
+
+- run 1: `0.95 x 0.42 (night) x 0.942 (cloud 0.58)` = **0.376** -> logged 0.38
+- run 2: `0.95 x 1.0 (midday) x 0.82 (rain) x 0.9 (cloud)` = **0.701** -> logged 0.70
+
+So the whole chain -- node floats, normalisation, the daylight curve, the weather terms, the clamp,
+and the lift onto the character key and rim -- is doing exactly what the model says end to end, and
+not approximately.
+
+**The two options are the one clock, twelve hours apart**, and the minute of drift between the runs
+(23:55 then a PAST reading of 12:03, i.e. a CURR of 00:03) is what measured the 7x time factor.
+
+**Cold and warm separated themselves, without a label.** The art decoded once, was cached, and cost
+nothing the second time -- which is the prewarm cache working and is visible as a number rather than
+inferred. The warm load stalled for **a third as long**: 3.61s against 10.13s, longest frame 1.17s
+against 2.84s. That is the first clean cold-versus-warm pair this repo has ever had, and it took two
+aborted raids in one session.
+
+Both were aborted, so the durations are not load times and the gap totals are over unequal windows.
+A completed pair would be better. The comparison is sound as far as it goes because
+`compare-loading.ps1` refuses to pool them with anything else.
+
+### The first 1.9.0 run: two answers and one bug
+
+Customs, day, aborted at 9.2s (`20260919T145304408Z-0cbe2684.json`). Every game type resolved --
+not one "could not find" in the log -- and the abort transition held as it has since 1.8.0.
+
+**The art is exonerated, and now there is a number for it.**
+
+```
+artDecodeMs        13.3      (1 picture)
+focusedGapSeconds  9.335
+```
+
+Thirteen milliseconds against nine and a third seconds of stalled frames: **0.14%**. The PNG-to-JPEG
+question that ran across two versions is closed, and the answer is that it was never the art. Note
+how little it took to say so -- one aborted run, because the measurement was of the right thing.
+
+**The memory counter was hiding most of the memory.**
+
+```
+nativeSampledPeakBytes   7,670,538,240   (7.67 GB)
+managedSampledPeakBytes  1,350,881,280   (1.35 GB)
+```
+
+Native peaks at nearly six times managed, and **every report written before this one recorded it as
+0**. So roughly 85% of the memory in play was invisible for the entire life of the diagnostic, which
+is a poor position from which to have been arguing about the cost of pictures.
+
+**The bug: the weather gate was on the wrong field.** The report read
+
+```
+11:11 (from the game clock), the raid's own setting: cloud 0.00
+```
+
+The hour is correct and came from the right place. The weather did not: it took the custom-raid
+branch and reported dead clear, and `exposure=1.00` at midday confirms the live node was never
+consulted at all.
+
+The mistake was assuming `TimeAndWeatherSettings` is unset as a unit. It is not. Something sets
+**`HourOfDay` to -1 and leaves every other field at zero**, and zero is a valid `ERainType`,
+`EFogType` and `ECloudinessType` -- `NoRain`, `NoFog`, `Clear`. So `RainType >= 0` is true on every
+ordinary raid, and a test of the weather fields cannot distinguish "nothing was stated" from "a
+clear day". **The hour is the only field in that struct carrying a sentinel, so it is the tell for
+the weather as much as for itself.** `StatedHour` is now the single gate both halves consult.
+
+The shape of this is worth keeping: the feature was built, the types all resolved, the tests passed,
+the log was clean, and the thing still did not work -- and what caught it was a conditions string
+that said *which source answered* rather than only what it said. A reading with no provenance would
+have looked exactly like success.
 
 ## The hitching on the deploy screen -- what it actually is
 
@@ -1949,6 +2443,70 @@ is configured the same way, locally. Commit bodies are prose and end with a
 with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo was created.
 
 ## Where this was left off
+
+2026-09-19, later: **1.9.0**. The raid's hour is the game's one clock -- the session's
+`GetCurrentLocationTime`, as it stands for day and twelve hours back for night, which is exactly the
+pair the location screen prints -- and not the per-map `UnixDateTime` 1.8.0 read a few hours
+earlier. Factory keeps its fixed 15:28/03:28 because the game does. Dawn and dusk are graded apart.
+Weather works for the first time: `session.Weather`, the node the server sends at menu time and the
+location screen draws its icon from, normalised to 0..1 against the game's own thresholds.
+
+The stutter got instrumentation rather than another lever, because the reports already on disk say
+what the hitching is -- a single 10-16 second frame in every load, on every map, tracking peak
+managed heap, which is Unity integrating a scene and is not ours. What was missing was any way to
+tell whether *our* share mattered: the art's decode cost is now a number in the report, cold and
+warm loads separate themselves by session and map-load index instead of by a label nobody set, and
+the native memory counter that read 0 in every report ever written has been replaced with Unity's.
+Report schema 2.
+
+Then it was run, once, on Customs by day, and the run is why there is a second 1.9.0 build. It
+proved the hour (`11:11 (from the game clock)`), proved the art is 0.14% of the stall budget, and
+proved the native memory counter had been reading 0 over 7.67 GB. It also caught the weather taking
+the custom-raid branch on an ordinary raid: the gate was on `RainType`, which is 0 rather than -1
+when nothing is set, and it is on `StatedHour` now. See **The first 1.9.0 run**.
+
+Built clean, 0 warnings. `test-logic.ps1` 59 passed, `test-gametypes.ps1` 93 passed against the live
+patched assembly, `test-performance.ps1` all passed. Packed to `releases\DeployScreen_V1.9.0.zip`
+and installed.
+
+Then two Lighthouse raids in one session settled it: the weather reaches the grade for the first
+time (`the live weather: cloud 0.58`, then `cloud 1.00, rain 1.00`), the exposure arithmetic is
+exact to two decimals on both, and cold-versus-warm separated itself without a label -- the art
+decoded once and the warm load stalled a third as long. The same pair exposed what
+`Location.UnixDateTime` really is: a **spawn-point seed**, not a clock, which is why Lighthouse came
+back 23:55 rather than the 18:09 the 1.8.0 table predicted. See **The two Lighthouse runs** and
+**What UnixDateTime is actually for**.
+
+Then Back was looked at again, because it still cut to the waiting room. The two Lighthouse traces
+had already named the cause without anyone reading it: both released on `lingered` rather than
+`menu up`, so the dissolve was running before the main menu existed. The gate was watching
+`ShowEnvironment(true)` -- the menu's backdrop, not the menu, and never called on that path at all.
+It asks `EFT.UI.MenuScreen` now, and the linger is demoted to a 0.4s grace after the menu is up
+rather than being the wait itself. See **The waiting room was us letting go early**.
+
+Two Woods aborts then said `cap -- the menu never came up`, so that attempt was wrong too:
+`MenuScreen` is soft-hidden by **alpha**, exactly as the deploy screen is, so it is neither
+re-shown nor ever inactive. The gate reads its CanvasGroup alpha now, and the watch prints what it
+sees when armed and at the cap so a fourth wrong guess is not possible. The map name was also
+pinned to its panel's left edge -- it carried a +25 inset for an icon and a backing plate that are
+both hidden by then.
+
+Back was then chased through four more attempts and is **still not fixed**, but the ground under it
+is much firmer than it was. What is known now: the hold itself works, the art is alive for the whole
+of it (`planes=2/2` at every sample), the environment swap does *not* destroy the planes, and
+neither `MenuScreen` nor any sibling screen comes up within twenty seconds of an abort. What is
+still wrong: `watching=0` -- the sibling sweep arms empty even after the parent is captured in
+`Begin`, so the queue indicator has never actually been read -- and `busy=preloader` never clears.
+
+**The lead to pick up first** is that the dark screen in the player's screenshot is our own art at
+full dim, not the menu behind it: `BeginDimming` ramps the planes toward `Dimmed` on abort and
+nothing brings them back, so the hold sits on a dimmed picture for twenty seconds. `planes=2/2`
+is what makes that the likely answer. If it is right, the fix is to treat the dim as the transition
+it was meant to be and return the art to full while it holds. See **What the runs then ruled out**.
+
+Open too: dawn and dusk, which no run has landed on yet and which cannot be chosen -- the pair on
+offer is wherever the one global clock is, and it sweeps the day in about three and a half real
+hours.
 
 2026-09-19: the dark shape behind the PMC is **fixed** -- a command buffer named
 `'grab alpha and blur'` on the preview camera, removed by name and restored on teardown. The five
