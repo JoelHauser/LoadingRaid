@@ -3387,6 +3387,7 @@ namespace DeployScreen.Client
         /// </summary>
         private readonly List<CanvasGroup> _planeFades = new List<CanvasGroup>();
         private float _fade = 1f;
+        private float _fadeWaited;
 
         /// <summary>
         /// Puts the menu back behind the art and hands over the art's own alpha, so what follows
@@ -3426,7 +3427,19 @@ namespace DeployScreen.Client
             try { _grade.Restore(); }
             catch (Exception error) { WarnOnce(error); }
 
+            // And the backdrop, started here rather than left to the teardown. Putting the
+            // player's own choice back is a scene load; running it after the art had already gone
+            // meant the swap happened in full view, so pressing Back showed the map's backdrop,
+            // then their own arriving, then a hang, then the menu. Started now it happens behind
+            // art that is still solid, and FadeStep does not begin thinning until it is done.
+            //
+            // Safe to call twice: Restore returns immediately once _changed is false, and the
+            // teardown's own call lands after this one has already settled it.
+            try { EnvironmentState.Restore(); }
+            catch (Exception error) { WarnOnce(error); }
+
             _fade = 1f;
+            _fadeWaited = 0f;
             return true;
         }
 
@@ -3437,6 +3450,19 @@ namespace DeployScreen.Client
         internal bool FadeStep(float seconds)
         {
             if (_planeFades.Count == 0) return true;
+
+            // Nothing moves while the backdrop is still loading. The art is at full alpha and is
+            // the only thing on screen, which is the whole point: the swap the player used to
+            // watch happens behind it.
+            //
+            // Capped, because a scene load that never finishes must not leave the art parked over
+            // a menu nobody asked to look at -- the same bargain every other hold in this mod
+            // makes. Eight seconds is far longer than the swap has ever taken and still an end.
+            if (EnvironmentState.Settling && _fadeWaited < 8f)
+            {
+                _fadeWaited += seconds;
+                return false;
+            }
 
             _fade -= seconds / Mathf.Max(0.05f, DeployScreenPlugin.StagingFadeSeconds.Value);
 
@@ -3454,6 +3480,7 @@ namespace DeployScreen.Client
         internal void Restore()
         {
             _built = false;
+            _fadeWaited = 0f;
             _notice = null;
             _noticeUntil = -1;
             _planeFades.Clear();

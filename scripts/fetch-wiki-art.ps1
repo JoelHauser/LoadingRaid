@@ -65,10 +65,10 @@ $locations = [ordered]@{
     # waiting for it. All three have BSG's own Showcase sets on the wiki -- Icebreaker's at
     # 2560x1440 -- which is the set this script already prefers.
     #
-    # icebreaker is a guess at the id and the only one here that is. No stock database entry
-    # exists for it, so whichever mod adds it chooses the name; if it turns out to be something
-    # else, rename the folder and nothing else changes, because BannerArt.For looks up the folder
-    # by the id the game reports and does no more than that.
+    # icebreaker has no stock database entry -- the mod that adds it chooses the id -- and the
+    # player confirmed it from the mod's own config: ModLocationKey icebreaker, ModLocationId
+    # 882b2fa04bbd616567022938. The folder name is the key, which is what the game reports and
+    # what BannerArt.For looks up.
     'labyrinth'      = 'The Labyrinth'
     'terminal'       = 'Terminal'
     'icebreaker'     = 'Icebreaker'

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using HarmonyLib;
 
@@ -234,8 +234,30 @@ namespace DeployScreen.Client
         /// A faulted scene load must not surface as an unhandled task exception, and must not
         /// leave us believing we own a backdrop we failed to set.
         /// </summary>
+        private static System.Threading.Tasks.Task _settling;
+
+        /// <summary>
+        /// Whether the backdrop is mid-swap.
+        ///
+        /// Putting the player's own backdrop back is a scene load, and a scene load takes as long
+        /// as it takes. Nothing used to wait on it: the art faded out, the menu behind it was
+        /// still the map's, and the swap then happened in full view -- the player's background
+        /// arriving, hanging, and the main menu turning up after it. Three things where there
+        /// should have been one.
+        ///
+        /// So the dissolve waits on this. The swap is started while the art is still solid and
+        /// hiding everything, and the art only begins to thin once the menu underneath is the one
+        /// the player is going back to.
+        /// </summary>
+        internal static bool Settling
+        {
+            get { return _settling != null && !_settling.IsCompleted; }
+        }
+
         private static void Observe(object task)
         {
+            _settling = task as System.Threading.Tasks.Task;
+
             var asTask = task as System.Threading.Tasks.Task;
             if (asTask == null) return;
 
