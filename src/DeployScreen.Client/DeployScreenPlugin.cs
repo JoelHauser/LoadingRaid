@@ -105,6 +105,7 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> StagingVignetteOff;
         internal static ConfigEntry<bool> StagingCastShadowOff;
         internal static ConfigEntry<bool> StagingFadeOut;
+        internal static ConfigEntry<bool> StagingSayCancelClosed;
         internal static ConfigEntry<float> StagingFadeSeconds;
         internal static ConfigEntry<bool> StagingSimplePreview;
         internal static ConfigEntry<bool> StagingPlainPreview;
@@ -513,6 +514,15 @@ namespace DeployScreen.Client
                 + "component. In the stock menu it falls on the room's wall and looks right. With "
                 + "the room hidden and a photograph behind instead, it has nothing to fall on and "
                 + "hangs in mid-air as a dark blob beside your PMC. Off keeps the shadow.");
+
+            StagingSayCancelClosed = Config.Bind(
+                "Staging area",
+                "Say when cancelling stops being offered",
+                true,
+                "The game decides how long you may back out of a raid, and when it stops it simply "
+                + "takes the Back button away -- often long before the raid actually starts. This "
+                + "puts one line in the intel row when that happens, so an empty corner is a "
+                + "deadline you were told about rather than a button that stopped working.");
 
             StagingFadeOut = Config.Bind(
                 "Staging area",

@@ -3284,7 +3284,29 @@ namespace DeployScreen.Client
 
             WatchArt(now);
 
-            if (_subCaptionText == null || _cards == null || _cards.Count == 0) return;
+            if (_subCaptionText == null) return;
+
+            // A notice outranks the intel while it is up. Intel is a slow cycle nobody is waiting
+            // on; this is the one line on the screen with a deadline behind it.
+            if (_notice != null)
+            {
+                if (_noticeUntil < 0)
+                {
+                    _noticeUntil = now + 6.0;
+                    Write(_notice);
+                }
+
+                if (now < _noticeUntil) return;
+
+                _notice = null;
+                _noticeUntil = -1;
+
+                // Straight back to the cycle rather than after another full interval, so the
+                // line does not sit empty on whatever the notice interrupted.
+                _nextCard = 0;
+            }
+
+            if (_cards == null || _cards.Count == 0) return;
             if (now < _nextCard) return;
 
             _nextCard = now + Mathf.Max(3f, DeployScreenPlugin.StagingIntelSeconds.Value);
@@ -3301,12 +3323,47 @@ namespace DeployScreen.Client
                 // line reads as a label and a value rather than as a sentence. Rich text is
                 // switched on for this field when the layout takes it; TMP prints the tags
                 // literally otherwise, which is why it is not assumed here.
-                var line = string.IsNullOrEmpty(card.Header)
+                Write(string.IsNullOrEmpty(card.Header)
                     ? card.Body
-                    : "<color=#C8A45C>" + card.Header + "</color>   " + card.Body;
-
-                _subCaptionText.SetValue(_subCaption, line ?? string.Empty, null);
+                    : "<color=#C8A45C>" + card.Header + "</color>   " + card.Body);
             }
+            catch (Exception error)
+            {
+                WarnOnce(error);
+                _subCaptionText = null;
+            }
+        }
+
+        private string _notice;
+        private double _noticeUntil = -1;
+
+        /// <summary>
+        /// One line, in the row the intel cycles through, for something the player needs to know
+        /// now rather than eventually.
+        ///
+        /// Built for the end of the abort window. The game decides how long backing out is offered
+        /// -- `MatchmakerPlayersController.MatchingAbortAvailability`, bound straight to
+        /// `ChangeCancelButtonVisibility` -- and when it stops it simply removes the button, on one
+        /// run 49 seconds before the raid actually started. Twice now that has been reported as
+        /// Back not working, because from the player's side an empty corner and a dead button look
+        /// identical.
+        ///
+        /// It borrows the row the same way the intel does rather than building anything: a
+        /// TextMeshPro object of its own would be a new thing to place, size and put back on a
+        /// screen this mod is already rearranging.
+        /// </summary>
+        internal void Notice(string text)
+        {
+            if (string.IsNullOrEmpty(text) || _subCaptionText == null) return;
+
+            _notice = text;
+            _noticeUntil = -1;
+        }
+
+        /// <summary>The one place the borrowed row is written, so the notice and the intel agree.</summary>
+        private void Write(string line)
+        {
+            try { _subCaptionText.SetValue(_subCaption, line ?? string.Empty, null); }
             catch (Exception error)
             {
                 WarnOnce(error);
@@ -3389,6 +3446,8 @@ namespace DeployScreen.Client
         internal void Restore()
         {
             _built = false;
+            _notice = null;
+            _noticeUntil = -1;
             _planeFades.Clear();
             _fade = 1f;
 

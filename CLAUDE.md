@@ -2078,6 +2078,18 @@ and there is no button to land on when it is not. Forcing the button to stay wou
 `MatchingAbort` after the matchmaker has said it is unavailable, which is a different and much
 worse kind of bug.
 
+So the fix is a sentence, not a behaviour. From the player's side an empty corner and a dead button
+look identical, which is why this was reported as broken twice. `StagingArea.Notice` puts one line
+in the row the intel cycles through -- **NO TURNING BACK -- the raid can no longer be cancelled** --
+for six seconds, the moment the game withdraws availability. It borrows the row the same way the
+intel does rather than building a TextMeshPro object of its own, which would be a new thing to
+place, size and put back on a screen this mod already rearranges.
+
+Guarded on both sides. The screen sets availability false on the way *up*, before there was ever
+anything to lose, so the notice waits until it has been offered at least once; and our own abort
+sets it false on the way *out*, where a notice would be announcing a deadline about a button the
+player just pressed. **Say when cancelling stops being offered**.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested

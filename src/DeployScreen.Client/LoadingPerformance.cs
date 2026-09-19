@@ -41,6 +41,7 @@ namespace DeployScreen.Client
         private bool _holding;
         private bool _fading;
         private bool _closing;
+        private bool _cancelWasOffered;
         private double _fadeAt;
         private double _nextFadeSample;
         private int _fadeSamples;
@@ -216,6 +217,25 @@ namespace DeployScreen.Client
             if (_instance == null || !ReferenceEquals(_instance._screen, __instance)) return;
 
             _instance.Mark("cancel button visibility=" + __0);
+
+            if (__0)
+            {
+                _instance._cancelWasOffered = true;
+                return;
+            }
+
+            // Only the game taking it away, and only once it had been offered: the screen sets it
+            // false on the way up, before there was ever anything to lose, and an abort of our own
+            // sets it false on the way out, where a notice would be telling the player about a
+            // button they just pressed.
+            if (!_instance._cancelWasOffered || _instance._fading || _instance._closing) return;
+
+            _instance._cancelWasOffered = false;
+
+            if (!DeployScreenPlugin.StagingSayCancelClosed.Value) return;
+
+            _instance._staging?.Notice(
+                "<color=#C8A45C>NO TURNING BACK</color>   the raid can no longer be cancelled");
         }
 
         /// <summary>
@@ -501,6 +521,7 @@ namespace DeployScreen.Client
             _holding = false;
             _fading = false;
             _closing = false;
+            _cancelWasOffered = false;
             _fadeAt = 0;
             _nextFadeSample = 0;
             _fadeSamples = 0;
