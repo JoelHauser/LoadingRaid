@@ -3397,8 +3397,19 @@ namespace DeployScreen.Client
         private bool _dimming;
         private string _released;
 
-        /// <summary>How far down the picture goes while a cancel is waited out. Not to black.</summary>
-        private const float Dimmed = 0.25f;
+        /// <summary>
+        /// How far down the picture goes while a cancel is waited out.
+        ///
+        /// Was a quarter, and a quarter was wrong for a reason the timings make obvious: this is
+        /// not a flash, it is held for the whole wait, and that wait measured eleven seconds from
+        /// click to menu. Eleven seconds at a quarter brightness is not an acknowledgement, it is
+        /// a dark screen -- which is very close to what the stock deploy screen looks like, and
+        /// was reported as having defaulted back to it.
+        ///
+        /// Two thirds instead. Enough to register as a change at the moment of the press, not
+        /// enough to throw away the picture that is meant to be covering the wait.
+        /// </summary>
+        private const float Dimmed = 0.66f;
 
         /// <summary>
         /// Answers the press at once, while the game takes its time about the rest.

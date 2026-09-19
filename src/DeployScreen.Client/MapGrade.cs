@@ -104,6 +104,9 @@ namespace DeployScreen.Client
             internal bool Known;
             internal int HourOfDay;
             internal bool HourFromClock;
+
+            /// <summary>Where the hour came from -- the map, the map shifted for night, or the clock.</summary>
+            internal string HourSource;
             internal int Rain;        // ERainType     NoRain .. Shower
             internal int Fog;         // EFogType      NoFog  .. Continuous
             internal int Cloudiness;  // ECloudiness   Clear  .. Thundercloud
@@ -226,8 +229,27 @@ namespace DeployScreen.Client
                 // whole screen for midnight whatever the hour really is, so fall back to the
                 // clock -- what 1.5.0 did -- and say in the log which of the two it was.
                 var hour = Convert.ToInt32(GameTypes.Weather_HourOfDay.GetValue(settings));
-                weather.HourFromClock = hour < 0 || hour > 23;
-                weather.HourOfDay = weather.HourFromClock ? DateTime.Now.Hour : hour;
+
+                if (hour >= 0 && hour <= 23)
+                {
+                    weather.HourOfDay = hour;
+                }
+                else
+                {
+                    // -1 is the ordinary case, not the exception. HourOfDay is only filled in for
+                    // a custom raid, so every normal deploy arrived here and fell back to the wall
+                    // clock -- which is why the screen was lit for whatever time it happened to be
+                    // in the room rather than for the raid.
+                    //
+                    // The raid's real hour is the map's own clock, shifted if the player picked
+                    // the other half of the day. Location.UnixDateTime is the in-game time for
+                    // that map (Customs sits at 14:41), and RaidSettings.SelectedDateTime is the
+                    // CURR/PAST toggle from the location screen, which is EFT's twelve-hour day
+                    // and night. Read together they are what the raid will actually look like.
+                    weather.HourOfDay = MapHour(raidSettings, out weather.HourSource);
+                }
+
+                weather.HourFromClock = weather.HourSource == "the clock";
                 weather.Rain = Convert.ToInt32(GameTypes.Weather_RainType.GetValue(settings));
                 weather.Fog = Convert.ToInt32(GameTypes.Weather_FogType.GetValue(settings));
 
@@ -243,13 +265,61 @@ namespace DeployScreen.Client
             }
         }
 
+        /// <summary>
+        /// The hour this raid will actually be at, from the map and the day/night toggle.
+        /// Falls back to the wall clock only when neither can be read.
+        /// </summary>
+        private static int MapHour(object raidSettings, out string source)
+        {
+            source = "the clock";
+
+            try
+            {
+                if (GameTypes.RaidSettings_SelectedLocation == null || GameTypes.Location_UnixDateTime == null)
+                    return DateTime.Now.Hour;
+
+                var location = GameTypes.RaidSettings_SelectedLocation.GetValue(raidSettings, null);
+                if (location == null) return DateTime.Now.Hour;
+
+                var unix = Convert.ToInt64(GameTypes.Location_UnixDateTime.GetValue(location));
+                if (unix <= 0) return DateTime.Now.Hour;
+
+                var hour = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+                    .AddSeconds(unix).Hour;
+
+                source = "the map";
+
+                // PAST is 1, and it is the game's night: the same map twelve hours round. Read as
+                // an int rather than against the enum type, because one value is all that is
+                // wanted and a missing type should not cost the map's hour as well.
+                if (GameTypes.RaidSettings_SelectedDateTime != null)
+                {
+                    var picked = Convert.ToInt32(
+                        GameTypes.RaidSettings_SelectedDateTime.GetValue(raidSettings));
+
+                    if (picked == 1)
+                    {
+                        hour = (hour + 12) % 24;
+                        source = "the map, shifted for night";
+                    }
+                }
+
+                return hour;
+            }
+            catch
+            {
+                source = "the clock";
+                return DateTime.Now.Hour;
+            }
+        }
+
         /// <summary>A short description of the raid's conditions, for the log and the report.</summary>
         internal static string Describe(Weather weather)
         {
             if (!weather.Known) return "conditions unknown";
 
             var parts = weather.HourOfDay.ToString("00") + ":00"
-                + (weather.HourFromClock ? " (from the clock; the raid has no time set)" : "");
+                + (string.IsNullOrEmpty(weather.HourSource) ? "" : " (from " + weather.HourSource + ")");
             if (weather.Fog > 0) parts += ", fog " + weather.Fog;
             if (weather.Rain > 0) parts += ", rain " + weather.Rain;
             if (weather.Cloudiness > 0) parts += ", cloud " + weather.Cloudiness;

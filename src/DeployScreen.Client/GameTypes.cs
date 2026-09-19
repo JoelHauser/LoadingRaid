@@ -218,6 +218,15 @@ namespace DeployScreen.Client
         internal static Type RaidSettings;
         internal static PropertyInfo RaidSettings_SelectedLocation;
 
+        /// <summary>
+        /// RaidSettings.SelectedDateTime, a JsonType.EDateTime of CURR=0 or PAST=1, and
+        /// Location.UnixDateTime, the map's own in-game clock. Together they are the raid's real
+        /// hour: TimeAndWeatherSettings.HourOfDay is only filled in for a custom raid and reads -1
+        /// for every ordinary one, which is why the screen has been lit by the wall clock.
+        /// </summary>
+        internal static FieldInfo RaidSettings_SelectedDateTime;
+        internal static FieldInfo Location_UnixDateTime;
+
         internal static MethodInfo Loading_Show, Loading_Status, Loading_Abort, World_Started;
 
         /// <summary>
@@ -273,6 +282,8 @@ namespace DeployScreen.Client
         {
             var screen = AccessTools.TypeByName("EFT.UI.Matchmaker.MatchmakerTimeHasCome");
             var settings = AccessTools.TypeByName("EFT.RaidSettings");
+            if (settings != null)
+                RaidSettings_SelectedDateTime = AccessTools.Field(settings, "SelectedDateTime");
             Loading_Show = settings == null ? null : FindShowTaking(screen, settings);
             if (screen != null)
             {
@@ -372,6 +383,7 @@ namespace DeployScreen.Client
         private static bool ResolveIntel()
         {
             Location_MongoId = AccessTools.Field(Location, "_Id");
+            Location_UnixDateTime = AccessTools.Field(Location, "UnixDateTime");
             Location_Name = AccessTools.Field(Location, "Name");
             Location_EscapeTimeLimit = AccessTools.Field(Location, "EscapeTimeLimit");
             Location_AveragePlayTime = AccessTools.Field(Location, "AveragePlayTime");

@@ -575,7 +575,7 @@ namespace DeployScreen.Client
             StagingLingerSeconds = Config.Bind(
                 "Staging area",
                 "Seconds to linger after cancelling",
-                2.5f,
+                1.5f,
                 new ConfigDescription(
                     "After the deploy screen closes the game spends a while putting the menu back "
                     + "together -- the raid torn down, quests re-requested, tabs re-added. The art "
