@@ -406,12 +406,19 @@ namespace DeployScreen.Client
             // than run, and Update settles it when the countdown is done -- or when the raid
             // starts, or when the thirty-second cap runs out, both of which reach Finish, which
             // restores in a finally. Nothing can outlive the screen by holding here.
-            // Not while the abort is being seen out. The trace from the run this was written
-            // from has loading-screen-disabled and "holding the art for the countdown" on the same
-            // millisecond, on a raid that was cancelled: the screen closing put the countdown hold
-            // in, to wait for a countdown that cancelling means will never arrive. Harmless only
-            // because HoldFade reached its own exit half a second later.
-            if (!_instance._fading && !_instance._closing && _instance.HoldForCountdown())
+            // Nothing else here while an abort is being seen out, and "nothing else" has to mean
+            // the restore as well as the countdown. Guarding only the countdown was a bug of
+            // exactly the kind this method invites: skipping the hold dropped straight through to
+            // Restore, which tore the art down on the spot -- the hard cut the dissolve exists to
+            // remove -- and cleared _fading on the way, so HoldFade never ran again and the raid
+            // sat until the thirty-second cap. The trace reads: click at 22.161,
+            // loading-screen-disabled at 23.282, and then nothing at all.
+            //
+            // HoldFade owns this path start to finish. It is watching activeInHierarchy, which is
+            // the same close this method is reacting to, and it ends at BeginClose and then Finish.
+            if (_instance._fading || _instance._closing) return;
+
+            if (_instance.HoldForCountdown())
             {
                 _instance._holding = true;
                 _instance.Mark("holding the art for the countdown");

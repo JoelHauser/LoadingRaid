@@ -3293,10 +3293,18 @@ namespace DeployScreen.Client
                 if (_noticeUntil < 0)
                 {
                     _noticeUntil = now + 6.0;
-                    Write(_notice);
+                    DeployScreenPlugin.Log.LogInfo("[DeployScreen] notice: " + _notice);
                 }
 
-                if (now < _noticeUntil) return;
+                // Every frame, not once. This row belongs to the game and the game writes to it;
+                // the intel only looks stable because it is rewritten every few seconds, which
+                // would hide an overwrite completely. A line that is meant to be read has to hold
+                // its own against that, and a TMP set on a loading screen costs nothing.
+                if (now < _noticeUntil)
+                {
+                    Write(_notice);
+                    return;
+                }
 
                 _notice = null;
                 _noticeUntil = -1;
