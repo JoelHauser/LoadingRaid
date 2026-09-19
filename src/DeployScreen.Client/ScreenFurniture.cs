@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
@@ -116,24 +116,6 @@ namespace DeployScreen.Client
                 AnchorMin = anchor,
                 AnchorMax = anchor,
                 Pivot = pivot,
-                Position = position,
-            });
-        }
-
-        /// <summary>Moves without re-anchoring, for anything whose anchors are doing work.</summary>
-        protected void MoveTo(RectTransform rect, Vector2 position)
-        {
-            if (rect == null) return;
-
-            Remember(rect);
-            rect.anchoredPosition = position;
-
-            _wanted.Add(new Placed
-            {
-                Rect = rect,
-                AnchorMin = rect.anchorMin,
-                AnchorMax = rect.anchorMax,
-                Pivot = rect.pivot,
                 Position = position,
             });
         }

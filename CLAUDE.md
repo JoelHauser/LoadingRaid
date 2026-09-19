@@ -1448,728 +1448,139 @@ The probe now skips anything under `MenuPlayer` and prints a count instead, dump
 flags, and can dump every field of a named component. 47 KB of gun parts per session was the price
 of the first version.
 
-### The probe filter that would have hidden the answer
+### The dark shape behind the PMC -- answered: a command buffer
 
-`ReportPreviewDarkness` first skipped renderers by path -- anything under `MenuPlayer` -- to avoid
-printing 174 gun parts. That is wrong in the one way that matters: **a shadow blob hung off the
-player's rig is under MenuPlayer too**, so the filter would have hidden the very thing the probe
-exists to find, and the conclusion drawn from it ("no catcher, nothing to receive anything") was
-drawn from a list that could not have contained one.
-
-It now skips by **shader family** instead. Every skin, rig and weapon part it has printed is drawn
-with the game's `p0/` shader; a blob, a catcher, a decal or a projector quad is not. Anything naming
-itself a shadow is never skipped whatever it is drawn with. It also lists `Projector` components
-(how a blob shadow is usually done, and not a `Renderer`, so nothing would have found one) and every
-`Light` inside the preview with its shadow setting -- `TakeCharacterRig` clears those, so anything
-still casting is one it missed.
-
-### THE DARK SHAPE BEHIND THE PMC -- STILL OPEN, START HERE
-
-A soft dark band that hugs the character's right side, top to bottom, drawn over the backdrop. It
-turns when he turns. It is the thing that makes the composite read as a sticker, and it is the one
-thing left unfinished.
-
-**It is inside the preview render texture.** That is settled, not guessed. The alpha map -- the
-render downsampled and printed as text by `ReportPreviewEmptiness` -- shows it plainly:
+A soft dark band hugging the character's right side, top to bottom, drawn over the backdrop. Five
+sessions. The answer is one line, and it was in the camera the whole time:
 
 ```
-preview render, alpha map (5420x2464; # solid, * mostly, : half, . faint, space empty):
-|                               .:::..                                         |
-|                              ###:::.                                         |
-|                             ####::::.                                        |
-|                            ########::::.                                     |
-|                         #############:::.                                    |
-|                            #######::::.                                      |
-preview render: 164 solid cell(s), 111 part-transparent
+command buffer on 'Camera_timehascome0' at BeforeImageEffectsOpaque: 'grab alpha and blur' -- removed
 ```
 
-164 solid cells are the character. The 111 part-transparent ones are a band four or five cells wide
-following his silhouette down the whole height, offset right. `MaskAndShadow` on that camera holds
-`ShadowShift=(-0.03, -0.01)`, `ShadowBlurIterations=4`, `ShadowBlurStrength=4`, `ShadowStrength=0.5`
--- a shift that samples left puts a shadow right, and four blur iterations make it that soft. The
-numbers match the picture. What does not match is that the component reporting them is **disabled**,
-at 4s and again at 12s, and has been every time it has been looked at.
+Grab the silhouette out of the alpha channel, blur it. That is the mask. `TakeCommandBuffers`
+removes it and puts it back on teardown, behind **Remove the cast shadow**.
 
-#### Ruled out, each by a log line rather than an argument
+#### Why nothing tried could touch it
 
-| suspect | how it was killed |
-| --- | --- |
-| `MaskAndShadow` cast shadow | component `enabled=false` at 4s and 12s; `SimplifyPreview` logs when it disables one and never did, so the game ships it off |
-| Lights casting | every light whose culling mask includes WeaponPreview reports `shadows=None`, scene-wide |
-| Preview ambient occlusion | switched off by this mod, logged, shape unchanged |
-| Bloom | `useBloom=False` already; the guess that it was bloom also wrongly switched off `useBloomStability` |
-| The whole preview post stack | one run with `Antialiasing`, `PrismEffects` and `AmbientOcclusion` all off -- shape unchanged. **This is the important one: it is not post-processing** |
-| The chroma key | real, fixed (`TakePreviewKey`), shape unchanged |
-| `BootShadow` | switched off and confirmed `on=True/False` in the same log, shape unchanged |
-| `MenuPoser.BottomShadow` | the GameObject that field points at is inactive on this build |
-| The composite | `RawImage` draws with `Default UI Material` on shader `UI/Default`; `CameraImage` holds nothing but texture format and depth |
-| The backdrop scene | scene-wide sweep of every renderer the backdrop camera can see in front of the art: one dust particle system |
-| Menu camera ambient occlusion | switched off, confirmed `AmbientOcclusion=False` at both samples, shape unchanged |
-
-#### Ruled out since: the geometry of the question
-
-The player asked the obvious thing -- is a light pointed at the PMC casting his shadow onto the
-backdrop? It cannot be, and the reason is worth keeping because it constrains everything else.
-
-**The backdrop and the character are two separate renders.** The backdrop is a real 3D scene
-(`EnvironmentUIRoot`) drawn by its own camera straight to the canvas. The PMC is drawn by a second
-camera, on the WeaponPreview layer, into a render texture, which a `RawImage` then lays over the
-backdrop. Nothing in the preview's render exists in the backdrop's render, so no light on the
-character can put a shadow on that treeline.
-
-`ReportPreviewEmptiness` had already settled it empirically -- the band is *inside* the preview
-render texture. If it were on the backdrop, that texture would be transparent there. It only reads
-as being on the backdrop because it is part-transparent: what you see is the trees darkened
-*through* it.
-
-So the receiver, whatever it is, is inside the preview render. That is not a narrowing of the hunt,
-it is the whole shape of it.
-
-#### What the picture says about the mechanism
-
-The band is a blurred silhouette of the man **and his rifle**, offset right and slightly up, with no
-ground contact -- it floats. That is a drop shadow, and it is `MaskAndShadow`'s own numbers exactly:
-`ShadowShift=(-0.03,-0.01)` samples left and down, which puts the shadow right and up;
-`ShadowBlurIterations=4` gives that softness; `ShadowStrength=0.5` gives the half alpha.
-
-And `TakeCastShadow` zeroes every one of those fields on that instance, logs that it did, and the
-band survives. **A mechanism that matches, on an instance that provably is not it, means there is
-another instance** -- or another camera doing the same job. `TakeCastShadow` only ever walks cameras
-under `PlayerModelView`, so a second one anywhere else has never been in scope.
-
-#### The raid of 2026-09-18 18:02Z: all three sweeps came back empty
-
-| sweep | answer |
-| --- | --- |
-| `ReportPreviewLayer` | **0** renderers on mask `0x00080000` from outside `PlayerModelView` |
-| `ReportRenderTextureAuthors` | **0** other cameras write into the 5420x2464 ARGB32 target |
-| `ReportShadowComponents` | 8 `MaskAndShadow` scene-wide; 7 on inactive objects, 1 inside the preview and already zeroed by `TakeCastShadow` |
-
-The 7 outside all carry the stock `ShadowShift=(-0.05,-0.01)` -- 5% of width, close to the offset
-the band sits at, which is why the mechanism kept looking right -- and every one of them hangs off
-a `PlayerModelView` belonging to a screen that is not up: the login side-selection panels, the
-reconnection screen, the accept screen, the side-selection PMC and Scav. All report
-`enabled=False` and `activeInHierarchy=False`. They draw nothing. **`MaskAndShadow` is finished as
-a suspect**, and so is external geometry, and so is a second camera.
-
-What is left is that the band is drawn into that texture by the one camera that owns it, out of
-the character's own 69 renderers. Nothing else contributes a pixel to it.
-
-#### The correction that matters: post-processing was never ruled out
-
-The table above says the whole preview post stack was switched off and the shape was unchanged, and
-calls that the important one. It was wrong, and `Simplified()` is where it went wrong. That method
-is the list deciding what gets switched off, and it has only ever held `AmbientOcclusion`,
-`MaskAndShadow`, `PrismEffects`, `Bloom`, `DesaturateEffect`, `ChromaticAberration`,
-`CameraMotionBlur` and `Antialiasing`. Here is what is actually on the preview camera, from this
-raid:
-
-```
-Undithering=True, LightSwitcherOverkill=True, Antialiasing=True, MaskAndShadow=False,
-PrismEffects=True, AmbientOcclusion=False, StreamingController=True
-```
-
-`Undithering` and `LightSwitcherOverkill` are both enabled, are on nobody's list, and have never
-once been switched off. `Undithering` reports `useTriangleBlit=True` -- a tent-filter blit, which is
-a neighbour-sampling pass, which is exactly the kind of thing that drags alpha sideways out of a
-silhouette. Ruling out "post-processing" while two of its passes were still running is the same
-mistake as the three subtree sweeps, one level up.
-
-Also worth recording so the numbers are not misread later: this raid ran with **Turn off the
-preview post-processing = false**, so `Antialiasing` and `PrismEffects` were both on for it. Its
-alpha map -- 217 solid, 143 part-transparent -- is the stock stack, not a simplified one.
-
-#### `ReportPreviewBisect`, and why measuring beats looking
-
-Every verdict in this hunt has been a person looking at a screenshot and judging the shape
-unchanged. That is how `MaskAndShadow` survived three rounds, and how post-processing was ruled out
-without being tested. The alpha map already produces a number; the bisect uses it instead of an
-eye.
-
-For each enabled `Behaviour` on the preview camera: disable it, `camera.Render()` by hand, count the
-part-transparent cells, put it back. Then all of them off at once. One raid, one table:
-
-```
-bisect, everything on: 217 solid, 143 part-transparent
-bisect, without Undithering: ... (-N)
-bisect, without LightSwitcherOverkill: ...
-bisect, without Antialiasing: ...
-bisect, without PrismEffects: ...
-bisect, without StreamingController: ...
-bisect, without any effect: ...
-```
-
-- **One line collapses the count** -- that effect draws the band, and the fix is to add its name to
-  `Simplified()`, which already records and restores everything it switches off.
-- **"without any effect" stays near 143** -- no effect is involved, and the band is the character's
-  own 69 renderers writing partial alpha into an ARGB32 target. The hunt moves to their materials,
-  which is the one branch this probe cannot close by itself.
-
-`camera.Render()` is a full render into the camera's own target with image effects included, so
-each variant is measured the way the screen would have shown it. Every state goes back in a
-`finally` and the camera is rendered once more afterwards, because this runs on a live screen with
-the player looking at it.
-
-#### The bisect ran, twice in one session, and it is none of them
-
-`WatchForPreview` samples at 4s and 12s, so one raid produces two tables. Both agree:
-
-```
-bisect, everything on:             208 solid, 135 part-transparent
-bisect, without Undithering:       208 solid, 135 part-transparent  (0)
-bisect, without LightSwitcherOverkill: 208 solid, 135 part-transparent  (0)
-bisect, without Antialiasing:      208 solid, 135 part-transparent  (0)
-bisect, without PrismEffects:      208 solid, 135 part-transparent  (0)
-bisect, without StreamingController: 208 solid, 135 part-transparent (0)
-bisect, without any effect:        208 solid, 135 part-transparent  (0)
-```
-
-The second sample, on a different frame with a different weapon loaded, reads 188/126 and moves by
-one cell when `Antialiasing` goes -- which is the proof the measurement is live rather than stuck,
-and also the size of the largest effect any of them has.
-
-**So post-processing really is ruled out now, and this time it was tested.** Every effect on the
-camera, individually and all together, leaves the band exactly where it is. Combined with the three
-sweeps that came back 0, the band is in the **geometry pass**: it is drawn by the character's own
-renderers into the camera's own target, and nothing else is involved.
-
-#### `ReportRendererBisect`, grouped by shader
-
-The same technique one level down. If a single renderer were responsible, hiding it would show as a
-large drop -- but a band that follows the entire silhouette is far more likely to be how a whole
-family of materials writes alpha into an ARGB32 target, and in that case each renderer on its own
-moves the count by a cell or two and nothing stands out of the noise. So the renderers are grouped
-by shader and a whole family goes dark at once.
-
-The last line is the one to read first:
-
-```
-renderers, without the character at all: N solid, M part-transparent
-```
-
-With every character renderer off, that target should be empty. **Anything still part-transparent
-there is drawn by something that is not the character** -- and would mean the three sweeps missed
-it, which is worth knowing before another round is spent on materials.
-
-#### WTT Menu Overhaul: ruled out for the band, not implicated in Back
-
-`MoxoPixel-MenuOverhaul 1.3.0` (sp-mod.com/mod/1775, WTT - Menu Overhaul, MoxoPixel and
-GrooveypenguinX; GUID `com.moxopixel.menuoverhaul`). It is in every log of this hunt, and it warns
-constantly while the deploy screen is up:
-
-```
-[Layout] EnvironmentUISceneFactory GameObject not found in Environment UI.
-[Layout] UpdateLayoutElements - Could not find environment objects.
-[Layout] DisableCameraMovement - Essential EnvironmentObjects not found.
-```
-
-Those are real and they are ours: the staging area reports `scene-objects-hidden=2`, and
-MenuOverhaul is looking for the menu environment while we have it hidden. Worth knowing, harmless
-so far, and it would explain any complaint that the main menu looks wrong after a cancelled raid.
-
-Scanned for what it touches -- the assembly has no reference to `TimeHasCome`, `BackButton`,
-`Abort`, `WeaponPreview` or `MaskAndShadow`. What it does have is
-`AddPlayerModel - Failed to create clonedPlayerModelView`: it **clones a PlayerModelView onto the
-main menu screen**, which is the one thing that could plausibly have put a second character render
-in play.
-
-It did not. `ReportRenderTextureAuthors` found no other camera on our target, `ReportPreviewLayer`
-found nothing on the layer from outside, and the scene-wide `MaskAndShadow` sweep turned up eight,
-all on stock paths, none belonging to a clone. Its player model draws into its own texture on its
-own screen. **MenuOverhaul is not what darkens the PMC**, and it does not patch the back button
-either.
-
-#### Back: two different failures, and rearranging is not the cause
-
-| run | Rearrange the screen | what happened |
-| --- | --- | --- |
-| 18:02Z | `true` | `cancel-requested` fired, no `loading-screen-disabled`, screen stayed up showing the stock deploy screen |
-| 18:10Z | `false` | **nothing fired at all** -- no abort, no report, and the raid went ahead |
-
-That kills the standing theory. `ScreenLayout` was the prime suspect because it re-anchors
-`Back Button Panel` and hides four objects the game may expect -- but with it switched off the
-button gets *worse*, not better. Rearranging is not what breaks the abort.
-
-Note also from the layout dump, in both runs: `Back Button Panel @0,40 0x0`, with its child
-`BackButton @0,0 200x42`. The panel measures **zero by zero** while the button inside it is a normal
-size, and the panel carries a HorizontalLayoutGroup, a ContentSizeFitter and a LayoutElement. That
-is stock state, unchanged by anything this mod does, but it is the kind of thing that decides
-whether a click lands.
-
-So `ReportBackButton`, which asks the button instead of the screen: it adds a listener to `onClick`
-that logs the instant the button is pressed, and prints the rect it occupies in screen pixels,
-whether it is active and interactable, and **every CanvasGroup above it** -- one with
-`blocksRaycasts` off, or `alpha` at zero, anywhere up the chain, swallows the click silently and
-leaves the button looking perfectly normal. Nothing has looked for that yet, and it is the classic
-cause of this exact symptom.
-
-- **`back: the button fired` appears, no abort follows** -- the click lands and the game's own
-  handler is what does nothing.
-- **It never appears** -- the click is not reaching the button, and the rect and CanvasGroup lines
-  printed beside it say why.
-
-#### The renderer bisect ran: the target holds the character and nothing else
-
-```
-renderers, all 42 on:                                  208 solid, 135 part-transparent
-renderers, without 8x p0/Reflective/Bumped Specular SMap_Decal:  35 solid,  94  (-41)
-renderers, without 23x p0/Reflective/Bumped Specular SMap:      198 solid, 119  (-16)
-renderers, without 7x p0/Reflective/Specular:                   208 solid, 135   (0)
-renderers, without 1x CW FX/BackLens / OpticSight / OpticLens:  208 solid, 135   (0)
-renderers, without 1x none:                                     208 solid, 135   (0)
-renderers, without the character at all:                          0 solid,   0
-```
-
-The last line is the important one. **With the character gone the target is completely empty** --
-0 and 0, on both samples. So nothing whatsoever is drawn into that render texture except the
-character, which closes the last door the six probes left open.
-
-And no shader family owns the band. Removing the eight decal renderers takes 173 of the 208 solid
-cells but only 41 of the 135 part-transparent ones, so 94 part cells survive on 35 solid: the
-part-transparent region does not scale with how much character is present, and it is not one
-family's doing. Hiding things one group at a time cannot separate them any further, because each
-group occludes the others.
-
-#### The measurement itself has never been checked
-
-Which is the thing to fix before spending another raid. Every conclusion in this hunt rests on the
-alpha map, and the alpha map is a **78x30 downscale of a 5420x2464 render** made with
-`Graphics.Blit`. That is a 69x minification, and Blit samples with the source texture's own
-`filterMode`. If the target carries mipmaps, or is filtered trilinear, then "a soft band four or
-five cells wide" may be the downscale smearing the silhouette rather than anything in the render.
-
-Four sessions have been spent on a shape only ever seen through that lens, and nothing has checked
-whether the lens is flat. The asymmetry is the tell that it might not be: the map shows four cells
-of falloff on the right and one on the left, and a symmetric filter cannot produce that -- but
-neither can it be dismissed without looking.
-
-`ReportAlphaProfile` reads **one row of the target at native width**, straight off the card. It
-takes the row the coarse map says is widest, finds the outermost solid pixel on it, and prints the
-alpha at fixed distances outward, both sides, along with the target's `useMipMap`, `filterMode` and
-`antiAliasing`.
-
-```
-preview target: 5420x2464 ARGB32 mips=... filter=... aa=...
-alpha profile, row N of 2464: solid from x=... to x=...
-alpha right of the silhouette, 0-255: +1=..., +2=..., +4=... +512=...
-alpha left of the silhouette, 0-255: -1=..., -2=..., -4=... -512=...
-```
-
-- **Drops 255 to 0 within a pixel or two, both sides** -- there is no halo, the band is the
-  downscale, and four sessions have been chasing an artefact of the probe. The dark shape on screen
-  is then something else entirely, and the dust in front of the backdrop is the only candidate left
-  standing (see below).
-- **Holds a middling value for hundreds of pixels** -- the halo is real, it is about 280 pixels wide
-  in this target, and it is the character's own materials writing alpha, which is where the hunt
-  goes next.
-
-#### The dust, which every backdrop sweep found and dismissed
-
-`ReportBackdrop` has reported the same single line every run:
-
-```
-in front of the art at 7.80u: 1 renderer(s) the backdrop camera can see
-  3.13u 'Environment UI/Common/!dust' size=(10.85, 3.33, 12.02) shader=Custom/LocalDustParticlesLighted
-```
-
-A lit particle volume 10.85 by 3.33 by 12.02 units across, sitting at about 3.1u with the backdrop
-art at 7.8u -- so it is between the camera and the picture, and it fills a large part of the frame.
-Its distance changes between samples (3.13u, then 3.31u) because `SceneDepth` is drifting the
-camera through it, which would read as the shape moving.
-
-Three sweeps have found it and moved on, because the question each time was "is there geometry
-casting a shadow" and a particle system is not that. But the shape in the player's screenshot is a
-soft grey mass with no hard edge, over a bright sky, which is what a lit dust volume looks like.
-If the alpha profile comes back flat, this is the first thing to test.
-
-#### The back-button probe attached nothing, and why
-
-```
-back: 'Menu UI/UI/Matchmaker Time Has Come/Back Button Panel/BackButton' active=True
-      corners (2764.27, 115.20, 0.00) to (3030.93, 189.33, 0.00) on a 3440x1440 screen
-back: CanvasGroup on 'Menu UI/UI/Matchmaker Time Has Come' alpha=1.00 interactable=True blocksRaycasts=True
-```
-
-Two real answers in there: the button **is** on screen, bottom right, at a sane size, and the only
-CanvasGroup above it is fully permissive -- so nothing is swallowing the click that way.
-
-But no `listening on` line and no component lines, because the loop skipped any component without
-an `interactable` property, on the assumption that a button is a Unity `Button`. This one is not.
-From the layout dump it is `DefaultUIButton | DefaultUIButtonAnimation | TweenAnimatedButton |
-HorizontalLayoutGroup | ContentSizeFitter | LayoutElement`, and none of those matched, so nothing
-was hooked and the raid answered nothing about the press.
-
-Fixed twice over: every component is printed whatever it is, and `ListenForPress` now matches on
-**`UnityEventBase`**, the engine's own base class in CoreModule, across public and private
-properties and fields. Every click event in every UI library derives from it whatever it is named,
-so this finds the game's button where looking for `onClick` did not.
-
-#### The profile ran: the halo is real, and it is a flat half
-
-```
-preview target: 5420x2464 ARGB32 mips=False filter=Bilinear aa=1
-alpha profile, row 616 of 2464: solid from x=1837 to x=2843
-alpha right of the silhouette, 0-255: +1=164, +2=128, +4=127, +8=127, +16=127,
-                                      +32=127, +64=127, +128=127, +256=35, +512=0
-alpha left  of the silhouette, 0-255: -1=73, -2=1, -4=1, -8=1, -16=1, -32=0, ...
-```
-
-**`mips=False`.** The downscale was not lying and the measurement was sound -- the worry that four
-sessions had been spent on an artefact of the probe was unfounded, and it was worth one probe to
-retire it.
-
-The band is real, and the number that matters is **127**. Alpha sits at exactly half for more than a
-hundred pixels to the right of the silhouette, falls to 35 by +256 and 0 by +512, while the left
-side is down to 1 within two pixels. Perfectly one-sided.
-
-**A flat 127 is not a blur.** A blur gives a gradient; this is a plateau. Something fills a region
-with a constant half alpha on one side of the character, and half alpha in black over the backdrop
-is a 50% darkening, which is exactly the complaint. 0.5 is also, for the record, `ShadowStrength` --
-though that component is disabled, zeroed, and cleared by the effect bisect, so the number is a
-coincidence worth noting and not a lead.
-
-`ReportPlateauOwner` measures the plateau itself -- pixels on the widest row holding a middling
-alpha -- and takes the renderers **one at a time**, all 42 of them. The group bisect could not name
-it because it counted cells on the coarse map, where a plateau and an ordinary soft edge both read
-as `:` and the signal sat inside the character's own outline. `ReportAlphaProfile` also now prints
-the plateau's colour, because black at half alpha and white at half alpha do opposite things to the
-picture underneath.
-
-#### Back works. It always did, once it is there to click
-
-```
-back: '...Back Button Panel/BackButton' active=False corners (2764.27, 115.20) to (3030.93, 171.73)
-back: component DefaultUIButton enabled=True
-back: listening on DefaultUIButton.OnClick
-back: DefaultUIButton.OnMouseOver fired
-loading report (cancel-requested)
-back: DefaultUIButton.OnClick fired
-```
-
-The press lands, the abort fires, and it happened **twice** in that session -- two
-`cancel-requested` reports, two raids cancelled, so the player got back to the menu both times.
-`cancel-requested` is logged before our listener because the Harmony patch on `AbortMatching` runs
-ahead of a listener added afterwards; that ordering is not a bug.
-
-**`active=False` is the find.** At the 4s probe the BackButton GameObject is inactive -- the game
-brings it up later in the screen's life. That is the whole of "I clicked Back and nothing
-happened": there was nothing there yet. It is stock behaviour, not ours. `ScreenLayout` only
-`Place`s `Back Button Panel`; the four things it hides are `CaptionsHolder/MainCaption`, `Logo`,
-`Location Name Panel/Background` and `Loader`, and the back button is not among them.
-
-What is still wrong is narrower than it looked. **`loading-screen-disabled` is still never logged**,
-yet the screen plainly does close -- a second raid was started after the first cancel. So the screen
-closes by a path that never disables the object `LoadingPerformance.OnDisable` is watching, our
-`ScreenClosed` never runs, and the restore happens only through `Finish`'s `finally`. That is what
-puts the stock deploy screen on screen for a moment on the way out, which is what the player
-described as reverting to the default loading screen. The hook is on the wrong object; finding the
-right one is the fix.
-
-#### The plateau named itself: a command buffer, not a component
-
-```
-the plateau at x=2907 is rgba 1,1,1,127
-plateau on row 616: 203 pixel(s) at a middling alpha, across 42 renderer(s)
-plateau, without '.../mod_muzzle/silencer/wpn_amb17_rwap_hud.ogf 03.002': 184 (-19)
-plateau: every renderer whose removal took at least 16 pixels off it is above.
-```
-
-**`rgba 1,1,1,127`.** Black, at an alpha of exactly half. Composited over the backdrop that is a
-50% darkening, which is the complaint in one line.
-
-And **no renderer owns it**. Of 42, only the silencer clears the threshold at all, and it takes 19
-pixels of 203 -- its own share of the right-hand edge, nothing more. Hiding any one part of the
-character removes only that part's contribution.
-
-Put beside everything else measured, that is not a puzzle any more, it is a description:
-
-| measurement | what it says |
-| --- | --- |
-| `rgba 1,1,1,127` | black at half alpha -- and `MaskAndShadow.ShadowStrength` is **0.5** on every stock instance |
-| plateau to ~250px, gone by 512 | `ShadowShift.x` is **-0.05**, and 5% of a 5420-wide target is **271px** |
-| one side only | a shift does that; a blur cannot |
-| no single renderer owns it | the mask is drawn from *all* of them, then offset and blurred as one image |
-| target empty with renderers off | it is drawn from the character, not from anything else |
-| disabling the component changed nothing | **it was never the component doing the drawing** |
-
-A **command buffer is not a component**. `camera.AddCommandBuffer` attaches work to a camera, and
+**A command buffer is not a component.** `camera.AddCommandBuffer` attaches work to a camera, and
 that work keeps running when the component that attached it is disabled, when its fields are
 zeroed, and when every `Behaviour` on the camera is switched off. That is precisely the list of
-things this hunt has tried, and precisely why not one of them moved the band by a pixel. Zeroing
+things this hunt tried, which is why not one of them moved the band by a pixel. Zeroing
 `MaskAndShadow`'s fields never had a chance either: the buffer was built while the values were
 still stock, and a built buffer does not re-read them.
 
-Nothing in this file had ever asked the camera what it was carrying. Five sessions of elimination,
-and the suspect was never in the line-up.
+Everything measured agreed, in hindsight:
 
-#### `TakeCommandBuffers`, which is a fix and not another probe
+| measurement | what it said |
+| --- | --- |
+| plateau `rgba 1,1,1,127` | black at exactly half alpha -- `MaskAndShadow.ShadowStrength` is 0.5 |
+| ran to ~250px, gone by 512 | `ShadowShift.x` is -0.05, and 5% of a 5420-wide target is 271px |
+| one side only | a shift does that; a blur cannot |
+| no single renderer owned it | the mask is drawn from *all* of them, then offset and blurred as one image |
+| empty target with renderers off | drawn from the character, not from anything else |
+| disabling the component did nothing | the component was never the thing drawing |
 
-Walks every `CameraEvent`, logs each attached buffer by name and size, and removes it -- recording
-the camera and the event so `GiveBackCommandBuffers` can put it back exactly where it was, called
-from `GiveBackCastShadow` with the rest of the teardown. Behind **Remove the cast shadow**, the
-option that has always owned this.
+Ruled out on the way, each by a log line: `MaskAndShadow` itself (disabled, zeroed, and eight
+instances scene-wide all on inactive screens), every light (`shadows=None`), ambient occlusion,
+bloom, `BootShadow`, `MenuPoser.BottomShadow`, the composite shader, the backdrop scene, external
+geometry on the WeaponPreview layer, a second camera on the target, and the whole post stack --
+`Undithering` and `LightSwitcherOverkill` included, which `Simplified()` had never contained.
 
-`ReportCommandBuffers` prints the same list from the probe regardless of the option, and the two
-together say which case a log is showing:
+#### What the hunt is worth keeping for
 
-- **buffers listed and removed, band gone** -- done, and the mechanism is understood.
-- **buffers listed, band still there** -- the band is drawn by something else at the same strength
-  and offset, which would be a remarkable coincidence, but the names in the log narrow it.
-- **`carries no command buffers`** -- the theory is wrong, every measured property above is a
-  coincidence, and the hunt genuinely restarts.
+**Ask what a thing carries, not only what it is made of.** Every sweep walked a subtree, then a
+layer, then the render texture's other authors. None asked the camera what was attached to it, and
+that was the answer. A render target is a destination; a camera is a list of passes.
 
-Removing all of them rather than guessing at a name is deliberate: everything is restored, and if
-taking them all costs something else on screen, the log names which one to spare next time.
+**Measure, do not look.** `MaskAndShadow` survived three rounds on "the shape is unchanged" from a
+screenshot. The bisects replaced that with a number -- part-transparent cell counts, disabling each
+effect and then each shader family in turn -- and the answer arrived in two raids.
 
-#### It worked, and the first version was too broad to ship
+**Check the instrument before spending another raid on what it says.** Four sessions rested on a
+78x30 downscale of a 5420x2464 render. `mips=False` cleared it, and a full-resolution scanline then
+showed the band was a flat 127 rather than a gradient -- a fill, not a blur, which is what named the
+mechanism.
 
-```
-command buffer on 'Camera_timehascome0' at BeforeGBuffer: 'grab background', 184 bytes -- removed
-command buffer on 'Camera_timehascome0' at BeforeImageEffectsOpaque: 'grab alpha and blur', 1124 bytes -- removed
-```
+**Remove only what you can name.** The first fix took every command buffer off the camera. That
+found the answer and was the wrong thing to ship: it also took `'grab background'`, which made the
+PMC look dark, and it would eventually have taken
+`'[WeaponCamoAndStickers] Deferred Decals'` -- another mod's work, which survived only because it
+happened to attach after this ran. `TheShadow` now matches on the name and anything unrecognised is
+logged and left alone.
 
-```
-alpha right of the silhouette: +1=183, +2=72, +4=0, +8=0, +16=0, ... +512=0
-the plateau at x=2883 is rgba 1,1,1,0
-plateau on row 780: 0 pixel(s) at a middling alpha
-```
+**Probe bugs cost raids, and the worst ones hide the answer.** The first renderer sweep skipped
+anything under `MenuPlayer` to avoid printing 174 gun parts -- and a shadow blob hung off the
+player's rig is under `MenuPlayer` too, so the filter would have excluded exactly what the probe
+existed to find, and "no catcher, nothing to receive anything" was concluded from a list that could
+not have contained one. Filtering by **shader family** replaced it: skins, rigs and weapon parts are
+drawn with the game's `p0/` shader and a blob, catcher or decal is not.
 
-**203 pixels to 0.** The alpha now falls off in three pixels instead of holding half for 250, and
-the player confirmed the dark shape is gone from the screen.
+Two more, both found by reading rather than running. `ReportPreviewLayer` compared quoted paths, so
+`'A/B'` was not a prefix of `'A/B/C'` and all 174 of the character's renderers would have counted as
+external. The back-button probe filtered for an `interactable` property, which EFT's
+`DefaultUIButton` does not have, so it attached nothing at all.
 
-The name says it outright: **'grab alpha and blur'** -- grab the silhouette out of the alpha
-channel, blur it, and that is the mask. Five sessions, and it was announcing itself in a string the
-whole time to anyone who asked the camera what it was carrying.
+The probes themselves are gone -- they were written to be deleted the day they answered. What they
+were is in the history.
 
-But taking every buffer was wrong twice over, and the same log shows both:
+#### WTT Menu Overhaul: ruled out
 
-- **'grab background'** at `BeforeGBuffer` is not the shadow, and the player's next words were that
-  the PMC looked a bit dark. Taking it was gratuitous.
-- **`'[WeaponCamoAndStickers] Deferred Decals'`** was still attached at `BeforeLighting` -- another
-  mod's work, which survived only because it was added after this ran. On a load where the order
-  came out the other way, taking everything would have silently broken somebody else's mod, and the
-  weapon camo would have stopped drawing with nothing anywhere to say why.
+`MoxoPixel-MenuOverhaul 1.3.0` (sp-mod.com/mod/1775). It warns all through every log here --
+`EnvironmentUISceneFactory GameObject not found`, `Could not find environment objects` -- and those
+are ours: the staging area reports `scene-objects-hidden=2` and it is looking for the menu
+environment while we have it hidden. Harmless, and it would explain any complaint that the menu
+looks wrong after a cancelled raid.
 
-So `TheShadow` matches on the name -- `alpha` and `blur` together -- and anything unrecognised is
-logged and left where it is. A buffer this does not remove is a buffer whose owner still gets to
-run. `Key light` and `Rim light` are the knobs if the character wants lifting after that.
+It clones a `PlayerModelView` onto the main menu, which was the one thing that could have put a
+second character render in play. It did not: no other camera on our target, nothing on the layer
+from outside, and the eight `MaskAndShadow` are all on stock paths. It has no reference to
+`TimeHasCome`, `BackButton` or `Abort` either.
 
-#### The run where nothing happened: hover arrived, the press did not
+### Back: the window, the press, and the way out
 
-```
-back: DefaultUIButton.OnMouseOver fired      (three over/out pairs)
-outcome: first-update-after-game-started
-```
+**The press was never broken.** `DefaultUIButton.OnClick` fires and `AbortMatching` follows.
 
-`OnClick fired` appears **zero** times, and the raid went ahead. So the pointer was reaching the
-button -- hover proves the raycast lands, nothing is covering it, and it is where the log says it
-is -- and the press was not. The listener is not at fault either: it fired `OnClick` and produced
-`cancel-requested` twice in an earlier session.
+**The window is the game's.** `Show` binds the button to the matchmaker --
+`_canEscape = _matchmaker.MatchingAbortAvailability`, with `OnAbortAvailabilityChanged` wired
+straight to `ChangeCancelButtonVisibility`, which has exactly one caller in the whole assembly. So
+every change after startup is the matchmaker deciding whether aborting is still allowed. Measured:
+open at ~4s, withdrawn at 17.6s on one run -- **49 seconds before the raid started**. Both reports
+of "Back does not work" were presses outside it. `StagingArea.Notice` now says so in the intel row:
+**NO TURNING BACK -- the raid can no longer be cancelled**.
 
-**A button that takes hover but not clicks is a button that is visible and not accepting**, and
-`ChangeCancelButtonVisibility(bool)` is the call that decides that. It is now patched and marked, so
-the next run says when Back became available relative to when it was pressed.
+**The screen is never deactivated on the way out.** `UIScreen` closes through
+`SoftHide(CanvasGroup, Action)`, which fades alpha; `HideGameObject` -- the one path that would
+deactivate it -- logs `"Closing screen: {0}"`, which appears in no log here. `ScreenClosed` was
+watching for an event this screen does not raise, and it could not have reported on the abort path
+anyway: it returns early unless `_active` is still true, and `Finish` clears that first.
 
-The same run is also the first to log `loading-screen-disabled`, at 49.690s, on the ordinary path:
+**The wait after the press is a server round trip**, measured at 0.2s, 0.9s, 4.9s and 7.1s. Nothing
+here can shorten it. What it needed was an answer, not a fix:
 
-```
-49.690  loading-screen-disabled
-49.690  holding the art for the countdown
-50.511  countdown: moved=3; resized=9; hidden=3
-56.003  game-world-started
-```
+- the picture and the character **dim to two thirds** at once (`Seconds to dim when cancelling`)
+- the intel row says **CANCELLING -- returning to the menu**
+- `HoldFade` holds the art until `activeInHierarchy` goes false, capped at **20s**, and past the cap
+  it restores plainly rather than dissolving, because thinning art off a screen that is still up is
+  the original bug
+- `BeginFade` puts the menu furniture back *underneath* solid art, restores the grade, and starts
+  the backdrop swap, so the scene load happens behind the picture
+- `FadeStep` then waits for the swap plus `Seconds to linger after cancelling`, so the mod is the
+  waiting room -- the raid tearing down, quests re-requested, tabs re-added -- rather than handing
+  over to it
+- only then does the art thin out, revealing a menu that was there the whole time
 
-Worth correcting the record for. The screen **is** deactivated when a raid actually starts --
-`HideGameObject` runs and `ScreenClosed` fires. What never happens is that on the **abort** path,
-and the reason is in `ScreenClosed` itself: it returns early unless `_active` is still true, and
-`Finish` clears that first. "No `loading-screen-disabled` in any log" was true and meant something
-narrower than it was read as.
+Dim depth is two thirds rather than a quarter for a reason the timings gave: the dim is held for the
+*whole* wait, and eleven seconds at a quarter is not an acknowledgement, it is a dark screen -- which
+looks a great deal like the stock deploy screen and was reported as one.
 
-#### Two records of one sequence
+### The raid's hour comes from the map
 
-The back button's events were going to the BepInEx log, which carries no timestamps, while
-everything that would explain them -- `loading-screen-disabled`, the countdown, `game-world-started`
--- was going to the trace with a time against it. Two records of one sequence and no way to
-interleave them is how a run gets read wrong, and this one nearly was.
+`TimeAndWeatherSettings.HourOfDay` is only filled in for a custom raid and reads **-1** for every
+ordinary one, so the fallback was doing all the work and the screen was lit by the wall clock.
 
-`LoadingPerformance.Note` puts a line on the trace from outside the class, and the button's events
-now land on both. The next report reads as one timeline: when the cancel button appeared, when it
-was hovered, when it was pressed, when the screen closed.
-
-#### Back works, and the trace reads as one story
-
-```
- 0.029  cancel button visibility=False
- 4.205  cancel button visibility=True
-10.120  back: DefaultUIButton.OnMouseOver
-10.355  cancel-requested, holding the art while the screen goes
-10.356  back: DefaultUIButton.OnClick
-10.356  waiting: alpha=1.00 active=True at 0.0s
-        ... alpha 1.00, active True, all the way through
-14.398  loading-screen-disabled
-14.906  screen went away
-```
-
-Everything that was guessed at is now a line with a time against it.
-
-**The button opens at 4.2s.** That is `ChangeCancelButtonVisibility(true)`, and it is the whole of
-the run where nothing happened -- the press was simply before the game had opened Back.
-
-**The wait is four seconds, not one and a half.** Alpha never moves off 1.00 and the object stays
-active the entire time; the screen is deactivated at 14.398, four full seconds after the click.
-The first cap of 1.5s never stood a chance, and the six-second one has nearly two seconds to spare.
-`HoldFade` caught the close half a second later and let the art go.
-
-One thing worth fixing that the trace exposed: `loading-screen-disabled` and
-`holding the art for the countdown` land on the same millisecond, **on a cancelled raid**. The
-screen closing started the countdown hold, to wait for a countdown that cancelling means will never
-arrive. It was harmless only because `HoldFade` reached its own exit first. `HoldForCountdown` is
-now skipped while an abort is being seen out.
-
-#### Two things asked for once it worked
-
-**The art dissolves into the menu.** Order is the whole of it. `Restore` destroys the planes first
-and un-hides the menu furniture afterwards, which is correct when nobody is watching and is two
-pops in a row when they are: the picture vanishes onto an empty room, then the room fills in. So
-`BeginFade` puts the furniture back **first**, underneath art that is still solid and hiding it,
-and restores the grade with it so the menu is already lit as itself. Only then does the art thin
-out, revealing a main menu that was there the whole time. A `CanvasGroup` on each plane is the
-handle -- free at alpha 1, and it needs no shader, which is the reason the art plane is a
-world-space Canvas in the first place. **Fade back to the menu**, **Seconds to fade back**.
-
-**The character feels the weather.** `Grade.Exposure` was computed out of the hour, the fog, the
-rain and the cloud, clamped to 0.25..1.6 -- and **read by nothing**. The key and rim took their
-colour from the raid and their brightness from a fixed setting, so a midnight deploy in a downpour
-lit the PMC exactly as hard as noon in clear weather. Right hue, wrong amount. Now both intensities
-are multiplied by it, through the same **Grade strength** the scene uses, so the config numbers
-still mean what they say at strength 0 and the two halves of the picture move together. Logged per
-raid as `character light: exposure=... lift=... key=... rim=...`.
-
-#### The abort window: Back is the game's to offer, and it takes it back
-
-```
- 3.908  cancel button visibility=True     <- the game opens Back
-14.041  back: DefaultUIButton.OnMouseOver
-15.072  back: DefaultUIButton.OnMouseOut
-17.579  cancel button visibility=False    <- the game withdraws it, with no click in between
-60.359  loading-screen-disabled
-66.642  game-world-started
-```
-
-No `OnClick` anywhere in that run. The button was available from **3.9s to 17.6s** and the press
-came after it. So "Back did not work" is, both times it has been reported, a press outside a window
-that nothing on screen announces the end of.
-
-It is not ours and it is not arbitrary. `Show` binds the button to the matchmaker:
-
-```
-_canEscape = _matchmaker.MatchingAbortAvailability
-_matchmaker.OnAbortAvailabilityChanged += ChangeCancelButtonVisibility
-```
-
-`ChangeCancelButtonVisibility` has exactly one caller in the whole assembly -- `Show`, setting up
-that binding -- so every change to the button after startup is the matchmaker changing its mind
-about whether aborting is allowed. The game decides, and on this run it decided at 17.6s, **49
-seconds before the raid actually started**.
-
-Worth knowing before anyone tries to fix Back again: there is nothing left to fix in the press
-path. It lands when the button is there (10.356s, previous run, straight into `cancel-requested`)
-and there is no button to land on when it is not. Forcing the button to stay would mean calling
-`MatchingAbort` after the matchmaker has said it is unavailable, which is a different and much
-worse kind of bug.
-
-So the fix is a sentence, not a behaviour. From the player's side an empty corner and a dead button
-look identical, which is why this was reported as broken twice. `StagingArea.Notice` puts one line
-in the row the intel cycles through -- **NO TURNING BACK -- the raid can no longer be cancelled** --
-for six seconds, the moment the game withdraws availability. It borrows the row the same way the
-intel does rather than building a TextMeshPro object of its own, which would be a new thing to
-place, size and put back on a screen this mod already rearranges.
-
-Guarded on both sides. The screen sets availability false on the way *up*, before there was ever
-anything to lose, so the notice waits until it has been offered at least once; and our own abort
-sets it false on the way *out*, where a notice would be announcing a deadline about a button the
-player just pressed. **Say when cancelling stops being offered**.
-
-#### The abort works; the silence was the bug
-
-Three cancels in one session, all clean, and all three reported as Back not working:
-
-| click | screen closes | menu |
-| --- | --- | --- |
-| 16.668 | 21.584 (**4.9s**) | 22.937 |
-| 21.270 | 22.161 (0.9s) | 23.944 |
-| 25.324 | 25.509 (0.2s) | 27.572 |
-
-The middle column is the game's own round trip. `AbortMatching` goes to the matchmaker and the
-screen closes when it comes back, and it has taken up to five seconds. Nothing in this mod can
-shorten it -- `HoldFade` waits on it and no more.
-
-What the mod *was* doing through that wait was holding the art at full brightness and saying
-nothing, so a press that worked was indistinguishable from a press that did not. Three traces of a
-working abort and three reports of a broken button is not a contradiction, it is a description of
-missing feedback.
-
-So the press is now answered at once, and the wait is left alone:
-
-- **The picture and the character dim to a quarter** over `Seconds to dim when cancelling` (0.6s).
-- **The intel row says `CANCELLING -- returning to the menu`**, through the same `Notice` the
-  end-of-window line uses.
-
-Tint, not alpha, and that distinction is the whole reason this is safe. Lowering alpha would thin
-the art and let the game's own deploy screen through, which is the bug the dissolve exists to
-prevent; darkening the colour leaves the planes fully opaque so nothing can appear early. The
-character is dimmed through `MapGrade.DimCharacter`, scaled from what the raid asked for rather
-than set to a number, so the weather grade stays underneath it -- a night deploy dims from where it
-already was. He is lit by a rig masked to his own layer, so it reaches him and nothing else.
-
-A quarter rather than zero, on purpose. Four seconds of black is a worse hang than four seconds of
-picture: the dim is there to say the press landed, not to end the screen before the game has.
-
-#### The waiting room, and being it rather than handing over to it
-
-After the deploy screen closes there is a stretch nobody here had a name for: the raid tearing
-down, quests re-requested, tabs re-added, the environment re-shown. The log has always shown it and
-it was always read as noise --
-
-```
-loading report (cancel-requested)      <- the mod finishing
-MusicExtender: Playing music track
-AllQuestsCheckmarks: Requesting quests data...
-[REQUEST] /botplacementsystem/load
-MenuOverhaul: UpdateLayoutElements ...
-SPT Casino: tab live again             <- the menu actually back
-```
-
--- all of it **after** the mod let go. The player called it a waiting room, which is exactly what
-it is, and the mod was finishing into it rather than through it.
-
-The fix is the condition, not the timing. `FadeStep` was releasing on `EnvironmentState.Settling`
-alone, which only says the backdrop's own scene load is done; the menu coming up behind it is a
-separate event. Both now have to be true:
-
-```
-if (_fadeWaited < 10f && (EnvironmentState.Settling || !EnvironmentState.MenuShown)) hold;
-```
-
-`MenuShown` is `ShowEnvironment(true)`, which `EnvironmentState` already patches for the deferred
-restore, so this costs one bool. `WatchForMenu` arms it in `BeginFade` -- armed when the wait
-starts, so a `ShowEnvironment` from earlier in the screen's life cannot satisfy it.
-
-Capped at ten seconds, and **the report names the exit**:
-
-```
-art held 3.4s for the menu (menu up)
-art held 10.0s for the menu (cap)
-```
-
-Which is the difference between a fix and a guess. If `ShowEnvironment(true)` turns out not to fire
-on this path at all, every run will say `cap` and that is the answer rather than a mystery.
-
-#### The raid's hour, and why testing it at night proves nothing
-
-Each map carries one time, and night is that same clock twelve hours round -- which is exactly what
-`RaidSettings.SelectedDateTime` (`JsonType.EDateTime`, CURR=0 / PAST=1) selects. From this
-database's `Location.UnixDateTime`:
+The real hour is `Location.UnixDateTime` -- the map's own clock -- shifted twelve hours when
+`RaidSettings.SelectedDateTime` is `PAST`, which is EFT's day and night. Each map has one time and
+night is that time twelve hours round:
 
 | day | night | maps |
 | --- | --- | --- |
@@ -2179,55 +1590,31 @@ database's `Location.UnixDateTime`:
 | 15:04 | 03:04 | Laboratory |
 | **18:09** | 06:09 | **Lighthouse** |
 
-Two clusters rather than one, with Shoreline and Lighthouse off on their own. Lighthouse is the one
-worth having: 18:09 is an evening grade, so it should come out gold where everything else is flat
-midday light.
+Lighthouse is the one worth having: 18:09 is an evening grade where everything else is flat midday.
 
-**The first run after the fix looked identical, and that is the trap.** It read
-`conditions=23:00 (from the map, shifted for night)` -- the fix working -- on Streets at night,
-against a wall clock near midnight. Old fallback and new reading both landed on night, exposure went
-0.37 to 0.38, and nothing appeared to change. Anything testing this has to be a **day** raid, and
-Streets at 11:00 against 23:00 is the largest swing on offer.
+**Testing this at night proves nothing.** The first run after the fix read
+`conditions=23:00 (from the map, shifted for night)` -- the fix working -- on Streets at night
+against a wall clock near midnight. Both readings landed on night, exposure moved 0.37 to 0.38, and
+nothing appeared to change.
 
-Worth recording as a limit rather than leaving it to be rediscovered: `UnixDateTime` is a seed, not
-a live clock. `EFT.GameDateTime` advances it against real time by `TimeFactor`, so a real raid's
-hour drifts through a session, and everything that holds one -- `GameWorld`, `BaseLocalGame`,
-`BotOwner` -- exists only in a raid. At deploy time the seed plus the day/night toggle is the best
-reading available, and it is right about the thing that matters, which is whether the destination is
-lit or dark.
+A limit, so it is not rediscovered: `UnixDateTime` is a seed, not a live clock. `EFT.GameDateTime`
+advances it against real time by `TimeFactor`, and everything holding one -- `GameWorld`,
+`BaseLocalGame`, `BotOwner` -- exists only inside a raid. At deploy time the seed plus the toggle is
+the best reading available, and it is right about the thing that matters.
 
-#### A bug in `ReportPreviewLayer`, found before it ever ran
+**Weather is still not read.** `RainType`, `FogType` and `CloudinessType` live on the same object
+that returns -1, so an ordinary raid reports clear because as far as the client is concerned it is.
+`Grade.Exposure` -- built from hour, fog, rain and cloud -- was computed and read by nothing until
+the character light started multiplying by it, so a night deploy in a downpour used to light the PMC
+exactly as hard as clear noon.
 
-The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
-`path.StartsWith(mine)` with both sides quoted: `'A/B'` is **not** a prefix of `'A/B/C'`, because
-the closing quote sits exactly where the separator goes. Every one of the character's own renderers
-would have been reported as coming from outside the preview, and the 0 above would have been a
-number in the hundreds. Fixed before the raid, which is what makes that 0 worth trusting.
+### "Static" was the motion being too slow to see
 
-#### Three probe bugs, because they each cost a raid
-
-1. **Filtering renderers by path.** "Skip anything under `MenuPlayer`" hides a shadow rig hung off
-   the player's rig, which is where one lives. Fixed by filtering on shader family instead, which
-   found `BootShadow` immediately.
-2. **Sampling the render texture at its corners.** It answered alpha 0 five times, which was true
-   and meaningless: a shadow sits *beside* the character and the corners of a 5420x2464 texture are
-   nowhere near him. It produced a confident, wrong "the preview is eliminated". Reading the empty
-   part of an image to find out whether it is empty is circular. Fixed by printing the whole thing
-   as an alpha map, which is what finally located the band.
-3. **Fixing at screen-show, probing at four seconds.** `ShowPlayerModel` is async. `TakeBootShadow`
-   first ran from `Begin`, found nothing because `MenuPlayer` did not exist yet, and said nothing.
-   The probe had already been moved late for exactly this reason. Anything that touches the
-   character belongs in `Tick`.
-
-The through-line: **scope the search to what the renderer actually is, not to where you expect it to
-be.**
-
-#### What the player sees, for confirming a fix
-
-The shape turns when the character is turned with the mouse during the load. That is the check --
-if it stops tracking his rotation, it is gone. It reads dark over Woods and washed-out grey over
-Shoreline, which is one shape over two backdrops, not two different bugs.
-
+The drift is layered sines with periods from 44 to 170 seconds. On a one-minute load that is less
+than one cycle of the slowest, so the picture holds nearly still. **Camera motion speed** (default
+3) is the lever rather than the drift, and the difference is not a preference: `RequiredOverscan`
+grows the art planes to cover whatever sweep the drift asks for, so a bigger drift is paid for in
+picture. The same sweep played faster costs nothing.
 
 ### The shadow rig is BootShadow, not BottomShadow
 
@@ -2255,9 +1642,8 @@ Restore puts it back in either direction.
 
 **It has to run from `Tick`, not from `Begin`.** The first version ran at screen-show, found nothing
 and said nothing -- no rig line in the log at all -- because `ShowPlayerModel` is async and there is
-no `MenuPlayer` yet at screen-show, so there is nothing named shadow to find. This is the same trap
-`ReportPreviewDarkness` was deliberately moved late to avoid, four sections up, and the fix for it
-walked straight into it. `_playerView` is now recorded before anything that can fail, `WatchBootShadow`
+no `MenuPlayer` yet at screen-show, so there is nothing named shadow to find. This is the same trap the darkness
+probe was deliberately moved late to avoid, and the fix for it walked straight into it. `_playerView` is now recorded before anything that can fail, `WatchBootShadow`
 searches four times a second until it finds something, and then stops searching and re-asserts the
 objects it holds instead.
 
@@ -2362,43 +1748,17 @@ screen whose middle is empty left the frame reading as an afterthought.
 
 ### Still open
 
-**The dark shape behind the PMC.** The big one, and the reason the session ended where it did. Full
-write-up, everything ruled out and the next step, is in **THE DARK SHAPE BEHIND THE PMC -- START
-HERE** above. Short version: it is inside the preview render texture, it is not post-processing, and
-it cannot be a shadow on the backdrop because the backdrop is a different camera's render.
+**The dark shape and Back are both closed** -- see **The dark shape behind the PMC -- answered** and
+**Back: the window, the press, and the way out** above. The probes that found them have been
+deleted; what they were is in the history.
 
-Six probes have now run. The three sweeps came back **0** -- no external geometry on the layer, no
-second camera on the target, no live `MaskAndShadow` anywhere -- and `ReportPreviewBisect` came back
-**0** as well: every effect on the preview camera off, one at a time and then all at once, moves the
-part-transparent count by at most one cell. Post-processing is ruled out properly this time, having
-actually been tested, `Undithering` and `LightSwitcherOverkill` included.
+**Weather still reaches nothing.** The hour now comes from the map, but `RainType`, `FogType` and
+`CloudinessType` read -1 on an ordinary raid, so `Grade.Exposure` only ever varies by time of day.
+If SPT keeps live weather somewhere the client can see at menu time, that is where to look.
 
-`ReportRendererBisect` has now run too. With every character renderer off the target is **0 solid,
-0 part-transparent**: nothing but the character is ever drawn into it. And no shader family owns the
-band -- removing the eight decal renderers takes 173 of 208 solid cells but only 41 of 135 part
-cells, so the part-transparent region does not scale with how much character is present.
-
-`ReportAlphaProfile` cleared the instrument -- `mips=False`, the band is real -- and
-`ReportPlateauOwner` then named the mechanism by failing to find a culprit. The plateau is
-`rgba 1,1,1,127`, black at half alpha, and **no renderer owns it**: of 42, only the silencer clears
-the threshold and it takes 19 pixels of 203.
-
-That, with the 0.5 alpha matching `ShadowStrength` and the 250-pixel reach matching `ShadowShift.x`
-of -0.05 on a 5420-wide target, is a **command buffer**. A command buffer is not a component, so it
-survives the component being disabled, its fields being zeroed and every `Behaviour` on the camera
-being switched off -- which is the entire list of things tried across five sessions, and exactly why
-none of them changed anything. `TakeCommandBuffers` removes it and restores it on teardown, and that is a
-fix rather than another probe.
-
-**It worked.** The camera carried `'grab background'` and `'grab alpha and blur'`; taking them drops
-the plateau from 203 pixels to 0 and the dark shape is gone from the screen. Only the second one is
-the shadow, so removal is now matched on the name -- see **It worked, and the first version was too
-broad to ship**, which also covers the other mod's command buffer that all-or-nothing would
-eventually have broken.
-
-Back is answered: the press lands and the abort fires, and the reason it sometimes does nothing is
-that the button is `active=False` for the first seconds of the screen. What remains is that
-`ScreenClosed` never runs -- see **Back works** above.
+**The day grade is untested in game.** The hour fix has only ever been exercised at night, where it
+agreed with the wall clock it replaced. A Streets raid at Day (11:00 against 23:00) is the largest
+swing available and the first real test of it.
 
 **Names on the countdown were already wrong.** `Player Name Panel/Name` is in the dump this was
 written from and is not in the running build: the first run logged `not found: Player Name
@@ -2589,6 +1949,22 @@ is configured the same way, locally. Commit bodies are prose and end with a
 with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo was created.
 
 ## Where this was left off
+
+2026-09-19: the dark shape behind the PMC is **fixed** -- a command buffer named
+`'grab alpha and blur'` on the preview camera, removed by name and restored on teardown. The five
+sessions of probes that found it have been deleted: `ReportPreviewDarkness` and everything under it,
+about 1,340 lines. They were written to be deleted the day they answered. `ScreenFurniture.MoveTo`
+went with them, never having been called by any subclass.
+
+Also in: the raid's hour read from the map rather than the wall clock, `Grade.Exposure` reaching the
+character light so a night deploy dims the PMC, the cancel transition (dim, hold, backdrop swap
+behind solid art, linger, dissolve), the end-of-abort-window notice, **Camera motion speed** for the
+drift that was too slow to see, ten wiki pictures a map, and folders for Labyrinth, Terminal and
+Icebreaker.
+
+Open: weather still reads -1 on an ordinary raid so only the hour varies, and the day grade has
+never been tested in game -- every run so far has been at night, where the fix agreed with the clock
+it replaced.
 
 2026-09-16: **1.1.0** added motion and map intel, and corrected the location-id casing and the
 "tested" claim in the docs.
