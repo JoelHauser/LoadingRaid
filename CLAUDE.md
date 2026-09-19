@@ -2182,10 +2182,30 @@ does not leave nothing; it leaves the game's own deploy screen**, which is exact
 reported.
 
 `HoldFade` makes the same bargain `HoldCountdown` already makes: on abort the restore is owed
-rather than run, and `Update` settles it when the screen's CanvasGroup alpha reaches zero. Three
-ways out, all ending at `Finish`, which restores in its `finally`: the fade finishes, no CanvasGroup
-is there to wait on, or a second and a half passes. `SoftChange` takes well under that, and art
-left over a menu nobody asked to look at is a worse failure than a visible cut.
+rather than run, and `Update` settles it. Every way out ends at `Finish`, which restores in its
+`finally`.
+
+**The first cap was wrong and the trace says why.** A second and a half was picked from how long
+`SoftChange` takes, and the fade is not what is being waited for. The report reads:
+
+```
+14.041906  cancel-requested, holding the art while the screen goes
+15.567577  screen did not fade, letting the art go
+```
+
+At abort + 1.5s the alpha was still up and the object still active, so the cap fired, the art came
+down on a screen that was still there, and the stock deploy screen appeared exactly as before --
+the same bug, moved a second and a half later. Aborting goes to the server and comes back, and
+*that* is the wait.
+
+So the hold now watches the close itself rather than the fade. `UIInputNode.HideGameObject` is
+`gameObject.SetActive(false)` and nothing else, so `activeInHierarchy` is checked directly.
+`ScreenClosed` could never have served here whatever it watched: it returns early unless `_active`
+is still true, and `Finish` clears that, so on this path it reports nothing by construction.
+
+The cap is six seconds, loose enough for a round trip, and the alpha is sampled into the trace every
+half second on the way. If this one is wrong too, the report says what the alpha was doing and when
+rather than inviting another guess.
 
 Two things found along the way and worth keeping. `MatchmakerTimeHasCome.ChangeCancelButtonVisibility(bool)`
 is why `BackButton` reads `active=False` at the 4s probe -- the game brings the button up partway

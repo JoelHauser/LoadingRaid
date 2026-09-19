@@ -41,6 +41,8 @@ namespace DeployScreen.Client
         private bool _holding;
         private bool _fading;
         private double _fadeAt;
+        private double _nextFadeSample;
+        private int _fadeSamples;
         private LoadEase _ease;
 
         /// <summary>
@@ -208,6 +210,8 @@ namespace DeployScreen.Client
             {
                 _instance._fading = true;
                 _instance._fadeAt = _instance._clock.Elapsed.TotalSeconds;
+                _instance._nextFadeSample = _instance._fadeAt;
+                _instance._fadeSamples = 0;
                 _instance.Mark("cancel-requested, holding the art while the screen goes");
                 return;
             }
@@ -256,6 +260,20 @@ namespace DeployScreen.Client
         /// </summary>
         private void HoldFade(double now)
         {
+            var screen = _screen as Component;
+
+            // The object going inactive is the close itself -- UIInputNode.HideGameObject is
+            // gameObject.SetActive(false) and nothing else -- so it is checked directly rather
+            // than waited for through OnDisable. ScreenClosed cannot serve here: it returns early
+            // unless _active is still true, and Finish clears that, so on this path it could never
+            // have reported anything either way.
+            if (screen == null || !screen.gameObject.activeInHierarchy)
+            {
+                Mark("screen went away");
+                Finish("cancel-requested", false);
+                return;
+            }
+
             var group = FadeGroup();
 
             if (group == null)
@@ -272,9 +290,27 @@ namespace DeployScreen.Client
                 return;
             }
 
-            if (now - _fadeAt < 1.5) return;
+            // What the first attempt got wrong. A second and a half was picked from how long
+            // SoftChange takes, but the fade is not what is being waited for: at abort + 1.5s the
+            // alpha was still 1 and the object still active, so the cap fired, the art came down
+            // on a screen that was still up, and the stock deploy screen appeared exactly as
+            // before. Aborting goes to the server and comes back, and that is the wait.
+            //
+            // So the cap is loose enough to cover a round trip, and the trajectory is recorded on
+            // the way rather than guessed at again: if this one is wrong too, the report says what
+            // the alpha was doing and when.
+            if (now >= _nextFadeSample && _fadeSamples < 16)
+            {
+                _fadeSamples++;
+                _nextFadeSample = now + 0.5;
+                Mark("waiting: alpha=" + group.alpha.ToString("0.00")
+                     + " active=" + screen.gameObject.activeInHierarchy
+                     + " at " + (now - _fadeAt).ToString("0.0") + "s");
+            }
 
-            Mark("screen did not fade, letting the art go");
+            if (now - _fadeAt < 6.0) return;
+
+            Mark("screen neither faded nor closed, letting the art go");
             Finish("cancel-requested", false);
         }
 
@@ -401,6 +437,8 @@ namespace DeployScreen.Client
             _holding = false;
             _fading = false;
             _fadeAt = 0;
+            _nextFadeSample = 0;
+            _fadeSamples = 0;
 
             // Every raid gets its own warning budget. Kept for the session, the first failure
             // silences every later one, and reports that stop appearing leave no log line at all.
