@@ -1921,6 +1921,39 @@ together say which case a log is showing:
 Removing all of them rather than guessing at a name is deliberate: everything is restored, and if
 taking them all costs something else on screen, the log names which one to spare next time.
 
+#### It worked, and the first version was too broad to ship
+
+```
+command buffer on 'Camera_timehascome0' at BeforeGBuffer: 'grab background', 184 bytes -- removed
+command buffer on 'Camera_timehascome0' at BeforeImageEffectsOpaque: 'grab alpha and blur', 1124 bytes -- removed
+```
+
+```
+alpha right of the silhouette: +1=183, +2=72, +4=0, +8=0, +16=0, ... +512=0
+the plateau at x=2883 is rgba 1,1,1,0
+plateau on row 780: 0 pixel(s) at a middling alpha
+```
+
+**203 pixels to 0.** The alpha now falls off in three pixels instead of holding half for 250, and
+the player confirmed the dark shape is gone from the screen.
+
+The name says it outright: **'grab alpha and blur'** -- grab the silhouette out of the alpha
+channel, blur it, and that is the mask. Five sessions, and it was announcing itself in a string the
+whole time to anyone who asked the camera what it was carrying.
+
+But taking every buffer was wrong twice over, and the same log shows both:
+
+- **'grab background'** at `BeforeGBuffer` is not the shadow, and the player's next words were that
+  the PMC looked a bit dark. Taking it was gratuitous.
+- **`'[WeaponCamoAndStickers] Deferred Decals'`** was still attached at `BeforeLighting` -- another
+  mod's work, which survived only because it was added after this ran. On a load where the order
+  came out the other way, taking everything would have silently broken somebody else's mod, and the
+  weapon camo would have stopped drawing with nothing anywhere to say why.
+
+So `TheShadow` matches on the name -- `alpha` and `blur` together -- and anything unrecognised is
+logged and left where it is. A buffer this does not remove is a buffer whose owner still gets to
+run. `Key light` and `Rim light` are the knobs if the character wants lifting after that.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
@@ -2112,8 +2145,14 @@ That, with the 0.5 alpha matching `ShadowStrength` and the 250-pixel reach match
 of -0.05 on a 5420-wide target, is a **command buffer**. A command buffer is not a component, so it
 survives the component being disabled, its fields being zeroed and every `Behaviour` on the camera
 being switched off -- which is the entire list of things tried across five sessions, and exactly why
-none of them changed anything. `TakeCommandBuffers` removes them and restores them on teardown, and
-that is a fix rather than another probe.
+none of them changed anything. `TakeCommandBuffers` removes it and restores it on teardown, and that is a
+fix rather than another probe.
+
+**It worked.** The camera carried `'grab background'` and `'grab alpha and blur'`; taking them drops
+the plateau from 203 pixels to 0 and the dark shape is gone from the screen. Only the second one is
+the shadow, so removal is now matched on the name -- see **It worked, and the first version was too
+broad to ship**, which also covers the other mod's command buffer that all-or-nothing would
+eventually have broken.
 
 Back is answered: the press lands and the abort fires, and the reason it sometimes does nothing is
 that the button is `active=False` for the first seconds of the screen. What remains is that

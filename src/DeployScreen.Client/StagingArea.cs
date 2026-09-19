@@ -1061,9 +1061,14 @@ namespace DeployScreen.Client
                     {
                         if (buffer == null) continue;
 
+                        var mine = TheShadow(buffer.name);
+
                         DeployScreenPlugin.Log.LogInfo(
                             "[DeployScreen] command buffer on '" + camera.name + "' at " + when
-                            + ": '" + buffer.name + "', " + buffer.sizeInBytes + " bytes -- removed");
+                            + ": '" + buffer.name + "', " + buffer.sizeInBytes + " bytes -- "
+                            + (mine ? "removed" : "left alone"));
+
+                        if (!mine) continue;
 
                         camera.RemoveCommandBuffer(when, buffer);
 
@@ -1074,6 +1079,37 @@ namespace DeployScreen.Client
                 }
             }
             catch (Exception error) { WarnOnce(error); }
+        }
+
+        /// <summary>
+        /// Whether a command buffer is the cast shadow, by the name it gave itself.
+        ///
+        /// The first version took every buffer off the camera, which found the answer and was the
+        /// wrong thing to ship, for two reasons the very first log showed.
+        ///
+        /// The camera carried two: **'grab background'** at `BeforeGBuffer`, and **'grab alpha and
+        /// blur'** at `BeforeImageEffectsOpaque`. The second one is the shadow and says so -- grab
+        /// the silhouette out of the alpha, blur it, and that is the mask. The first is not, and
+        /// taking it is the likeliest reason the player's next words were that the PMC looked a
+        /// bit dark.
+        ///
+        /// The other reason is worse. That same log shows
+        /// `'[WeaponCamoAndStickers] Deferred Decals'` still attached at `BeforeLighting` -- another
+        /// mod's work, which survived only because it was added after this ran. On a load where the
+        /// order came out the other way, taking everything would have silently broken somebody
+        /// else's mod, and the weapon camo would have quietly stopped drawing with nothing to say
+        /// why.
+        ///
+        /// So: matched on the name, and anything unrecognised is logged and left where it is. A
+        /// buffer this does not remove is a buffer whose owner still gets to run.
+        /// </summary>
+        private static bool TheShadow(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+
+            var lower = name.ToLowerInvariant();
+
+            return lower.Contains("alpha") && lower.Contains("blur");
         }
 
         private void GiveBackCommandBuffers()
