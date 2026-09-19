@@ -113,6 +113,7 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> StagingClearPreview;
         internal static ConfigEntry<float> DepthDrift;
         internal static ConfigEntry<float> DepthSway;
+        internal static ConfigEntry<float> DepthSpeed;
         internal static ConfigEntry<float> DepthLight;
         internal static ConfigEntry<ContactShadow> DepthGroundShadow;
         internal static ConfigEntry<float> DepthCharacter;
@@ -298,6 +299,21 @@ namespace DeployScreen.Client
                     + "parallax -- it shifts near and far by the same angle -- so this is only here "
                     + "to keep the drift from reading as a slider. 0 turns it off.",
                     new AcceptableValueRange<float>(0f, 1.5f)));
+
+            DepthSpeed = Config.Bind(
+                "Scene",
+                "Camera motion speed",
+                3f,
+                new ConfigDescription(
+                    "How quickly the drift plays out. The motion is layered sines whose slowest "
+                    + "component ran to a 170-second period at 1.0 -- built to read as the room "
+                    + "breathing rather than as a camera move, which on a one-minute load is less "
+                    + "than one cycle and reads as nothing moving at all. This is the setting to "
+                    + "reach for when the screen looks static, because unlike the drift it costs "
+                    + "nothing: raising the drift makes the art planes grow to cover the larger "
+                    + "sweep, and you see less of the picture. Speeding the same sweep up shows "
+                    + "the whole of it.",
+                    new AcceptableValueRange<float>(0.25f, 8f)));
 
             DepthLight = Config.Bind(
                 "Scene",

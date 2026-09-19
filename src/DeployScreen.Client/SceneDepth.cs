@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -441,12 +441,24 @@ namespace DeployScreen.Client
 
         /// <summary>
         /// Layered sines at frequencies that do not share a period, so the motion never settles
-        /// into a visible loop. Slow on purpose: this should read as the room breathing, not as a
-        /// camera move.
+        /// into a visible loop.
+        ///
+        /// These were slow on purpose -- the room breathing rather than a camera move -- and that
+        /// went too far. At speed 1 the components run from a 44-second period to a 170-second
+        /// one, so a one-minute load shows less than a single cycle of the slowest of them and the
+        /// screen reads as a still photograph. The player's word for it was "static", which is
+        /// exactly right.
+        ///
+        /// Speed is the lever rather than drift, and the difference matters. RequiredOverscan
+        /// grows the art planes to cover whatever sweep the drift asks for, so a bigger drift is
+        /// paid for in picture: the plane is built larger and you see a smaller part of it. The
+        /// same sweep played faster costs nothing at all.
         /// </summary>
         private void DriveCamera(float t)
         {
             if (_camera == null) return;
+
+            t *= Mathf.Max(0.01f, DeployScreenPlugin.DepthSpeed.Value);
 
             var drift = DeployScreenPlugin.DepthDrift.Value;
             var sway = DeployScreenPlugin.DepthSway.Value;
