@@ -2045,6 +2045,39 @@ are multiplied by it, through the same **Grade strength** the scene uses, so the
 still mean what they say at strength 0 and the two halves of the picture move together. Logged per
 raid as `character light: exposure=... lift=... key=... rim=...`.
 
+#### The abort window: Back is the game's to offer, and it takes it back
+
+```
+ 3.908  cancel button visibility=True     <- the game opens Back
+14.041  back: DefaultUIButton.OnMouseOver
+15.072  back: DefaultUIButton.OnMouseOut
+17.579  cancel button visibility=False    <- the game withdraws it, with no click in between
+60.359  loading-screen-disabled
+66.642  game-world-started
+```
+
+No `OnClick` anywhere in that run. The button was available from **3.9s to 17.6s** and the press
+came after it. So "Back did not work" is, both times it has been reported, a press outside a window
+that nothing on screen announces the end of.
+
+It is not ours and it is not arbitrary. `Show` binds the button to the matchmaker:
+
+```
+_canEscape = _matchmaker.MatchingAbortAvailability
+_matchmaker.OnAbortAvailabilityChanged += ChangeCancelButtonVisibility
+```
+
+`ChangeCancelButtonVisibility` has exactly one caller in the whole assembly -- `Show`, setting up
+that binding -- so every change to the button after startup is the matchmaker changing its mind
+about whether aborting is allowed. The game decides, and on this run it decided at 17.6s, **49
+seconds before the raid actually started**.
+
+Worth knowing before anyone tries to fix Back again: there is nothing left to fix in the press
+path. It lands when the button is there (10.356s, previous run, straight into `cancel-requested`)
+and there is no button to land on when it is not. Forcing the button to stay would mean calling
+`MatchingAbort` after the matchmaker has said it is unavailable, which is a different and much
+worse kind of bug.
+
 #### A bug in `ReportPreviewLayer`, found before it ever ran
 
 The subtree filter never matched a child. `Describe` wraps a path in quotes, and the code tested
