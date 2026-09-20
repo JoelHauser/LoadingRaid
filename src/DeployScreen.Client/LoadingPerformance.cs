@@ -16,15 +16,13 @@ namespace DeployScreen.Client
     internal sealed class LoadingPerformance : MonoBehaviour
     {
         private static LoadingPerformance _instance;
-        private static bool _showHook, _statusHook, _startHook, _playerHook, _bannerHook;
+        private static bool _showHook, _statusHook, _startHook;
         private string _folder, _runId, _metadata, _presentation;
         private string _easeMetadata;
         private object _screen, _banners;
-        private LoadingScreenMode _mode;
         private LoadTrace _trace;
         private readonly Stopwatch _clock = new Stopwatch();
         private bool _active, _started, _warned;
-        private bool _previewSkipped, _bannersSkipped;
         private double _closedAt = -1, _nextMemorySample;
         private long _managedStart, _managedPeak, _nativeStart, _nativePeak;
 
@@ -50,7 +48,6 @@ namespace DeployScreen.Client
         private static readonly System.Collections.Generic.Dictionary<string, int> LoadsPerMap =
             new System.Collections.Generic.Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private int _gc0, _gc1, _gc2;
-        private MinimalScreen _minimal;
         private SceneDepth _depth;
         private StagingArea _staging;
         private ScreenLayout _layout;
@@ -78,11 +75,6 @@ namespace DeployScreen.Client
         private string _mapId;
         private MapGrade.Weather _weather;
 
-        internal static LoadingScreenMode Mode
-        {
-            get { return _instance != null && _instance._active ? _instance._mode : DeployScreenPlugin.ScreenMode.Value; }
-        }
-
         internal void Initialize(string folder)
         {
             _instance = this;
@@ -97,12 +89,8 @@ namespace DeployScreen.Client
             _startHook = Patch(harmony, GameTypes.World_Started, null, nameof(Started));
             Patch(harmony, GameTypes.Loading_Abort, nameof(Aborted));
             Patch(harmony, GameTypes.Loading_CancelButton, nameof(CancelButton));
-            _playerHook = Patch(harmony, GameTypes.Loading_ShowPlayer, nameof(SkipPlayer));
-            if (GameTypes.BannersPanel_Show != null && GameTypes.BannersPanel_Show.ReturnType == typeof(Task))
-                _bannerHook = Patch(harmony, GameTypes.BannersPanel_Show, nameof(SkipBanners));
             DeployScreenPlugin.Log.LogInfo("[DeployScreen] performance hooks: screen=" + _showHook
-                + " phases=" + _statusHook + " raid-start=" + _startHook
-                + " skip-preview=" + _playerHook + " skip-banners=" + _bannerHook);
+                + " phases=" + _statusHook + " raid-start=" + _startHook);
         }
 
         private static bool Patch(Harmony harmony, MethodInfo method, string before, string after = null)
@@ -143,15 +131,6 @@ namespace DeployScreen.Client
                 _instance._ease.Begin(__instance as Component);
                 _instance.Mark("ease: " + _instance._ease.Description);
 
-                if (_instance._mode == LoadingScreenMode.Minimal)
-                {
-                    _instance._minimal = new MinimalScreen();
-                    _instance._minimal.Begin(__instance as Component, _instance._banners,
-                        _instance._previewSkipped, _instance._bannersSkipped);
-                    _instance._presentation = _instance._minimal.Metadata;
-                    _instance.Mark("minimal: " + _instance._minimal.Description);
-                }
-                else if (_instance._mode == LoadingScreenMode.Staging)
                 {
                     // Order matters: the staging area hangs the art and hides the menu furniture,
                     // then depth drifts the camera across it. Depth alone on the stock scene is
@@ -175,15 +154,6 @@ namespace DeployScreen.Client
                     _instance._depth.Begin(__instance as Component);
                     if (_instance._depth.Running) _instance.Mark("depth: " + _instance._depth.Description);
                 }
-                else if (_instance._mode == LoadingScreenMode.Enhanced)
-                {
-                    // Depth rides this class's lifecycle on purpose: every way the deploy screen
-                    // can end -- cancelled, raid started, timed out, Show threw, plugin destroyed
-                    // -- already funnels through Restore(), so the effects cannot outlive it.
-                    _instance._depth = new SceneDepth();
-                    _instance._depth.Begin(__instance as Component);
-                    if (_instance._depth.Running) _instance.Mark("depth: " + _instance._depth.Description);
-                }
             }
             catch (Exception e) { if (_instance != null) _instance.Warn(e); }
         }
@@ -198,24 +168,6 @@ namespace DeployScreen.Client
         {
             if (_instance != null && _instance._trace != null && ReferenceEquals(_instance._screen, __instance))
                 _instance._trace.SetPhase(_instance._clock.Elapsed.TotalSeconds, __0);
-        }
-
-        private static bool SkipPlayer(object __instance, ref Task __result)
-        {
-            if (_instance == null || !_instance._active || _instance._mode != LoadingScreenMode.Minimal
-                || !ReferenceEquals(_instance._screen, __instance)) return true;
-            _instance._previewSkipped = true;
-            __result = Task.CompletedTask;
-            return false;
-        }
-
-        private static bool SkipBanners(object __instance, ref Task __result)
-        {
-            if (_instance == null || !_instance._active || _instance._mode != LoadingScreenMode.Minimal
-                || !ReferenceEquals(_instance._banners, __instance)) return true;
-            _instance._bannersSkipped = true;
-            __result = Task.CompletedTask;
-            return false;
         }
 
         private static void Started()
@@ -473,8 +425,7 @@ namespace DeployScreen.Client
         /// </summary>
         private bool HoldForCountdown()
         {
-            return _mode == LoadingScreenMode.Staging
-                && _staging != null && _staging.Built
+            return _staging != null && _staging.Built
                 && DeployScreenPlugin.StagingHoldCountdown.Value;
         }
 
@@ -551,7 +502,6 @@ namespace DeployScreen.Client
         private void Begin(object screen, object[] args)
         {
             if (_active) Finish("replaced-by-next-load");
-            _mode = DeployScreenPlugin.ScreenMode.Value;
             _screen = screen;
 
             // The layout belongs to the screen, not to any one mode, and the feature being built
@@ -560,8 +510,6 @@ namespace DeployScreen.Client
             _banners = GameTypes.Loading_Banners == null ? null : GameTypes.Loading_Banners.GetValue(screen);
             _started = false;
             _closedAt = -1;
-            _previewSkipped = false;
-            _bannersSkipped = false;
             _presentation = null;
             _easeMetadata = null;
             _holding = false;
@@ -639,43 +587,36 @@ namespace DeployScreen.Client
 
             _nextMemorySample = 5;
             _metadata = "\"schemaVersion\":2,\"version\":" + LoadTrace.Quote(DeployScreenPlugin.PluginVersion)
-                + ",\"runId\":" + LoadTrace.Quote(_runId) + ",\"mode\":" + LoadTrace.Quote(_mode.ToString())
+                + ",\"runId\":" + LoadTrace.Quote(_runId) + ",\"mode\":" + LoadTrace.Quote("Staging")
                 + ",\"map\":" + LoadTrace.Quote(map) + ",\"label\":" + LoadTrace.Quote(DeployScreenPlugin.TestLabel.Value)
                 + ",\"sessionId\":" + LoadTrace.Quote(SessionId)
                 + ",\"sessionLoadIndex\":" + _loadsThisSession + ",\"mapLoadIndex\":" + _mapLoadIndex
                 + ",\"resolution\":" + LoadTrace.Quote(Screen.width + "x" + Screen.height)
                 + ",\"phaseHook\":" + Bool(_statusHook) + ",\"raidStartHook\":" + Bool(_startHook)
-                + ",\"previewSkipHook\":" + Bool(_playerHook) + ",\"bannerSkipHook\":" + Bool(_bannerHook)
+                + ",\"previewSkipHook\":false,\"bannerSkipHook\":false"
                 + ",\"configuredCustomArt\":" + Bool(DeployScreenPlugin.BannersEnabled.Value)
                 + ",\"configuredMotion\":" + Bool(DeployScreenPlugin.MotionEnabled.Value)
-                + ",\"configuredCaptions\":" + LoadTrace.Quote(DeployScreenPlugin.BannerCaptions.Value.ToString())
-                + ",\"configuredBackdrop\":" + Bool(DeployScreenPlugin.MatchEnvironment.Value);
+                + ",\"configuredCaptions\":\"Intel\""
+                + ",\"configuredBackdrop\":false";
         }
 
         private static string Bool(bool value) { return value ? "true" : "false"; }
         private void Mark(string name) { _trace?.Event(_clock.Elapsed.TotalSeconds, name); }
 
         /// <summary>
-        /// What minimal mode actually applied, for the report.
+        /// What the staging area actually applied, for the report.
         ///
-        /// The skip prefixes run inside Show; MinimalScreen is built in the postfix. So a Show
-        /// that throws, or a screen that is not a Component, leaves no MinimalScreen even though
-        /// the preview and banners were skipped. Reporting the installed hooks instead would let
-        /// such a capture group with a complete one in compare-loading.ps1, which groups on
-        /// exactly these fields.
+        /// A Show that throws, or a screen that is not a Component, leaves no StagingArea at all,
+        /// and a capture like that must still describe itself the same way a complete one does --
+        /// compare-loading.ps1 groups on exactly these fields, and a capture that describes itself
+        /// differently silently forms a group of one.
         /// </summary>
         private string Presentation
         {
             get
             {
-                if (_mode == LoadingScreenMode.Staging)
-                {
-                    if (_staging != null) return _staging.Metadata;
-                    return _presentation ?? StagingArea.MetadataFor(false, 0, false, false, "unknown");
-                }
-
-                if (_minimal != null) return _minimal.Metadata;
-                return _presentation ?? MinimalScreen.MetadataFor(_previewSkipped, _bannersSkipped, false, 0);
+                if (_staging != null) return _staging.Metadata;
+                return _presentation ?? StagingArea.MetadataFor(false, 0, false, false, "unknown");
             }
         }
 
@@ -722,9 +663,24 @@ namespace DeployScreen.Client
                         return;
                     }
                 }
-                if (_closedAt >= 0 && now - _closedAt >= 30) { Finish("screen-closed-without-confirmed-start", false); return; }
+                // Not while the art is holding or dissolving.
+                //
+                // This guard predates the hold and knows nothing about it. It fires thirty seconds
+                // after the screen closes and calls Finish directly -- and Finish tears the overlay
+                // down at whatever alpha it happened to be at, which is a hard cut, which is the
+                // exact thing the dissolve exists to prevent. A Rezerv abort caught it doing
+                // precisely that: the preloader was still busy at 29.3s, the hold was correctly
+                // carrying on, and this fired at 30 and cut the picture off the screen.
+                //
+                // Safe to stand aside for, because both of those paths are bounded already: the
+                // hold stops at HoldCeilingSeconds and the dissolve ends when the alpha reaches
+                // zero. Nothing can sit here for ever on account of this.
+                if (!_closing && !_fading && _closedAt >= 0 && now - _closedAt >= 30)
+                {
+                    Finish("screen-closed-without-confirmed-start", false);
+                    return;
+                }
                 if (now >= 1800) { Finish("capture-timeout", false); return; }
-                _minimal?.Tick(now);
                 if (_trace != null && now >= _nextMemorySample)
                 {
                     _nextMemorySample = now + 5;
@@ -800,11 +756,8 @@ namespace DeployScreen.Client
         {
             try
             {
-                if (_minimal != null) _presentation = _minimal.Metadata;
-                _minimal?.Restore();
             }
             catch (Exception e) { Warn(e); }
-            _minimal = null;
 
             try { _depth?.Restore(); }
             catch (Exception e) { Warn(e); }

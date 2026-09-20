@@ -334,6 +334,8 @@ namespace DeployScreen.Client
         internal static FieldInfo Loading_PlayerModel, Loading_Banners;
         internal static FieldInfo Environment_Current, Environment_Visible;
         internal static Type BackgroundImage;
+        internal static Type RawImage;
+        internal static PropertyInfo Raw_Texture, Raw_Color, Raw_Raycast;
         internal static PropertyInfo Background_Color, Background_Raycast, Background_Sprite;
 
         /// <summary>Custom banner art can be substituted.</summary>
@@ -406,6 +408,16 @@ namespace DeployScreen.Client
                 Background_Color = AccessTools.Property(BackgroundImage, "color");
                 Background_Raycast = AccessTools.Property(BackgroundImage, "raycastTarget");
                 Background_Sprite = AccessTools.Property(BackgroundImage, "sprite");
+            }
+
+            // RawImage takes a Texture rather than a Sprite, which is what a camera capture is.
+            // Optional: without it the held art falls back to re-drawing the sprites.
+            RawImage = AccessTools.TypeByName("UnityEngine.UI.RawImage");
+            if (RawImage != null)
+            {
+                Raw_Texture = AccessTools.Property(RawImage, "texture");
+                Raw_Color = AccessTools.Property(RawImage, "color");
+                Raw_Raycast = AccessTools.Property(RawImage, "raycastTarget");
             }
             if (Loading_Show == null) Missing("loading screen Show (performance modes and diagnostics unavailable)");
             if (Loading_Status == null) Missing("loading ChangeStatus (phase markers unavailable)");

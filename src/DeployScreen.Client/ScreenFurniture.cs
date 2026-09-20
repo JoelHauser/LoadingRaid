@@ -29,6 +29,28 @@ namespace DeployScreen.Client
         protected const float TopMargin = 0.09f;
         protected const float BottomMargin = 0.08f;
 
+        /// <summary>
+        /// The least margin in real pixels, whatever the screen.
+        ///
+        /// A fraction is the right shape for a layout and the wrong shape for clearing BSG's UI,
+        /// which is authored in pixels and is the same size on every monitor. Four percent is 138px
+        /// of room on a 3440-wide screen and 77px on a 1920-wide one -- so the Back button, whose
+        /// highlight is a fixed-size graphic wider than the button itself, had room to grow into on
+        /// an ultrawide and ran out of it at 1080p. It was reported as the button looking broken
+        /// when highlighted, and only at 1080p, which is exactly the shape of a proportional margin
+        /// meeting a pixel-sized sprite.
+        ///
+        /// A floor rather than a replacement: on a wide screen the fraction is already larger and
+        /// nothing changes, and the layout keeps breathing with the frame where there is room.
+        /// </summary>
+        protected const float MinMarginPixels = 110f;
+
+        /// <summary>A margin as a fraction of one side, never smaller than the floor.</summary>
+        protected static float Margin(float extent, float fraction)
+        {
+            return Mathf.Max(extent * fraction, MinMarginPixels);
+        }
+
         /// <summary>How far past this screen's own edges a scrim is stretched, in canvas units.</summary>
         private const float Overhang = 2000f;
 

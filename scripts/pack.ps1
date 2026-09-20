@@ -6,7 +6,6 @@
     The zip is laid out to extract straight into an SPT folder:
 
         BepInEx\plugins\DeployScreen\DeployScreen.Client.dll
-        BepInEx\plugins\DeployScreen\environments.txt
         BepInEx\plugins\DeployScreen\banners\README.txt
         BepInEx\plugins\DeployScreen\banners\_default\
 
@@ -29,7 +28,7 @@
 
 .PARAMETER Install
     Also copy the staged folder into BepInEx\plugins\DeployScreen under SPTPath.
-    Existing banner images and environments.txt are left alone.
+    Existing banner images are left alone.
 
 .EXAMPLE
     scripts\pack.ps1
@@ -88,7 +87,6 @@ $pluginDir = Join-Path $stage 'BepInEx\plugins\DeployScreen'
 New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
 Copy-Item $dll $pluginDir
 
-Copy-Item (Join-Path $root 'assets\environments.txt') $pluginDir
 
 # The banners tree ships with its folders in place, so there is somewhere obvious to
 # drop images into. _default needs a file or the zip will not carry the folder at all.
@@ -129,8 +127,8 @@ if ($Install) {
 
     Copy-Item $dll $destination -Force
 
-    # Never clobber art or a tuned environments.txt that is already there.
-    foreach ($keep in @('environments.txt', 'banners\README.txt', 'banners\_default\README.txt')) {
+    # Never clobber art that is already there.
+    foreach ($keep in @('banners\README.txt', 'banners\_default\README.txt')) {
         $target = Join-Path $destination $keep
         if (-not (Test-Path $target)) {
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null

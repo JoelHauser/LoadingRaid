@@ -184,6 +184,7 @@ namespace DeployScreen.Client
 
                 TakeCameraVignette(camera);
                 TakeBackdropOcclusion(camera);
+                DescribeCameraEffects(camera);
 
 
                 // The art is the whole point. With none for this map, the menu scene is left
@@ -197,6 +198,8 @@ namespace DeployScreen.Client
                     HideSceneFurniture(root);
                     HideBanners();
                     _built = true;
+
+                    BeginFadeIn();
                 }
 
                 _grade.Begin(root, grade);
@@ -447,6 +450,63 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
+        /// How dark the hour is allowed to make the picture itself.
+        ///
+        /// Exposure bottoms out at 0.25, and a photograph at a quarter brightness is closer to a
+        /// black rectangle than to a night scene -- the picture is the thing the player came to
+        /// look at. 0.30 is dark enough to read as the small hours and still show what the place
+        /// is.
+        /// </summary>
+        private const float DarkestPicture = 0.30f;
+
+        /// <summary>
+        /// The colour the map's picture is multiplied by: the destination's hue, at the
+        /// destination's brightness.
+        ///
+        /// The brightness half is the correction. Until now the wash carried only hue, and the one
+        /// number in the grade that says how bright a place is never reached the picture at all --
+        /// it went to lights and nowhere else. The result was a background that barely moved
+        /// between noon and two in the morning: two runs measured a wash of 0.82 against 0.70, a
+        /// 14% difference standing in for the whole of night.
+        ///
+        /// Three things were holding it up and all three are worth knowing:
+        ///
+        ///   - NightKey is 0x6E7E9A, a blue-grey around half luminance. Lerping the wash toward it
+        ///     tints the picture; it cannot take it much below half, because that is where the
+        ///     colour being lerped toward sits.
+        ///   - Exposure was never in this path.
+        ///   - Lerp(white, wash, strength) pulls the result back *toward white* by however much
+        ///     strength is under 1, so a partial grade is a brighter one.
+        ///
+        /// Exposure is clamped rather than used raw: it reaches 1.6 at the bright end, and
+        /// multiplying a photograph by 1.6 blows out its sky without making anything look sunnier.
+        /// Nothing here may brighten the picture past the file the player supplied.
+        ///
+        /// Alpha is carried across untouched. Multiplying a Color scales alpha with it, and an art
+        /// plane at 0.3 alpha is a transparent one -- the game's own deploy screen showing through
+        /// the middle of the picture, which is the bug the whole solid-art transition exists to
+        /// avoid.
+        ///
+        /// One consequence worth stating because it is the point: ArtTone measures this wash, and
+        /// the character is lit from what ArtTone measures. So darkening the picture for the hour
+        /// darkens the PMC standing in it, by the same amount, without anything else being told.
+        /// </summary>
+        internal static Color WashFor(Grade grade, float strength)
+        {
+            strength = Mathf.Clamp01(strength);
+
+            var lit = Mathf.Clamp(grade.Exposure, DarkestPicture, 1f);
+
+            var target = new Color(
+                grade.Wash.r * lit,
+                grade.Wash.g * lit,
+                grade.Wash.b * lit,
+                grade.Wash.a);
+
+            return Color.Lerp(Color.white, target, strength);
+        }
+
+        /// <summary>
         /// How much bigger than the frame the planes have to be built so that the drift can never
         /// reveal an edge, whatever the shape of the screen.
         ///
@@ -551,9 +611,8 @@ namespace DeployScreen.Client
             _backdropCamera = camera;
             _artDistance = far;
 
-            // Far: the map itself, washed toward the destination's light.
-            var wash = Color.Lerp(Color.white, grade.Wash,
-                Mathf.Clamp01(DeployScreenPlugin.StagingGradeStrength.Value));
+            // Far: the map itself, washed toward the destination's light -- and darkened to it.
+            var wash = WashFor(grade, DeployScreenPlugin.StagingGradeStrength.Value);
 
             BuildPlane(root, camera, aspect, "DeployScreen Map", far, farOverscan, sprite, wash, -100);
 
@@ -1424,6 +1483,59 @@ namespace DeployScreen.Client
         /// Recorded and restored like everything else, and held down by KeepPreviewQuiet, so a
         /// menu that switches it back on partway through the load does not win.
         /// </summary>
+        /// <summary>
+        /// Everything on the backdrop camera that could be changing how the art looks.
+        ///
+        /// A probe, and written because two guesses about this cost two broken builds. The art is
+        /// drawn by this camera while the screen is up and by a screen-space overlay after Back,
+        /// and an overlay is composited after every camera and every image effect -- so whatever is
+        /// listed here is exactly what the held picture is missing.
+        ///
+        /// Knowing the names decides what to do next. A vignette or a colour grade can be redrawn
+        /// on the overlay for almost nothing; depth of field and bloom cannot, and there is no
+        /// point pretending otherwise until we know which of them are actually here.
+        /// </summary>
+        private void DescribeCameraEffects(Camera camera)
+        {
+            if (camera == null) return;
+
+            try
+            {
+                var names = new List<string>();
+
+                foreach (var behaviour in camera.GetComponents<MonoBehaviour>())
+                {
+                    if (behaviour == null) continue;
+
+                    var type = behaviour.GetType();
+
+                    // Anything that can touch the rendered image implements one of these. Listing
+                    // every MonoBehaviour would bury the answer in menu bookkeeping.
+                    var draws = type.GetMethod("OnRenderImage",
+                                    System.Reflection.BindingFlags.Instance
+                                    | System.Reflection.BindingFlags.NonPublic
+                                    | System.Reflection.BindingFlags.Public) != null
+                                || type.GetMethod("OnPreRender",
+                                    System.Reflection.BindingFlags.Instance
+                                    | System.Reflection.BindingFlags.NonPublic
+                                    | System.Reflection.BindingFlags.Public) != null;
+
+                    if (!draws) continue;
+
+                    names.Add(type.Name + (behaviour.enabled ? "" : " (off)"));
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] backdrop camera effects: "
+                    + (names.Count == 0 ? "none" : string.Join(", ", names.ToArray()))
+                    + "; hdr=" + camera.allowHDR
+                    + "; msaa=" + camera.allowMSAA
+                    + "; fog=" + RenderSettings.fog
+                    + (RenderSettings.fog ? " (" + RenderSettings.fogMode + ")" : ""));
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
         private void TakeBackdropOcclusion(Camera camera)
         {
             if (camera == null || !DeployScreenPlugin.StagingBackdropAo.Value) return;
@@ -2079,6 +2191,8 @@ namespace DeployScreen.Client
         {
             KeepPreviewQuiet();
 
+            FadeInStep(Time.unscaledDeltaTime);
+
             WatchArt(now);
 
             if (_subCaptionText == null) return;
@@ -2186,6 +2300,9 @@ namespace DeployScreen.Client
         private readonly List<Component> _planeImages = new List<Component>();
         private readonly List<Color> _planeColours = new List<Color>();
         private float _fade = 1f;
+
+        /// <summary>How far the art has arrived, 0..1, or -1 once it is fully up and done with.</summary>
+        private float _fadeIn = -1f;
         private float _fadeWaited;
 
         /// <summary>When the menu came up, as a point on _fadeWaited, or -1 before it has.</summary>
@@ -2206,12 +2323,117 @@ namespace DeployScreen.Client
         /// <summary>The screen-space canvas the art is re-drawn on for the hold, if it got one.</summary>
         private GameObject _holdOverlay;
 
+        /// <summary>The frozen camera output the overlay is showing, if the capture worked.</summary>
+        private RenderTexture _holdCapture;
+
+        /// <summary>The overlay's own alpha while it arrives, and -1 once it is fully up.</summary>
+        private CanvasGroup _holdOverlayGroup;
+        private float _handover = -1f;
+
+        /// <summary>
+        /// How long the overlay takes to come up over the art it replaces.
+        ///
+        /// Short. It is covering a change of grading, not staging an effect, and the longer it runs
+        /// the longer both are on screen at once -- which is two pictures of the same place at
+        /// slightly different brightness, and that reads as a fault of its own if it lingers.
+        /// </summary>
+        private const float HandoverSeconds = 0.45f;
+
         /// <summary>Whether the client has been seen working at all, so that stopping means something.</summary>
         private bool _sawBusy;
 
         /// <summary>The dots that say the hold is a wait and not a hang, and where they are in their cycle.</summary>
         private readonly List<Component> _workingDots = new List<Component>();
         private float _workingTime;
+
+        /// <summary>
+        /// Starts the art at nothing, so it can arrive rather than appear.
+        ///
+        /// The screen opens and the art is built a fraction of a second later -- 0.19s on the runs
+        /// that measured it -- so without this the player gets the game's own deploy screen, then a
+        /// snap to ours. Small, and once seen impossible to stop seeing.
+        ///
+        /// What this does *not* smooth is the cut from the menu into the deploy screen. That one is
+        /// the game's: the screen is shown, and nothing here is consulted about it.
+        /// </summary>
+        private void BeginFadeIn()
+        {
+            var seconds = DeployScreenPlugin.StagingFadeInSeconds == null
+                ? 0f
+                : DeployScreenPlugin.StagingFadeInSeconds.Value;
+
+            if (seconds <= 0.001f || _planeFades.Count == 0)
+            {
+                _fadeIn = -1f;
+                return;
+            }
+
+            _fadeIn = 0f;
+            ApplyFadeIn(0f);
+
+            // Ours arrive with the picture. The rig is built at full strength for the grade, and
+            // DimCharacter scales it from exactly there, so handing it the same 0..1 keeps the
+            // character and the place he is standing in on one curve.
+            try { _grade.DimCharacter(0f); }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
+        /// <summary>One frame of the arrival. Silent and free once the art is up.</summary>
+        private void FadeInStep(float seconds)
+        {
+            if (_fadeIn < 0f) return;
+
+            var length = DeployScreenPlugin.StagingFadeInSeconds == null
+                ? 0f
+                : Mathf.Max(0.001f, DeployScreenPlugin.StagingFadeInSeconds.Value);
+
+            _fadeIn = Mathf.Clamp01(_fadeIn + seconds / length);
+
+            // Smoothstep rather than linear: a linear alpha reads as a wipe starting and stopping,
+            // and the ends are where a fade is noticed.
+            var t = _fadeIn * _fadeIn * (3f - 2f * _fadeIn);
+
+            ApplyFadeIn(t);
+
+            try { _grade.DimCharacter(t); }
+            catch (Exception error) { WarnOnce(error); }
+
+            // Done means done. Past here the alpha belongs to the dissolve, and two things writing
+            // one number is how the cancel transition would start fighting the arrival.
+            if (_fadeIn >= 1f) _fadeIn = -1f;
+        }
+
+        /// <summary>One frame of the overlay arriving over the world art. Free once it is up.</summary>
+        private void HandoverStep(float seconds)
+        {
+            if (_handover < 0f || _holdOverlayGroup == null) return;
+
+            _handover = Mathf.Clamp01(_handover + seconds / HandoverSeconds);
+
+            // Smoothstep, so the two pictures are never both at half strength for long -- that is
+            // the part of a cross-fade that looks like a mistake rather than a transition.
+            var t = _handover * _handover * (3f - 2f * _handover);
+
+            try { _holdOverlayGroup.alpha = t; }
+            catch { }
+
+            // Done means done: past here the alpha belongs to the dissolve at the end of the hold,
+            // and two things writing one number is how a transition starts fighting itself.
+            if (_handover >= 1f)
+            {
+                _handover = -1f;
+                _holdOverlayGroup = null;
+            }
+        }
+
+        private void ApplyFadeIn(float alpha)
+        {
+            foreach (var group in _planeFades)
+            {
+                try { if (group != null) group.alpha = alpha; }
+                catch { }
+            }
+        }
 
         /// <summary>
         /// Whether the art is actually on screen, which is the question every previous probe here
@@ -2433,18 +2655,39 @@ namespace DeployScreen.Client
 
             if (!any) return false;
 
-            foreach (var go in _hidden)
-            {
-                try { if (go != null) go.SetActive(true); }
-                catch (Exception error) { WarnOnce(error); }
-            }
+            // Before anything is put back. The capture is a photograph of the screen, so it has to
+            // be taken while the screen still looks the way the player was looking at it -- and
+            // the very next thing this method does is switch the menu's own furniture back on.
+            // Capturing after that photographs the restored menu, which is why a first attempt at
+            // this looked like the stock screen coming back: it was the stock screen, held up as
+            // a picture for twenty seconds.
+            CaptureBackdrop();
 
-            _hidden.Clear();
+            // The menu's own furniture is deliberately left hidden here, and Restore puts it back
+            // when the art is finally gone. Switching it on now would change the scene underneath
+            // a transition the player is in the middle of watching -- the same reasoning that
+            // moved the grade restore out of this method, and for the same reason: the one moment
+            // nobody can see a change happen is after the picture has dissolved.
 
-            try { _grade.Restore(); }
-            catch (Exception error) { WarnOnce(error); }
+            // The grade is deliberately NOT restored here, and this is the correction to a
+            // version that did.
+            //
+            // Putting the menu's own lighting back the instant Back is pressed re-lights the scene
+            // and the character underneath art that is still on screen, so the picture visibly
+            // changes at the moment of the press -- for no reason the player can see, since the
+            // thing being restored is behind the art anyway. It got worse once exposure started
+            // reaching the studio rig and the scene lights, because by then there was a real
+            // brightness step to jump rather than only a tint.
+            //
+            // The teardown's own Restore() puts it all back, which happens after the dissolve has
+            // finished. So the destination keeps its light for the whole abort and the menu gets
+            // its own back only once the art is gone -- which is the one moment nobody can see the
+            // change happen.
+            //
+            // The backdrop below is the opposite case and stays where it is: it is a scene load,
+            // so it *needs* the cover of solid art, and it is not a look that changes under one.
 
-            // And the backdrop, started here rather than left to the teardown. Putting the
+            // Started here rather than left to the teardown. Putting the
             // player's own choice back is a scene load; running it after the art had already gone
             // meant the swap happened in full view, so pressing Back showed the map's backdrop,
             // then their own arriving, then a hang, then the menu. Started now it happens behind
@@ -2547,11 +2790,15 @@ namespace DeployScreen.Client
                 rootRect.offsetMin = Vector2.zero;
                 rootRect.offsetMax = Vector2.zero;
 
-                var copied = 0;
+                // What the camera is drawing right now, pixels and all. See CaptureBackdrop.
+                var copied = ShowCaptureOnOverlay(rootRect) ? 1 : 0;
 
-                for (var i = 0; i < _created.Count && i < _planeDistance.Count; i++)
+                if (copied == 0)
                 {
-                    if (CopyPlaneToOverlay(_created[i], _planeDistance[i], rootRect)) copied++;
+                    for (var i = 0; i < _created.Count && i < _planeDistance.Count; i++)
+                    {
+                        if (CopyPlaneToOverlay(_created[i], _planeDistance[i], rootRect)) copied++;
+                    }
                 }
 
                 if (copied == 0)
@@ -2564,6 +2811,19 @@ namespace DeployScreen.Client
                 // The hold covers the game's own wheel, so it owes the player one of its own.
                 try { BuildWorkingDots(rootRect); }
                 catch (Exception error) { WarnOnce(error); }
+
+                // Starts invisible. The world planes are still on screen and the preloader is not
+                // up yet -- busy=no at this instant in every trace -- so for the next moment both
+                // are visible and the overlay can arrive over the top of the art it is replacing.
+                //
+                // That is the whole answer to the style change. The two draw the same picture in
+                // the same place; what differs is the camera grading one of them has and the other
+                // cannot. Cut between them and that difference is a pop. Cross-fade and it is a
+                // dissolve, which is what it should have been all along -- and it does not need
+                // the two to match, only to overlap.
+                group.alpha = 0f;
+                _holdOverlayGroup = group;
+                _handover = 0f;
 
                 _holdOverlay = root;
                 _planeFades.Add(group);
@@ -2583,8 +2843,117 @@ namespace DeployScreen.Client
         }
 
         /// <summary>
+        /// The backdrop camera's own output, frozen, so the hold looks like what it replaced.
+        ///
+        /// Re-drawing the sprites on a flat canvas gets the picture right and the *look* wrong, and
+        /// the difference is jarring precisely because nothing about the art has changed: the world
+        /// planes are drawn by MainMenuCamera and carry whatever that camera does to them --
+        /// tonemapping, grading, whatever else sits on the menu's rendering. A Screen Space -
+        /// Overlay canvas is drawn after every camera, so it gets none of it. Same pixels in, a
+        /// different image out, at the exact moment the player pressed a button.
+        ///
+        /// There is no way to reproduce a camera's post-processing on an overlay canvas. So do not
+        /// reproduce it: ask the camera for its output and show that. The result is the same image
+        /// by construction rather than by approximation, and it cannot drift out of agreement when
+        /// someone changes the grade later.
+        ///
+        /// It gives us the character-free frame for free, too. MainMenuCamera's culling mask is
+        /// 0x02000000 -- Menu Environment and nothing else. The PMC is on WeaponPreview, drawn by
+        /// the preview camera, so he is not in this capture. Neither is any UI. It is exactly the
+        /// backdrop, which is exactly the thing that has to keep looking the same.
+        ///
+        /// Returns false when anything is missing, and the sprite copies take over.
+        /// </summary>
+        private void CaptureBackdrop()
+        {
+            if (_camera == null || GameTypes.RawImage == null || GameTypes.Raw_Texture == null) return;
+            if (_holdCapture != null) return;
+
+            if (DeployScreenPlugin.StagingHoldAsDrawn != null
+                && !DeployScreenPlugin.StagingHoldAsDrawn.Value) return;
+
+            try
+            {
+                var width = Mathf.Clamp(_camera.pixelWidth > 0 ? _camera.pixelWidth : Screen.width, 16, 3840);
+                var height = Mathf.Clamp(_camera.pixelHeight > 0 ? _camera.pixelHeight : Screen.height, 16, 2160);
+
+                var capture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+                capture.name = "DeployScreen Hold Capture";
+                capture.Create();
+
+                var was = _camera.targetTexture;
+
+                try
+                {
+                    // The art planes are world-space canvases. A manual Render() outside the normal
+                    // loop can miss a canvas that has not been rebuilt this frame, which is the
+                    // likeliest reason the first live capture came back as an empty menu room --
+                    // the environment drew, the art did not. Forcing the rebuild first is the one
+                    // thing that might make it agree; it is untested, which is why this path is
+                    // off by default.
+                    Canvas.ForceUpdateCanvases();
+
+                    _camera.targetTexture = capture;
+                    _camera.Render();
+                }
+                finally
+                {
+                    _camera.targetTexture = was;
+                }
+
+                _holdCapture = capture;
+
+                LoadingPerformance.Note(
+                    "held the backdrop as the camera drew it: " + width + "x" + height);
+            }
+            catch (Exception error)
+            {
+                WarnOnce(error);
+                LoadingPerformance.Note(
+                    "could not capture the backdrop (" + error.GetType().Name
+                    + "), re-drawing the art instead");
+                _holdCapture = null;
+            }
+        }
+
+        /// <summary>Puts the captured frame on the overlay. False when there is no capture.</summary>
+        private bool ShowCaptureOnOverlay(RectTransform parent)
+        {
+            if (_holdCapture == null || GameTypes.RawImage == null || GameTypes.Raw_Texture == null) return false;
+
+            try
+            {
+                var go = new GameObject("Held Backdrop");
+                var rect = go.AddComponent<RectTransform>();
+                rect.SetParent(parent, false);
+                rect.anchorMin = new Vector2(0.5f, 0.5f);
+                rect.anchorMax = new Vector2(0.5f, 0.5f);
+                rect.pivot = new Vector2(0.5f, 0.5f);
+                rect.anchoredPosition = Vector2.zero;
+                rect.sizeDelta = new Vector2(Screen.width, Screen.height);
+
+                var raw = go.AddComponent(GameTypes.RawImage);
+
+                GameTypes.Raw_Texture.SetValue(raw, _holdCapture, null);
+                if (GameTypes.Raw_Raycast != null) GameTypes.Raw_Raycast.SetValue(raw, false, null);
+
+                KeepMoving(rect);
+
+                return true;
+            }
+            catch (Exception error)
+            {
+                WarnOnce(error);
+                return false;
+            }
+        }
+
+        /// <summary>
         /// One world plane re-drawn flat, keeping its picture, its graded colour and the crop that
         /// was actually on screen. False when there is nothing there worth copying.
+        ///
+        /// The fallback, used when the camera cannot be captured. It gets the picture right and the
+        /// post-processing wrong -- see ShowCaptureOnOverlay for why that matters.
         /// </summary>
         private bool CopyPlaneToOverlay(GameObject plane, float distance, RectTransform parent)
         {
@@ -2633,6 +3002,8 @@ namespace DeployScreen.Client
 
             var image = copy.AddComponent(GameTypes.BackgroundImage);
 
+            KeepMoving(copyRect);
+
             try
             {
                 if (GameTypes.Background_Sprite != null)
@@ -2655,6 +3026,55 @@ namespace DeployScreen.Client
             catch { }
 
             return true;
+        }
+
+        /// <summary>
+        /// Keeps the held picture moving, so a wait does not read as a crash.
+        ///
+        /// The art on the world planes moves because the *camera* drifts across them -- that is the
+        /// parallax, and it is the reason the deploy screen feels alive while it loads. The overlay
+        /// has no camera: it is a flat canvas drawn over everything, and a flat canvas holding
+        /// perfectly still for twenty seconds looks exactly like a game that has stopped
+        /// responding. The pulsing dots say the client is working; they do not stop the *picture*
+        /// looking frozen, and the picture is most of the screen.
+        ///
+        /// So the copies get the same Ken Burns the banners use. It is not the same motion as the
+        /// parallax -- nothing flat can be -- but it is slow, continuous movement of the same
+        /// character, and continuing to move is the whole point.
+        ///
+        /// Safe at any overscan, including none. Zoom and drift both scale with the same t, and the
+        /// margin the zoom opens up is always larger than the drift that goes with it: at the far
+        /// end of the cycle a 5% zoom on a 1440-tall frame gives 36 pixels a side against 18 of
+        /// drift. The edge cannot come into frame.
+        ///
+        /// Each copy takes its own random direction, so the map and the haze in front of it pull
+        /// apart slightly as they move -- which is a cheap suggestion of the depth that the flat
+        /// overlay threw away.
+        /// </summary>
+        private static void KeepMoving(RectTransform rect)
+        {
+            if (rect == null) return;
+
+            if (DeployScreenPlugin.MotionEnabled != null && !DeployScreenPlugin.MotionEnabled.Value)
+            {
+                return;
+            }
+
+            try
+            {
+                var motion = rect.gameObject.AddComponent<KenBurns>();
+
+                // The player's own motion settings. They used to drive the banners, which are gone
+                // with Enhanced mode; this is the only moving art left, so it is what they mean
+                // now.
+                if (DeployScreenPlugin.MotionZoom != null) motion.Zoom = DeployScreenPlugin.MotionZoom.Value;
+                if (DeployScreenPlugin.MotionPeriod != null) motion.Period = DeployScreenPlugin.MotionPeriod.Value;
+
+                // Not configurable, and small on purpose: the drift has to stay inside the margin
+                // the zoom opens, and the zoom is the part the player is tuning.
+                motion.DriftPixels = 18f;
+            }
+            catch { }
         }
 
         /// <summary>The image component on a built plane, or null if it has none.</summary>
@@ -2876,6 +3296,9 @@ namespace DeployScreen.Client
             try { AnimateWorkingDots(seconds); }
             catch (Exception error) { WarnOnce(error); }
 
+            try { HandoverStep(seconds); }
+            catch (Exception error) { WarnOnce(error); }
+
             // Nothing moves until the menu is genuinely there. The art is at full alpha and is
             // the only thing on screen, which is the whole point: everything the player used to
             // watch -- the backdrop swapping, the raid tearing down, the menu rebuilding -- now
@@ -3054,6 +3477,7 @@ namespace DeployScreen.Client
             _noticeUntil = -1;
             _planeFades.Clear();
             _fade = 1f;
+            _fadeIn = -1f;
 
             // The reading belongs to the picture that is going, not to the next one.
             ArtTone.Forget();
@@ -3087,6 +3511,20 @@ namespace DeployScreen.Client
             catch (Exception error) { WarnOnce(error); }
 
             _holdOverlay = null;
+
+            try
+            {
+                if (_holdCapture != null)
+                {
+                    _holdCapture.Release();
+                    UnityEngine.Object.Destroy(_holdCapture);
+                }
+            }
+            catch (Exception error) { WarnOnce(error); }
+
+            _holdCapture = null;
+            _holdOverlayGroup = null;
+            _handover = -1f;
             _workingDots.Clear();
             _workingTime = 0f;
 

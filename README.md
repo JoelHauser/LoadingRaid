@@ -1,26 +1,24 @@
 # Deploy Screen Overhaul
 
-Gives you something worth looking at while a raid loads: moving banners, a briefing for the map you're entering, your own images, and a backdrop that fits the map.
+Turns the raid loading screen into the place you are about to land in: your own picture of the map, lit for the hour and the weather you are deploying into, with your PMC lit to match it.
 
-> **Pre-release.** Built against SPT 4.1.6 and played in game. The dark band that used to
-> follow the PMC's silhouette is fixed -- it was a command buffer on the preview camera, and
-> it is removed by name and put back on teardown.
+> **First release.** Built against SPT 4.1.6 and played in game.
 
 ## What it does
 
-The loading screen with your PMC and **Deploying in:** has no background of its own. What you're looking at is a slideshow of banners in front of the main menu scene. The banners haven't changed in years, they're the same on every map, and nothing on the screen moves.
+The loading screen with your PMC and **Deploying in:** has no background of its own. What you're looking at is a slideshow of small banners in front of the main menu room. The banners haven't changed in years, they're the same on every map, and nothing on the screen moves.
 
-This mod changes that:
+This mod replaces that with one picture of your destination, hung as the world your character is standing in:
 
-- **Motion.** Each banner slowly zooms and drifts.
-- **Map intel.** The banner captions tell you which bosses can spawn and how likely they are, how many extracts the map has, and which of your tasks are on this map.
-- **Custom banners.** Use your own images, per map.
-- **Backdrop.** The menu scene behind the screen changes to suit the map. Off by default.
+- **The map as the world.** Your art fills the screen, the menu room's furniture and the banner panel step aside, and two planes at different depths shear against each other as the camera drifts -- so it has depth rather than being a pan across a flat image.
+- **Lit for the raid, not just the map.** The hour comes from the same clock the location screen showed you and the weather from the same forecast, so a foggy 03:00 Woods and a clear midday one do not look alike.
+- **A PMC who belongs there.** The picture is measured every raid, and your character is lit to what it actually reads -- which is what stops him looking like a cut-out standing in front of a photo.
+- **Your own images, per map.** Drop them in the map's folder.
 - **Readable over anything.** The writing carries its own shadow, and how much the corners are dimmed is measured from your picture rather than fixed -- barely anything over a dark treeline, a good deal over a white sky.
 - **The countdown too.** GET READY and the final count stay on the map art in the same corners, instead of cutting back to the menu room for the last few seconds.
 - **Backing out, too.** Press Back and the art stays up through the whole return to the menu -- the client's work, the rebuild, all of it -- and then dissolves into the menu instead of cutting to a dark room with a loading wheel in the corner.
 - **A different picture each time.** Each load of a map takes the next picture in its folder, so ten pictures means ten raids before you see one twice.
-- **Performance comparison.** Record loading phases and frame gaps, compare the stock presentation with an experimental minimal screen, and find out whether removing presentation work helps on your machine.
+- **Measurement.** Record loading phases, frame gaps, art decode cost and memory to a JSON report, and compare cold against warm loads.
 
 Motion and map intel work as soon as you install, with nothing to set up. Nothing is saved to your profile, and removing the mod puts everything back the way it was.
 
@@ -47,16 +45,12 @@ Press **F12** and open **Deploy Screen Overhaul**. Changes take effect the next 
 
 | Section | Setting | Default | What it does |
 | --- | --- | --- | --- |
-| Performance | Loading screen | Enhanced | **Staging area**: your map art becomes the world your PMC stands in — see [The staging area](#the-staging-area).<br>**Enhanced**: banners, motion and intel on the normal screen.<br>**Vanilla**: stock presentation with optional diagnostics.<br>**Minimal**: experimental reduced screen. |
 | Performance | Record loading | On | Save a JSON loading report under the plugin's `diagnostics` folder. |
-| Performance | Test label | Empty | Group comparable runs, for example `first` or `repeat`. |
 | Banners | Enabled | On | Use your own images from the `banners` folder. Does nothing until you add some. |
-| Banners | Captions | Map intel | **Map intel**: a briefing for the map. See [Map intel](#map-intel).<br>**From file name**: captions taken from your image file names.<br>**Keep vanilla**: the game's own captions, now working alongside your own art. |
-| Motion | Enabled | On | Slowly zoom and drift each banner. |
+| Motion | Enabled | On | Keep the art moving -- camera drift during the load, and a slow zoom on the held picture after you press Back. |
 | Motion | Zoom | 1.06 | How far the zoom goes, from 1.0 to 1.3. |
 | Motion | Seconds per cycle | 18 | How long one zoom in and back out takes, from 4 to 60. |
 | Intel | Show your tasks | On | Include a card listing the tasks you've started on this map. |
-| Backdrop | Match the map | Off | Override **your** chosen backdrop with one picked to suit the map. See [Backdrop](#backdrop). |
 | Scene | Depth and atmosphere | On | Drift the backdrop's camera and breathe its lights, for real parallax. See [Depth](#depth). |
 | Scene | Camera drift | 0.05 | How far the camera drifts, in world units. **The one setting likely to need tuning.** |
 | Scene | Camera sway | 0.12 | A slow rotation on top of the drift, in degrees. |
@@ -94,12 +88,8 @@ Press **F12** and open **Deploy Screen Overhaul**. Changes take effect the next 
 
 ## The staging area
 
-Set **Performance → Loading screen** to **Staging area** and the deploy screen stops being a menu
-with a picture in it. Your art for the destination becomes the place your PMC is standing in while
-the raid loads.
-
-**It is not the default.** Switch to it deliberately, keep some raids on **Enhanced**, and compare —
-that's what the modes are for.
+The deploy screen stops being a menu with a picture in it. Your art for the destination becomes
+the place your PMC is standing in while the raid loads.
 
 **It needs art.** Put images in the map's folder under `banners/` (see [Custom banners](#custom-banners)).
 A map with no art is left alone: you get the normal screen, with only the lighting following the
@@ -335,41 +325,6 @@ Capitalization doesn't matter, so `woods` and `Woods` both work.
 | Streets of Tarkov | `TarkovStreets` |
 | Woods | `Woods` |
 
-## Backdrop
-
-Your backdrop is a real game setting — the one in the game's own options. **This mod treats it as
-the foundation to build on, not as something to replace**, so **Match the map** is off by default
-and off is the recommended setting.
-
-Turn it on and the menu scene behind the loading screen changes to suit where you're going: the
-factory scene for Factory, the forest for Woods, the lab for Labs. With it on:
-
-- **Your backdrop comes back.** It's restored the moment you leave the deploy screen — whether you
-  cancel or come back from the raid — so an override can't follow you to the main menu. (Restoring
-  is itself a scene load, so when a raid actually starts it's deferred until the menu returns,
-  rather than stealing frames from the map load.)
-- **A map with no backdrop of its own restores yours**, instead of keeping whatever the previous map
-  asked for.
-- **If a backdrop isn't available to you, yours stays.** The six scenes are customization unlocks,
-  not just files — the mod checks what you actually have before asking for one.
-- **If you change the setting yourself while it's on, the mod backs off** rather than overwriting
-  your new choice.
-
-Switching scenes means loading one, which can cause a brief stutter while you're setting up the
-raid. That's the other reason it's off by default.
-
-The game has six scenes: `Factory`, `Wood`, `Laboratory`, `TheUnheardEdition`, `Cyber` and `Random`.
-The mod only uses the first three by default — the other two are themed for game editions and look
-out of place behind a raid.
-
-To pick a different scene for a map, edit `environments.txt`:
-
-```
-TarkovStreets = Cyber
-Woods         = Wood
-Shoreline     = Random     # leave the menu alone for this map
-```
-
 ## Hitching while you wait
 
 If the deploy screen stutters while your raid loads, it's worth knowing what's actually happening:
@@ -402,21 +357,20 @@ you're guessing, and so is anyone else.
 
 ## Performance
 
-**No improvement over stock loading has been measured yet.** The experimental Minimal mode removes presentation work; it does not rewrite EFT's asset loading or guarantee that long freezes disappear.
+**No improvement over stock loading has been measured yet**, and this mod does not rewrite EFT's asset loading or guarantee that long freezes disappear. What it does is measure: the report says where the time went, which is the part that was missing.
 
-- **Enhanced** keeps the existing features below.
-- **Vanilla** bypasses this mod's banner, motion, intel, measurement and backdrop changes. Diagnostics can stay on for a baseline. Other installed mods still apply.
-- **Minimal** skips the deploy screen's character-preview task and banner-panel creation when the hooks are available. It adds a plain dark background and suspends the current menu environment root when the UI does not depend on its camera. The map heading, loading status, countdown, party controls and cancel behavior remain the game's. No custom banner images are loaded in this mode.
+### Comparing runs
 
-Minimal is opt-in. Missing hooks leave the affected part stock; the log and report show which reductions were applied. Closing or canceling restores presentation objects, while respecting the game's own request to hide the environment during raid transition. The new rendering and restoration paths still need in-game validation, including canceling and loading a second raid.
+There is one presentation now -- the staging area -- so there are no modes to compare. What the
+reports still separate is **cold against warm**: the first load of a map in a session decodes its
+art and pays for it, and later ones do not. `compare-loading.ps1` groups on that by itself, without
+needing a label.
 
-### Comparing loading modes
-
-1. In F12, set **Performance > Record loading** on and **Loading screen** to **Vanilla**. Set **Test label** to `first` for the first raid after restarting the game.
+1. In F12, set **Performance > Record loading** on. Set **Test label** to `first` for the first raid after restarting the game.
 2. Load the same map with the same raid settings, graphics settings, other mods and custom-art files. Stay focused on the game; alt-tabbed captures are excluded from the comparison.
 3. Use `repeat` for subsequent loads in that game session. Collect at least three comparable captures for each mode. A first load after restart is not necessarily a cold disk-cache load.
-4. Repeat with **Enhanced** and **Minimal**, restarting between modes to avoid retained artwork or scene state affecting the comparison. Alternate mode order across sessions.
-5. Also try a run with the plugin removed as a manual sanity check. That run cannot produce this mod's report; Vanilla mode is the instrumented baseline, not a zero-overhead measurement.
+4. Load the same map again in the same session, so a warm run pairs with the cold one.
+5. Also try a run with the plugin removed as a manual sanity check. That run cannot produce this mod's report, so it is a comparison by feel rather than by number.
 
 Reports appear after loading under:
 
@@ -442,12 +396,11 @@ The comparison keeps maps, modes, labels, resolutions, plugin versions, relevant
 
 Each detailed list is capped at 128 entries, with dropped counts and complete aggregate gap totals. Reports are serialized and written on a background thread after capture; there are no per-frame disk writes. Measurement still has some overhead. Closing without a confirmed raid-start marker yields an incomplete report after 30 seconds; a capture also has a 30-minute limit. A force-quit or crash may leave no report. Reports remain until you delete them; switch **Record loading** off when finished testing.
 
-### Enhanced mode costs
+### What the presentation costs
 
 - **Motion** and **map intel** only do anything while the loading screen is showing, and motion skips the banners that aren't currently on screen.
-- **Custom banners** are loaded the first time they're needed and kept while they're useful. Big pictures take longer to load and use more video memory: one sized for a 4K screen is about 22 MB. Sizes your screen has no use for are freed when the loading screen closes, so keeping several sizes of a picture costs you nothing but disk space.
-- **Measuring** the banners happens once per raid and isn't something you'd notice. What it measures is saved, so later sessions at the same resolution get the right size from the first raid.
-- **Backdrop** loads a scene whenever the next map needs a different one, which can cause a short stutter. That's why it's off by default.
+- **Your pictures** are loaded the first time they're needed and kept while they're useful. Big pictures take longer to load and use more video memory: one sized for a 4K screen is about 22 MB. Sizes your screen has no use for are freed when the loading screen closes, so keeping several sizes of a picture costs you nothing but disk space.
+- **Measuring** the art happens once per raid and isn't something you'd notice. What it measures is saved, so later sessions at the same resolution get the right size from the first raid.
 
 ## Compatibility
 
@@ -473,9 +426,8 @@ The loading screen builds each banner by loading its image from the server, then
 
 - **Custom banners** use your image instead of the one from the server, cropped to the banner's shape.
 - **Resolution**: once banners are on screen, the mod measures them in pixels, writes that to the log, and uses it to choose between sizes of the same picture from then on.
-- **Motion** slowly scales and moves each banner image.
-- **Map intel** reads what the game already knows about the map you picked (boss chances, extracts and your tasks) and adds it to the game's own text, so the banners show it as their captions.
-- **Backdrop** asks the game to load a different menu scene.
+- **Motion** drifts the backdrop camera across the art during the load, and slowly zooms the held picture after you press Back.
+- **Map intel** reads what the game already knows about the map you picked (boss chances, extracts and your tasks). Off by default -- turn on **Intel under the map name** to see it.
 
 The mod looks up the game code it needs by name when the game starts, rather than being built against one version of the game. That's why an update can turn off a single feature without breaking the rest.
 

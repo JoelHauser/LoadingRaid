@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using UnityEngine;
 
 namespace DeployScreen.Client
@@ -41,9 +41,9 @@ namespace DeployScreen.Client
             var height = root.rect.height;
             if (width < 1f || height < 1f) return;
 
-            var side = width * SideMargin;
-            var top = height * TopMargin;
-            var bottom = height * BottomMargin;
+            var side = Margin(width, SideMargin);
+            var top = Margin(height, TopMargin);
+            var bottom = Margin(height, BottomMargin);
 
             // Canvas units, not pixels: the drift arrives as a fraction of the frame, and this is
             // what turns it back into a distance on this screen.
@@ -119,7 +119,21 @@ namespace DeployScreen.Client
                 // already says the percentage, and the arrangement this is built from has no
                 // spinner at all, so it goes rather than moves.
                 Hide(Find(root, "Loader"));
-                Place(Find(root, "Back Button Panel"), BottomRight, BottomRight, new Vector2(-side, bottom));
+                var backPanel = Find(root, "Back Button Panel");
+                Place(backPanel, BottomRight, BottomRight, new Vector2(-side, bottom));
+
+                // Said out loud because the margin that clears this is the one that went wrong at
+                // 1080p, and the next person to doubt the number should be able to read it rather
+                // than work it out from the screen size.
+                if (backPanel != null)
+                {
+                    DeployScreenPlugin.Log.LogInfo(
+                        "[DeployScreen] back panel: " + backPanel.rect.width.ToString("0")
+                        + "x" + backPanel.rect.height.ToString("0")
+                        + " placed " + side.ToString("0") + "px from the right, "
+                        + bottom.ToString("0") + "px up, on a "
+                        + width.ToString("0") + "x" + height.ToString("0") + " canvas");
+                }
 
                 // The character sits 120px left of centre because the stock screen keeps the
                 // right-hand half for the banner panel. With the panel gone that reads as

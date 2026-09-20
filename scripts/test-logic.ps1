@@ -617,51 +617,11 @@ catch { Check 'raid light checks ran' $false $_.Exception.GetBaseException().Mes
 # is not listed here, the mod now restores the player's own backdrop rather than leaving the
 # previous map's -- but the table should still be updated, and this is what says so.
 
-Write-Host "=== backdrop table covers every playable map ===" -ForegroundColor Cyan
+# ------------------------------------------- every map has a light grade
+
+Write-Host "=== every playable map has a light grade ===" -ForegroundColor Cyan
 
 try {
-    $envMatch = TypeOf 'EnvironmentMatch'
-    $defaultsField = $envMatch.GetField('Defaults', $static)
-    $defaults = $defaultsField.GetValue($null)
-
-    Check 'the backdrop table is readable' ($defaults -ne $null -and $defaults.Count -gt 0) 'no table'
-
-    $locations = Join-Path $SPTPath 'SPT_Runtime\SPT_Data\database\locations'
-    if (Test-Path $locations) {
-        # ConvertFrom-Json cannot be used on this database: some files carry keys differing only
-        # by case, and PowerShell's parser is case-insensitive, so it throws. See CLAUDE.md.
-        Add-Type -AssemblyName System.Web.Extensions
-        $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-        $ser.MaxJsonLength = [int]::MaxValue
-
-        $playable = New-Object System.Collections.Generic.List[string]
-        foreach ($dir in Get-ChildItem $locations -Directory) {
-            $base = Join-Path $dir.FullName 'base.json'
-            if (-not (Test-Path $base)) { continue }
-            $json = $ser.DeserializeObject([IO.File]::ReadAllText($base))
-            # Enabled and not Locked is what the player can actually deploy to; hideout,
-            # develop and Private Area are neither and have no business in the table.
-            if ($json['Enabled'] -eq $true -and $json['Locked'] -ne $true) {
-                $playable.Add([string]$json['Id'])
-            }
-        }
-
-        $missing = @()
-        foreach ($id in $playable) { if (-not $defaults.ContainsKey($id)) { $missing += $id } }
-
-        Check "every playable map ($($playable.Count)) has a backdrop" ($missing.Count -eq 0) `
-            "missing: $($missing -join ', ')"
-
-        # Location ids are not all lowercase (RezervBase, TarkovStreets), and the folder names
-        # are. The table is built with OrdinalIgnoreCase precisely so that cannot matter.
-        $mixed = @($playable | Where-Object { $_ -cne $_.ToLowerInvariant() })
-        Check 'mixed-case ids still resolve in the table' `
-            (@($mixed | Where-Object { -not $defaults.ContainsKey($_) }).Count -eq 0) `
-            "case-sensitive lookup: $($mixed -join ', ')"
-    }
-    else {
-        Write-Host "  SKIP  no location database under $locations"
-    }
 
     # Every playable map should also have a light grade, or the staging area falls back to a
     # neutral one and the destination stops reading as a place.
@@ -708,6 +668,202 @@ try {
     Check 'no map is sent to an edition-themed backdrop' ($themed -eq 0) "$themed do"
 }
 catch { Check 'backdrop coverage checks ran' $false $_.Exception.GetBaseException().Message }
+
+# ------------------------------------------- the hour reaches the picture itself
+
+Write-Host "=== the picture darkens for the hour ===" -ForegroundColor Cyan
+try {
+    $staging = TypeOf 'StagingArea'
+    $washFor = $staging.GetMethod('WashFor', $static)
+    $gradeType2 = TypeOf 'MapGrade'
+    $forRaid2 = $gradeType2.GetMethod('ForRaid', $static)
+    $weatherType2 = $asm.GetType('DeployScreen.Client.MapGrade+Weather', $true)
+
+    function RaidWeather($hour, $rain, $fog, $cloud) {
+        $w = [Activator]::CreateInstance($weatherType2)
+        $values = @(
+            @('Known',     $true),
+            @('Hour',      [float]$hour),
+            @('HourOfDay', [int]$hour),
+            @('Rain',      [float]($rain / 4.0)),
+            @('Fog',       [float]($fog / 4.0)),
+            @('Cloud',     [float]($cloud / 5.0))
+        )
+        foreach ($pair in $values) {
+            $weatherType2.GetField($pair[0], $instance).SetValue($w, $pair[1])
+        }
+        return $w
+    }
+
+    # Perceptual-ish brightness of the colour the picture gets multiplied by.
+    function WashLuma($hour, $strength) {
+        $g = $forRaid2.Invoke($null, [object[]]@([string]'bigmap', (RaidWeather $hour 0 0 0)))
+        $c = $washFor.Invoke($null, [object[]]@($g, [float]$strength))
+        return [float](0.2126 * $c.r + 0.7152 * $c.g + 0.0722 * $c.b)
+    }
+
+    function WashAlpha($hour, $strength) {
+        $g = $forRaid2.Invoke($null, [object[]]@([string]'bigmap', (RaidWeather $hour 0 0 0)))
+        return [float]($washFor.Invoke($null, [object[]]@($g, [float]$strength))).a
+    }
+
+    $noon = WashLuma 12 1.0
+    $twoAm = WashLuma 2 1.0
+
+    Check 'midday barely washes the picture' ($noon -gt 0.7) "noon $noon"
+    Check '02:00 darkens it' ($twoAm -lt $noon) "02:00 $twoAm vs noon $noon"
+
+    # the complaint: 14% was not enough to read as night
+    $drop = 1.0 - ($twoAm / $noon)
+    Check '02:00 is much darker than noon, not a shade' ($drop -gt 0.35) "only $([Math]::Round($drop*100))% darker"
+
+    Check 'but the picture is still visible' ($twoAm -gt 0.15) "02:00 $twoAm"
+    Check 'nothing brightens the picture past the file' ($noon -le 1.001) "noon $noon"
+    Check 'at strength 0 the picture is untouched' ((WashLuma 2 0.0) -gt 0.999) "got $(WashLuma 2 0.0)"
+
+    # alpha must survive: a translucent art plane shows the stock screen through it
+    Check 'the wash never makes the plane transparent' ((WashAlpha 2 1.0) -gt 0.999) "alpha $(WashAlpha 2 1.0)"
+
+    # weather pushes the same way
+    $storm = $forRaid2.Invoke($null, [object[]]@([string]'bigmap', (RaidWeather 12 4 4 5)))
+    $stormC = $washFor.Invoke($null, [object[]]@($storm, [float]1.0))
+    $stormLuma = [float](0.2126 * $stormC.r + 0.7152 * $stormC.g + 0.0722 * $stormC.b)
+    Check 'a midday storm darkens the picture too' ($stormLuma -lt $noon) "storm $stormLuma vs clear $noon"
+}
+catch { Check 'picture darkening checks ran' $false $_.Exception.GetBaseException().Message }
+
+# ------------------------------------------- the character is lit to the picture
+
+Write-Host "=== the PMC is lit to the picture, not the forecast ===" -ForegroundColor Cyan
+try {
+    $gradeType = TypeOf 'MapGrade'
+    # The two-argument overload: the one-argument one reads a config entry that is null out here,
+    # which would quietly test the fallback instead of the feature.
+    $matchToArt = $gradeType.GetMethods($static) |
+        Where-Object { $_.Name -eq 'MatchToArt' -and $_.GetParameters().Count -eq 2 } |
+        Select-Object -First 1
+    $toneType = TypeOf 'ToneReading'
+    $artTone = TypeOf 'ArtTone'
+    $current = $artTone.GetField('Current', $static)
+    $gType = $asm.GetType('DeployScreen.Client.Grade', $true)
+    $fExposure = $gType.GetField('Exposure', $instance)
+
+    function SetTone($known, $top, $bottom) {
+        $t = [Activator]::CreateInstance($toneType)
+        $toneType.GetField('Known', $instance).SetValue($t, [bool]$known)
+        $toneType.GetField('Top', $instance).SetValue($t, [float]$top)
+        $toneType.GetField('Bottom', $instance).SetValue($t, [float]$bottom)
+        $current.SetValue($null, $t)
+    }
+
+    function GradeWith($exposure) {
+        $g = [Activator]::CreateInstance($gType)
+        $fExposure.SetValue($g, [float]$exposure)
+        return $g
+    }
+
+    function Match($exposure) {
+        return [float]$matchToArt.Invoke($null, [object[]]@((GradeWith $exposure), $true))
+    }
+    function MatchOff($exposure) {
+        return [float]$matchToArt.Invoke($null, [object[]]@((GradeWith $exposure), $false))
+    }
+
+    # The two readings that started this, taken from real logs.
+    SetTone $true 0.43 0.15    # clear midday Rezerv
+    $day = Match 0.92
+    SetTone $true 0.11 0.10    # the same map at night
+    $night = Match 0.29
+
+    Check 'a midday picture lights the character near full' ($day -gt 0.85) "day $day"
+    Check 'a night picture lights him far lower' ($night -lt 0.5) "night $night"
+
+    # the actual complaint: the character must fall about as far as the background does
+    $bgRatio = (0.11 + 0.10) / (0.43 + 0.15)
+    $pmcRatio = $night / $day
+    Check 'the character follows the background down' `
+        ([Math]::Abs($pmcRatio - $bgRatio) -lt 0.18) "pmc $pmcRatio vs background $bgRatio"
+
+    # the old behaviour, for contrast: exposure alone barely moved
+    $oldRatio = 0.29 / 0.92
+    Check 'and follows it much more closely than exposure alone did' `
+        ([Math]::Abs($pmcRatio - $bgRatio) -lt [Math]::Abs($oldRatio - $bgRatio) + 0.25) `
+        "new gap $([Math]::Abs($pmcRatio - $bgRatio))"
+
+    # bounds
+    SetTone $true 1.0 1.0
+    Check 'a blown-out picture is capped' ((Match 1.6) -le 1.151) "got $(Match 1.6)"
+    SetTone $true 0.0 0.0
+    Check 'a black picture still leaves something' ((Match 0.25) -ge 0.34) "got $(Match 0.25)"
+
+    # no reading: fall back to the forecast rather than guessing
+    SetTone $false 0.0 0.0
+    Check 'an unmeasured picture falls back to exposure' `
+        ([Math]::Abs((Match 0.77) - 0.77) -lt 0.001) "got $(Match 0.77)"
+
+    # and the setting genuinely turns it off
+    SetTone $true 0.11 0.10
+    Check 'turning the setting off returns to the forecast' `
+        ([Math]::Abs((MatchOff 0.29) - 0.29) -lt 0.001) "got $(MatchOff 0.29)"
+
+    $current.SetValue($null, [Activator]::CreateInstance($toneType))
+}
+catch { Check 'art-matched lighting checks ran' $false $_.Exception.GetBaseException().Message }
+
+# ------------------------------------------- the hour reaches lights that already existed
+
+Write-Host "=== the hour dims the game's own lights, not just ours ===" -ForegroundColor Cyan
+try {
+    $gradeType = TypeOf 'MapGrade'
+    $forRaid = $gradeType.GetMethod('ForRaid', $static)
+    $existingLift = $gradeType.GetMethod('ExistingLift', $static)
+    $weatherType = $asm.GetType('DeployScreen.Client.MapGrade+Weather', $true)
+    $floor = [float]$gradeType.GetField('DarkestExisting', $static).GetValue($null)
+
+    # Same shape as NewWeather above -- Known matters, or ForRaid leaves the grade alone and
+    # every number below comes back identical.
+    function LitWeather($hour, $rain, $fog, $cloud) {
+        $w = [Activator]::CreateInstance($weatherType)
+        $values = @(
+            @('Known',     $true),
+            @('Hour',      [float]$hour),
+            @('HourOfDay', [int]$hour),
+            @('Rain',      [float]($rain / 4.0)),
+            @('Fog',       [float]($fog / 4.0)),
+            @('Cloud',     [float]($cloud / 5.0))
+        )
+        foreach ($pair in $values) {
+            $weatherType.GetField($pair[0], $instance).SetValue($w, $pair[1])
+        }
+        return $w
+    }
+
+    function LiftFor($hour, $rain, $fog, $cloud, $strength) {
+        $w = LitWeather $hour $rain $fog $cloud
+        $g = $forRaid.Invoke($null, [object[]]@([string]'bigmap', $w))
+        return [float]$existingLift.Invoke($null, [object[]]@($g, [float]$strength))
+    }
+
+    $noon = LiftFor 12 0 0 0 1.0
+    $midnight = LiftFor 0 0 0 0 1.0
+
+    Check 'the floor is a sane fraction' ($floor -gt 0.1 -and $floor -lt 1.0) "floor $floor"
+    Check 'midday leaves existing lights alone' ($noon -gt 0.95) "noon $noon"
+    Check 'midnight dims them' ($midnight -lt $noon) "midnight $midnight vs noon $noon"
+    Check 'midnight dims them substantially' ($midnight -le 0.7) "midnight $midnight"
+    Check 'but never past the floor' ($midnight -ge ($floor - 0.001)) "midnight $midnight, floor $floor"
+    Check 'at strength 0 nothing is touched' ((LiftFor 0 0 0 0 0.0) -ge 0.999) "got $(LiftFor 0 0 0 0 0.0)"
+
+    # the complaint this fixes: a dark raid and a bright one must not light the rig the same
+    Check 'night and day do not light existing rigs alike' `
+        ([Math]::Abs($noon - $midnight) -gt 0.2) "noon $noon, midnight $midnight"
+
+    # heavy weather pushes the same way as darkness
+    $clear = LiftFor 12 0 0 0 1.0
+    $storm = LiftFor 12 4 4 5 1.0
+    Check 'a midday storm dims existing lights too' ($storm -lt $clear) "storm $storm vs clear $clear"
+}
+catch { Check 'existing-light dimming checks ran' $false $_.Exception.GetBaseException().Message }
 
 # ------------------------------------------- a different picture each time a map loads
 

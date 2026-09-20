@@ -40,13 +40,14 @@ namespace DeployScreen.Client
     /// </summary>
     internal sealed class MapGrade
     {
-        private struct Lit { internal Light Light; internal Color Colour; }
+        private struct Lit { internal Light Light; internal Color Colour; internal float Intensity; }
 
         /// <summary>A light belonging to the game's character preview, as it was found.</summary>
         private struct Studio
         {
             internal Light Light;
             internal Color Colour;
+            internal float Intensity;
             internal LightShadows Shadows;
         }
 
@@ -558,16 +559,42 @@ namespace DeployScreen.Client
             {
                 if (light == null) continue;
 
-                var full = light.name == "Rim"
+                var rim = light.name == "Rim";
+
+                var full = rim
                     ? DeployScreenPlugin.StagingRimIntensity.Value
                     : DeployScreenPlugin.StagingKeyIntensity.Value;
 
-                light.intensity = full * _lift * Mathf.Clamp01(scale);
+                light.intensity = full * (rim ? _rimLift : _lift) * Mathf.Clamp01(scale);
             }
         }
 
-        /// <summary>What the exposure multiplied the configured intensities by, kept for the dim.</summary>
+        /// <summary>What the match multiplied the configured intensities by, kept for the dim.</summary>
         private float _lift = 1f;
+
+        /// <summary>The same for the rim, which is deliberately not dimmed as hard as the key.</summary>
+        private float _rimLift = 1f;
+
+        /// <summary>
+        /// How much of the dimming the rim light is spared. 0 would dim it exactly like the key;
+        /// 1 would leave it at full whatever the hour. Half keeps an edge on the character at
+        /// midnight without relighting him.
+        /// </summary>
+        private const float RimResists = 0.5f;
+
+        /// <summary>
+        /// How dark the hour is allowed to make lights that already existed.
+        ///
+        /// Exposure clamps to 0.25 at its lowest, and taking the game's own rig all the way down
+        /// there turns the PMC into a silhouette -- a different wrong answer from the one being
+        /// fixed, not a better one. The screen still has to show the player their character.
+        ///
+        /// 0.45 keeps enough modelling on the face at midnight to read as a person standing in the
+        /// dark, while still being well under half the light of noon. The rim light does the rest:
+        /// it is ours, it is not floored, and separating the character from a dark background is
+        /// its whole job.
+        /// </summary>
+        private const float DarkestExisting = 0.45f;
 
         internal string Description
         {
@@ -596,8 +623,18 @@ namespace DeployScreen.Client
         ///      colour by the grade strength, so a sunlit Customs warms the rig and a foggy Woods
         ///      cools it, and the light on the character agrees with the light in the picture.
         ///
-        /// Intensities are left alone. They are balanced against each other for a face, and this
-        /// is about colour agreement, not exposure.
+        ///   3. **Dimmed for the hour.** Their *relative* intensities are kept -- they are balanced
+        ///      against each other for a face, and that balance is worth keeping -- but the rig as
+        ///      a whole is scaled by the same exposure the rest of the grade uses.
+        ///
+        /// The third was missing until 1.11, and it is why a midnight deploy still lit the
+        /// character like noon. Exposure is the one number in the grade that says how *bright* the
+        /// destination is, and it was only ever reaching the two lights this mod adds itself -- so
+        /// four studio lights at full intensity outvoted them, every raid, at every hour. Right
+        /// hue, wrong amount, which is the exact failure the colour work was meant to fix.
+        ///
+        /// Floored at DarkestExisting rather than taken to exposure outright: the screen still
+        /// owes the player a look at their character.
         /// </summary>
         internal void TakeCharacterRig(Component screen, Grade grade, float strength)
         {
@@ -622,11 +659,13 @@ namespace DeployScreen.Client
                     {
                         Light = light,
                         Colour = light.color,
+                        Intensity = light.intensity,
                         Shadows = light.shadows,
                     };
 
                     light.shadows = LightShadows.None;
                     light.color = Color.Lerp(light.color, grade.Key, Mathf.Clamp01(strength));
+                    light.intensity *= ExistingLift(grade, strength);
                 }
 
                 if (count == 0) return;
@@ -677,8 +716,18 @@ namespace DeployScreen.Client
                 var light = entry as Light;
                 if (light == null) continue;
 
-                taken[count++] = new Lit { Light = light, Colour = light.color };
+                taken[count++] = new Lit
+                {
+                    Light = light,
+                    Colour = light.color,
+                    Intensity = light.intensity,
+                };
+
                 light.color = Color.Lerp(light.color, grade.Key, strength);
+
+                // The backdrop owes the hour the same answer the character does. A night scene lit
+                // at full intensity is why the room behind the art never went dim.
+                light.intensity *= ExistingLift(grade, strength);
             }
 
             if (count == 0) return;
@@ -720,8 +769,16 @@ namespace DeployScreen.Client
             // Through the same strength the scene grade uses, so the config numbers still mean
             // what they say at strength 0 and the two halves of the picture move together.
             var strength = Mathf.Clamp01(DeployScreenPlugin.StagingGradeStrength.Value);
-            var lift = Mathf.Lerp(1f, grade.Exposure, strength);
+            var match = MatchToArt(grade);
+            var lift = Mathf.Lerp(1f, match, strength);
             _lift = lift;
+
+            // The rim does not fall as far as the key, and that is the whole trick of lighting
+            // anyone at night: drop the key until the subject belongs to the dark, keep an edge so
+            // he can still be found in it. Dimming both together is how a night deploy turns the
+            // PMC into a silhouette, which is a different wrong answer from lighting him for noon.
+            var rimLift = Mathf.Lerp(1f, match, strength * RimResists);
+            _rimLift = rimLift;
 
             _rig = new GameObject("DeployScreen Character Light");
             UnityEngine.Object.DontDestroyOnLoad(_rig);
@@ -731,14 +788,96 @@ namespace DeployScreen.Client
                 Quaternion.Euler(32f, -38f, 0f), mask);
 
             AddLight(_rig, "Rim", grade.Rim,
-                DeployScreenPlugin.StagingRimIntensity.Value * lift,
+                DeployScreenPlugin.StagingRimIntensity.Value * rimLift,
                 Quaternion.Euler(8f, 158f, 0f), mask);
 
             DeployScreenPlugin.Log.LogInfo(
                 "[DeployScreen] character light: exposure=" + grade.Exposure.ToString("0.00")
+                + " art-tone=" + (ArtTone.Current.Known
+                    ? ((ArtTone.Current.Top + ArtTone.Current.Bottom) * 0.5f).ToString("0.00")
+                    : "unmeasured")
+                + " match=" + match.ToString("0.00")
                 + " lift=" + lift.ToString("0.00")
+                + " rim-lift=" + rimLift.ToString("0.00")
+                + " existing-lift=" + ExistingLift(grade, strength).ToString("0.00")
                 + " key=" + (DeployScreenPlugin.StagingKeyIntensity.Value * lift).ToString("0.00")
                 + " rim=" + (DeployScreenPlugin.StagingRimIntensity.Value * lift).ToString("0.00"));
+        }
+
+        /// <summary>
+        /// The brightness of a picture that should light a character at full strength.
+        ///
+        /// Two runs set this. A clear midday Rezerv measured 0.43 top and 0.15 bottom, mean 0.29;
+        /// the same map at night measured 0.11 and 0.10, mean 0.105. Taking 0.30 as "a normally
+        /// lit photograph" puts the midday raid at essentially full light and the night one near
+        /// a third, which is the ratio the pictures themselves have.
+        /// </summary>
+        private const float ReferenceTone = 0.30f;
+
+        /// <summary>How far the match is allowed to go in either direction.</summary>
+        private const float DimmestMatch = 0.35f;
+        private const float BrightestMatch = 1.15f;
+
+        /// <summary>
+        /// How brightly to light the character, taken from how bright the art actually is.
+        ///
+        /// This is the answer to a complaint that the PMC never looked like he was standing in the
+        /// place behind him, and the logs agreed before anyone changed anything: between a midday
+        /// raid and a night one the *background* fell to about a quarter of its brightness while
+        /// the *character* fell only to two thirds. Both numbers were correct and they were
+        /// answering different questions -- the background is a photograph multiplied by a wash,
+        /// the character was lit from the hour and the weather, and nothing ever compared them.
+        ///
+        /// So compare them. ArtTone already measures the picture on screen every raid, for the
+        /// scrim behind the writing, and it is measured inside BuildPlanes -- which runs before the
+        /// character is lit. The number was sitting there the whole time.
+        ///
+        /// Measured rather than forecast also fixes a case the forecast cannot see: the art is
+        /// whatever the player put in the folder. A dark photograph of a bright map, or a bright
+        /// one of a dark map, now lights the character the way the picture looks rather than the
+        /// way the hour says it ought to.
+        ///
+        /// Falls back to exposure when there is no reading -- no art for this map, or the measure
+        /// failed -- because the forecast is still better than nothing.
+        /// </summary>
+        private static float MatchToArt(Grade grade)
+        {
+            return MatchToArt(grade, DeployScreenPlugin.StagingMatchCharacterToArt == null
+                || DeployScreenPlugin.StagingMatchCharacterToArt.Value);
+        }
+
+        /// <summary>
+        /// The same, with the setting passed in rather than read.
+        ///
+        /// Split out so it can be checked without the game: a config entry is null outside BepInEx,
+        /// and a test that runs against the null branch is testing the fallback while appearing to
+        /// test the feature. That happened once here and the suite went green on it.
+        /// </summary>
+        internal static float MatchToArt(Grade grade, bool enabled)
+        {
+            if (!enabled) return grade.Exposure;
+
+            var tone = ArtTone.Current;
+            if (!tone.Known) return grade.Exposure;
+
+            // Both corners, because one of them is usually sky and the other usually ground, and
+            // the character is standing between them.
+            var scene = (tone.Top + tone.Bottom) * 0.5f;
+
+            return Mathf.Clamp(scene / ReferenceTone, DimmestMatch, BrightestMatch);
+        }
+
+        /// <summary>
+        /// What the hour is allowed to do to a light that was already there.
+        ///
+        /// Separate from the lift applied to our own two lights, and deliberately gentler. Ours are
+        /// built for this grade and can go wherever exposure says; the game's were balanced for a
+        /// menu, and taking those to 0.25 loses the character rather than lighting him for night.
+        /// </summary>
+        private static float ExistingLift(Grade grade, float strength)
+        {
+            var target = Mathf.Max(DarkestExisting, MatchToArt(grade));
+            return Mathf.Lerp(1f, target, Mathf.Clamp01(strength));
         }
 
         private static void AddLight(GameObject parent, string name, Color colour, float intensity,
@@ -767,7 +906,9 @@ namespace DeployScreen.Client
                 {
                     foreach (var lit in _sceneLights)
                     {
-                        if (lit.Light != null) lit.Light.color = lit.Colour;
+                        if (lit.Light == null) continue;
+                        lit.Light.color = lit.Colour;
+                        lit.Light.intensity = lit.Intensity;
                     }
                 }
             }
@@ -783,6 +924,7 @@ namespace DeployScreen.Client
                     {
                         if (one.Light == null) continue;
                         one.Light.color = one.Colour;
+                        one.Light.intensity = one.Intensity;
                         one.Light.shadows = one.Shadows;
                     }
                 }

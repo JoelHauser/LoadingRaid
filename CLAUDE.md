@@ -2594,6 +2594,104 @@ with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo w
 
 ## Where this was left off
 
+2026-09-20, release: **1.0.0 -- the first published version.**
+
+The version line restarts here. Everything before this was development: the numbering ran to
+1.15.1 and none of it was ever published, so the tag and the download start at 1.0.0 and the old
+`v1.6.0` tag is gone. History is kept. Wiping commits would have cost the record this file keeps
+pointing at and bought nothing -- a public repo is browsed by its Releases, not its log.
+
+**The F12 menu is 13 settings instead of 54.** Nothing was deleted: 39 are marked `IsAdvanced` and
+two -- `Measured sizes` and `Pictures already shown` -- are `Browsable = false`, because the mod
+writes them and reads them back and a player editing them by hand can only break the rotation. Every
+one of them is still in the .cfg for anyone who wants it.
+
+`ConfigurationManagerAttributes` is declared locally rather than referenced. Configuration Manager
+is a separate plugin a player may not have, and it reads those fields by name off whatever object
+is in the tag -- so a local class with matching field names works and adds no dependency. Without
+it installed the fields are simply never read.
+
+**The 1080p fix, and the shape of it.** The Back button's highlight was clipping, but only at
+1080p. The margins were fractions -- `SideMargin = 0.04` -- which is 138px on a 3440-wide screen and
+77px on a 1920-wide one, while BSG's UI is authored in pixels and is the same size on every monitor.
+A proportional margin meeting a pixel-sized sprite is exactly the kind of bug that shows at one
+resolution and nowhere else. `MinMarginPixels = 110` is a floor, so wide screens are unchanged and
+small ones stop running out of room. The floor was estimated from the gap between the two
+resolutions rather than measured off the sprite, and `ScreenLayout` now logs the back panel's
+geometry so the next person can use the real number.
+
+**The last thing learned about the hold, which took the longest.** Three versions went into trying
+to make the held art *identical* to the loading art -- matching the camera's post-processing, then
+capturing the camera's own output, which came back without the world-space canvases in it and
+showed an empty menu room. The user's actual requirement was that the change not be *noticeable*,
+which is a different and much easier problem: the overlay now cross-fades in over the world art it
+replaces, so the grading difference is a dissolve rather than a cut. It does not need the two to
+match, only to overlap. `Hold the backdrop as drawn` is left in, off, with the capture path behind
+it.
+
+2026-09-20, last: **1.13.1 -- the per-map backdrop is gone**, on the user's instruction.
+
+`EnvironmentMatch.cs` is deleted, along with `Backdrop > Match the map`, `assets/environments.txt`
+and the packaging that shipped it. The complaint was exact: picking Shoreline on the location screen
+turned the menu room into Woods, before the raid had even started.
+
+It was doing what it was built to do. Only three menu environment scenes exist -- Factory, Woods and
+Laboratory -- so every other map was mapped to the nearest of those three, and "nearest" between a
+coastline and a forest is a guess that reads as a bug. The feature could not have been made right
+without scenes that do not exist.
+
+Note the sequence, because it is the same file twice: it was deleted by mistake during the mode
+removal an hour earlier (it carried one `Mode != Enhanced` line and looked like Enhanced
+machinery), restored when that turned out to be wrong, and then deleted on purpose. The restore was
+still correct at the time -- the reason it goes now has nothing to do with modes.
+
+**`EnvironmentState.cs` stays and must.** It is next door and shares a prefix, but it is what the
+abort path is built on: `Busy()` is the release signal for the hold, and `Restore()`, `Settling` and
+`WatchForMenu` all sit on the same class. What is now dead is only the override half -- nothing
+calls `Apply` any more, so `_changed` never becomes true and `Restore()` is a permanent no-op. That
+also takes a scene load out of the abort path, which is a small gain rather than a loss.
+
+The report keeps `configuredBackdrop`, as `false`, for the same grouping reason as the other
+constants above.
+
+A player who already has `environments.txt` in their plugin folder keeps it; nothing reads it now.
+
+Built clean, 0 warnings. `test-logic.ps1` 85 passed -- the four backdrop-table checks are gone, and
+the map-grade checks that shared that section are kept.
+
+2026-09-20, later still: **1.13.0 -- one presentation.** Enhanced, Vanilla and Minimal are gone;
+the staging area is the only thing this mod does, on the user's instruction.
+
+Deleted outright: `MinimalScreen.cs`, `BannerDriver.cs` (with `IntelKeys` and `FileCaptionKeys`),
+the `LoadingScreenMode` enum, the `Loading screen` and `Banners > Captions` settings, the two skip
+prefixes that stripped the preview and the banner panel, and about 275 lines of `BannerPatches.cs`.
+`BannerPatches` is now one patch: decode the map's picture on the offline raid screen, before
+anything is loading. That was never really about banners.
+
+**`EnvironmentMatch.cs` was deleted and then restored**, which is the mistake worth recording. It
+carries one `Mode != Enhanced` line, so it looked like Enhanced machinery -- but it owns the per-map
+backdrop and `environments.txt`, which ships in the zip and is a documented feature. Only the gate
+came out. A single mode check inside a file does not make the file a mode's.
+
+**The report keeps `mode`, `previewSkipHook`, `bannerSkipHook` and `configuredCaptions`** as
+constants rather than dropping them. `compare-loading.ps1` groups captures on exactly these fields,
+and a capture that stops declaring one forms a group of its own against every report already on
+disk.
+
+`MotionZoom` and `MotionPeriod` were left orphaned by the banner removal and are now wired to the
+held art's Ken Burns -- the only moving art left -- rather than deleted. A dead-code scan afterwards
+found nothing else unreferenced.
+
+**What this costs, and it is not nothing:** there is no longer a way to run the mod inert. `Vanilla`
+was the instrumented baseline for every hitching question, and a user who hits a problem now has no
+fallback short of uninstalling. The per-feature toggles (`Rearrange the screen`, `Depth and
+atmosphere`, `Banners > Enabled`) cover most of it between them, but not all, and nothing measures
+stock any more.
+
+Built clean, 0 warnings. `test-logic.ps1` 89 passed, `test-performance.ps1` all passed -- its mode
+strings are synthetic fixtures for the comparison script's grouping and do not depend on the mod
+having modes.
+
 2026-09-20, later: **1.10.3 -- the mod is called "Deploy Screen Overhaul"**, and the repository was
 tidied.
 
