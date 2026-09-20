@@ -3482,6 +3482,15 @@ namespace DeployScreen.Client
             // The reading belongs to the picture that is going, not to the next one.
             ArtTone.Forget();
 
+            // Give back the sizes of each picture this screen has no use for. This used to hang off
+            // the banner panel closing, and that went with the banner path -- so between then and
+            // now nothing freed them at all, and the first raid at a new resolution (which loads
+            // the largest size of everything, having nothing measured yet) kept all of it for the
+            // session. Here is the right place anyway: it is the moment the map is about to load,
+            // which is when memory is worth most.
+            try { BannerArt.ReleaseUnused(); }
+            catch (Exception error) { WarnOnce(error); }
+
             // And the choice belongs to the raid that is going, so the next one moves on a place.
             ForgetPictureChoices();
             _cameBack.Clear();

@@ -28,12 +28,11 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.7.2.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.0.0.zip` from the [`releases`](releases) folder.
 2. Extract it into your SPT folder. You should end up with:
 
    ```
    BepInEx/plugins/DeployScreen/DeployScreen.Client.dll
-   BepInEx/plugins/DeployScreen/environments.txt
    BepInEx/plugins/DeployScreen/banners/
    ```
 
@@ -47,44 +46,36 @@ Press **F12** and open **Deploy Screen Overhaul**. Changes take effect the next 
 | --- | --- | --- | --- |
 | Performance | Record loading | On | Save a JSON loading report under the plugin's `diagnostics` folder. |
 | Banners | Enabled | On | Use your own images from the `banners` folder. Does nothing until you add some. |
-| Motion | Enabled | On | Keep the art moving -- camera drift during the load, and a slow zoom on the held picture after you press Back. |
-| Motion | Zoom | 1.06 | How far the zoom goes, from 1.0 to 1.3. |
-| Motion | Seconds per cycle | 18 | How long one zoom in and back out takes, from 4 to 60. |
-| Intel | Show your tasks | On | Include a card listing the tasks you've started on this map. |
+| Motion | Enabled | On | Keep the art moving — the camera drifts across it while the raid loads, and the held picture drifts on its own after you press Back. |
+| Intel | Show your tasks | On | Include the tasks you've started on this map. Only visible if **Intel under the map name** is on. |
 | Scene | Depth and atmosphere | On | Drift the backdrop's camera and breathe its lights, for real parallax. See [Depth](#depth). |
-| Scene | Camera drift | 0.05 | How far the camera drifts, in world units. **The one setting likely to need tuning.** |
-| Scene | Camera sway | 0.12 | A slow rotation on top of the drift, in degrees. |
-| Scene | Light wander | 0.06 | How much the scene's lights breathe, as a fraction of their set intensity. |
-| Scene | The character contact shadow | Show | MenuPlayerPoser.BottomShadow is the dark patch the game draws under your PMC. Show grounds him. Hide is for when it lands as a smear behind him rather than under him, which is what a shadow authored for a dim menu room can do over a photograph. Leave it alone touches nothing. |
-| Scene | Idle movement | Off | Ask the PMC's animator for its idle patrol motion. |
-| Scene | Dim behind the text | Off | Use the game's own scrim behind the loading text, for readability. |
-| Ease the load | Decode art early | On | Read your pictures before the load starts, not during it. |
-| Ease the load | Frame rate cap while loading | 0 (off) | Cap FPS on the deploy screen so the menu competes less with loading. |
-| Ease the load | Loading priority | Leave alone | Unity's frame-rate-vs-load-speed trade. See [Hitching](#hitching-while-you-wait). |
-| Ease the load | Pause character IK while loading | Off | Stop the PMC's limb solvers while the raid loads. |
-| Staging area | Follow the raid's weather | On | Light the screen for the raid's real time of day, fog, rain and cloud. |
-| Staging area | Near plane distance | 3 | Gap between the two art planes, in world units. Wider gap, stronger parallax. |
-| Staging area | Overscan | 1.02 | A **floor**. The mod works out what your screen shape and drift actually need and uses whichever is larger, so raising this past what is needed just crops your picture. |
-| Staging area | Near haze | 0.55 | How dark the near frame is. 0 removes that plane. |
-| Staging area | Hide the menu scene | On | Switch off whatever stands between you and your art, so the art is the world. |
-| Staging area | Light the scene for the map | On | Tint the backdrop's own lights toward the destination. |
-| Staging area | Grade strength | 0.65 | How far lights and art are pulled toward the destination's colour. |
-| Staging area | Light the character to match | On | Key and rim lights that fall on your PMC and nothing else. |
-| Staging area | Key light / Rim light | 0.85 / 1.25 | The two character lights. Rim usually wants to be brighter. |
-| Staging area | Intel under the map name | On | Briefing, bosses, extracts and tasks in the line under the location. |
-| Staging area | Seconds per intel line | 7 | How long each line stays. |
-| Staging area | Rearrange the screen | On | Map name large in the top-left with its intel under it, progress bottom-left, Back bottom-right, and the Escape from Tarkov logo out of the way. Off keeps the stock arrangement. |
-| Scene | Move the character with the scene | 1.0 | Your PMC is a separate render composited on top, so without this he is the one thing on screen that does not move while the camera drifts -- and he is the nearest thing on it. Gives him the movement something standing where he appears to stand would have. 0 pins him to the screen. |
-| Staging area | Keep the art through the countdown | On | The GET READY countdown is a separate screen that appears after the deploy screen closes. This holds the art until it is done, puts the map name top-left and GET READY and the count in the middle of the screen, instead of dropping you back to the menu room for the last few seconds. |
-| Staging area | Shadow behind the writing | On | A soft dark halo on the map name, the intel line and the progress line, so they hold their shape over a busy picture. Darkens only what is behind the letters. |
-| Staging area | Match the dimming to the picture | On | Measures how bright your picture is in the corners the writing sits in, and dims those corners by as much as that picture needs. Off uses one fixed amount for every picture. |
-| Staging area | Dimming behind the writing | 1.0 | A multiplier over that. Below 1 for more picture and less contrast, above 1 if the writing still loses, 0 for none. |
-| Staging area | Turn off the menu vignette | On | The game darkens the screen edges in post-processing. Invisible over the stock backdrop, a black frame over a photograph. Put back when you leave. |
-| Staging area | Remove the cast shadow | On | The character preview casts a shadow onto the menu room. With the room hidden it hangs in mid-air beside your PMC. |
-| Staging area | Clear the preview to nothing | On | Your PMC's camera clears its background to magenta -- a chroma key -- and every effect on it smears a little of that along his outline. Invisible over the stock menu room, a greenscreen halo over a photograph. Clears to transparent black instead. |
-| Staging area | Turn off the preview post-processing | Off | Your PMC is rendered by his own camera onto a transparent background. Its effects do not know the background is meant to be nothing: bloom bleeds a lit character outwards into it as a soft light halo. This switches the whole stack off. Costs you the look BSG lights him for -- try it both ways. |
-| Staging area | Simplify the character preview | On | Switches off the preview's ambient occlusion and shadow catcher, which are tuned for a dim room and show as a halo against a photograph. |
-| Performance | Report the screen layout | Off | Writes the deploy screen's whole hierarchy to the log once. For when a game update renames something and the layout stops finding it. |
+| Staging area | Grade strength | 0.65 | How far the picture and the lighting are pulled toward the destination. 0 leaves everything as the game had it, and is the way to turn the whole look off without uninstalling. |
+| Staging area | Follow the raid weather | On | Let the forecast change the light as well as the hour. Off means each map always looks the same. |
+| Staging area | Rearrange the screen | On | Map name top-left, progress bottom-left, the way out bottom-right, and the logo out of the way. Off keeps the stock arrangement. |
+| Staging area | Intel under the map name | Off | A briefing — bosses, extracts, your tasks — cycling under the location name. |
+| Staging area | Keep the art through the countdown | On | GET READY and the final count stay on the art instead of cutting back to the menu room. |
+| Staging area | Seconds to fade in | 0.6 | How long the art takes to arrive when the screen opens. 0 for an instant cut. |
+| Staging area | Seconds to fade back | 0.8 | How long the art takes to dissolve into the menu after you press Back. |
+| Staging area | Seconds to linger after cancelling | 0.4 | How long the art holds at full strength before that dissolve starts. |
+
+### Everything else
+
+There are about forty more, and they are deliberately out of the way. Tick **Advanced settings** in
+the configuration manager to see them: plane distances, overscan, key and rim intensities, camera
+drift and sway, the cancel-transition timings, and the individual switches for each thing the mod
+turns off on the menu camera. They exist because they were needed while building this, and they are
+kept because someone tuning their own screen will want them — but none of them is a decision you
+should have to make to use the mod.
+
+Two are hidden entirely, because the mod writes them and reads them back: **Measured sizes**, which
+remembers how big banners really are on your screen, and **Pictures already shown**, which is how far
+through each map's folder the rotation has got. Editing either by hand can only make things worse;
+deleting them costs one raid of re-measuring and restarts the rotation.
+
+Every setting, advanced or hidden, is in
+`BepInEx/config/com.mybutthasarash.deployscreen.cfg` and can be edited there without the
+configuration manager installed at all.
+
 
 ## The staging area
 
@@ -214,7 +205,7 @@ out. If your PMC already shifts its weight, leave this alone.
 
 ## Map intel
 
-With **Captions** set to **Map intel**, each banner shows one of these cards:
+With **Intel under the map name** on, the line beneath the location name cycles slowly through these:
 
 | Card | Shows |
 | --- | --- |
@@ -290,21 +281,6 @@ banners/bigmap/01 - Dorms@4k.png
 ```
 
 They count as one picture. The mod reads each file's real size and uses the smallest one that's sharp on your screen, so the same folder works on any monitor. What you write after the `@` is only a label.
-
-### Captions from file names
-
-Set **Captions** to **From file name** to caption each banner with its file name. Anything after a `;` becomes the line underneath:
-
-```
-Dorms; Three storeys, two keys.png
-```
-
-### "Keep vanilla" captions with your own art
-
-With **Captions** set to **Keep vanilla**, your own images now keep the game's own lore text
-underneath them — the map's own writing, your pictures. This didn't work before 1.6.0: custom art
-came up with no caption at all, because the mod couldn't reach the id the game files those captions
-under. It can now.
 
 ### Map folder names
 
@@ -449,9 +425,9 @@ scripts\pack.ps1 -SPTPath "C:\path\to\SPT"            # build and pack releases\
 scripts\pack.ps1 -SPTPath "C:\path\to\SPT" -Install   # also copy it into that install
 ```
 
-`-Install` never overwrites your `environments.txt` or anything in `banners`.
+`-Install` never overwrites anything in `banners`.
 
-To check the parts that don't need the game (reading image sizes, cropping, choosing a size, and reading captions from file names) against real files:
+To check the parts that don't need the game (reading image sizes, cropping, choosing a size, the light grade and the picture rotation) against real files:
 
 ```powershell
 scripts\test-logic.ps1 -SPTPath "C:\path\to\SPT"

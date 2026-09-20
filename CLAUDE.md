@@ -2594,6 +2594,39 @@ with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo w
 
 ## Where this was left off
 
+2026-09-20, release tidy: **README brought in line with 1.0.0, and one real regression found by
+looking.**
+
+`BannerArt.ReleaseUnused` had stopped being called. It hung off the banner panel closing, and that
+went with the banner path -- so between the mode removal and now, nothing ever freed the sizes of a
+picture the screen has no use for, and the first raid at a new resolution (which loads the largest
+size of everything, having nothing measured yet) kept all of it for the session. It is called from
+the staging teardown now, which is the better place anyway: the map is about to load, so memory is
+worth most right there.
+
+**Still unreferenced, and left alone deliberately** -- these want tracing rather than deleting, and
+deleting them is not a release-day job:
+
+- `ScreenFit.TryMeasure` and `ForgetCanvas`. Measurement was driven by the banner path. The staging
+  area computes its own fit from Screen dimensions, so `Measured sizes` may now be vestigial --
+  which would also make three logic tests pin behaviour nothing uses. Worth an hour with the code
+  before anyone rips it out.
+- `BannerArt.CaptionsFrom` and the caption parsing. Nothing displays a file-name caption any more.
+  The README no longer documents it, which was the urgent half.
+- `EnvironmentState.Overridden` and `IsAvailable`, orphaned by the backdrop removal.
+- `Localization.KeyPrefix`, orphaned with `IntelKeys`.
+- `KenBurns.CurrentZoom`, which existed so a measurement could divide the zoom back out.
+
+**README.** The settings table now lists exactly the thirteen settings F12 shows, with a section
+saying where the other forty live and why two are hidden. Removed: the install line still naming
+`DeployScreen_V1.7.2.zip`, `environments.txt` in the install listing and the pack description, and
+both caption sections -- "From file name" and "Keep vanilla" -- which documented a feature that no
+longer exists.
+
+**Repo.** `deploy-screen-1.8.0` is deleted locally and on the remote; it was fully contained in
+`main` and a branch named for a version that no longer exists is exactly the confusion a first
+release does not need. `scene-dressing` is still local-only with one unmerged 1.5.0 commit.
+
 2026-09-20, release: **1.0.0 -- the first published version.**
 
 The version line restarts here. Everything before this was development: the numbering ran to
