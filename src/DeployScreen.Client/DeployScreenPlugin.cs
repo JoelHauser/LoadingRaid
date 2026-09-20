@@ -87,8 +87,8 @@ namespace DeployScreen.Client
     public class DeployScreenPlugin : BaseUnityPlugin
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
-        public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.10.2";
+        public const string PluginName = "Deploy Screen Overhaul";
+        public const string PluginVersion = "1.10.3";
 
         internal static ManualLogSource Log;
 

@@ -2594,6 +2594,33 @@ with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo w
 
 ## Where this was left off
 
+2026-09-20, later: **1.10.3 -- the mod is called "Deploy Screen Overhaul"**, and the repository was
+tidied.
+
+The rename is display only: `PluginName`, the README title and heading, and `pack.ps1`'s banner. The
+**GUID does not move** and must not -- `com.mybutthasarash.deployscreen` is the Harmony id *and* the
+config filename, so changing it orphans every setting anyone has. The install folder stays
+`BepInEx/plugins/DeployScreen/` for the same reason: it holds `banners/` and `environments.txt`,
+which `-Install` deliberately never clobbers, so renaming it would strand a player's own art. The
+assembly and the zip prefix stay too. Only the name a human reads has changed.
+
+**Zips.** The tracked set is milestones only, which is what it always was -- 1.9.1 through 1.10.2
+were intermediate builds of the Back hunt, each superseded within the hour, and each shipped a
+defect. They are gone for the same reason 1.3.0's was: `pack.ps1` relies on a zip's name matching
+what its DLL reports, and nobody should download a broken one by mistake. Git history still holds
+1.10.2; the rest were never committed.
+
+**A dead-code pass found nothing.** Every private member in the client is referenced; the only two
+hits were `OnEnable` and `OnApplicationFocus`, which Unity calls. `.gitignore` already covers
+`bin/ obj/ dist/ diagnostics/` and no build artefact is tracked.
+
+**What was deliberately *not* cleaned up:** the sibling sweep behind `watching=0`. It is tempting --
+it has never armed in any abort ever traced -- but it feeds `Arrived()`, which is a real signal path,
+so deleting it is a behaviour change rather than a tidy. It costs one empty dictionary per abort and
+the release no longer depends on it. Fix it or delete it deliberately, not as housekeeping.
+
+`main` was fast-forwarded from 1.7.2 to here; it had been 26 commits behind since 1.8.0.
+
 2026-09-20: **1.10.2. Back is fixed, confirmed in game by the user.** The art stays up through the
 whole return to the menu and dissolves into it.
 

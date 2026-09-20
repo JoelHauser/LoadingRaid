@@ -1,4 +1,4 @@
-# Deploy Screen
+# Deploy Screen Overhaul
 
 Gives you something worth looking at while a raid loads: moving banners, a briefing for the map you're entering, your own images, and a backdrop that fits the map.
 
@@ -43,7 +43,7 @@ To uninstall, delete the `BepInEx/plugins/DeployScreen` folder. Your settings ar
 
 ## Settings
 
-Press **F12** and open **Deploy Screen**. Changes take effect the next time you load into a raid.
+Press **F12** and open **Deploy Screen Overhaul**. Changes take effect the next time you load into a raid.
 
 | Section | Setting | Default | What it does |
 | --- | --- | --- | --- |

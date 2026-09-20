@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Builds Release and packs releases\DeployScreen_V<ver>.zip.
 
@@ -69,7 +69,7 @@ if ($distinct.Count -ne 1) {
 }
 
 $version = $distinct[0]
-Write-Host "Deploy Screen $version" -ForegroundColor Cyan
+Write-Host "Deploy Screen Overhaul $version" -ForegroundColor Cyan
 
 # ------------------------------------------------------------------ the build
 
