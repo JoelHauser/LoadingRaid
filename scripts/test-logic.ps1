@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Checks the parts of the mod that do not need the game, against real files.
 
@@ -708,6 +708,65 @@ try {
     Check 'no map is sent to an edition-themed backdrop' ($themed -eq 0) "$themed do"
 }
 catch { Check 'backdrop coverage checks ran' $false $_.Exception.GetBaseException().Message }
+
+# ------------------------------------------- a different picture each time a map loads
+
+Write-Host "=== the map's pictures rotate ===" -ForegroundColor Cyan
+try {
+    $staging = TypeOf 'StagingArea'
+    $readSeen = $staging.GetMethod('ReadSeen', $static)
+    $writeSeen = $staging.GetMethod('WriteSeen', $static)
+    $nextPicture = $staging.GetMethod('NextPicture', $static)
+
+    function Seen($raw) { return $readSeen.Invoke($null, [object[]]@([string]$raw)) }
+    function Wrote($table) { return $writeSeen.Invoke($null, [object[]]@($table)) }
+    function Next($table, $key, $count) {
+        return $nextPicture.Invoke($null, [object[]]@($table, [string]$key, [int]$count))
+    }
+
+    $table = Seen 'bigmap=3;woods=0'
+    Check 'two maps read back' ($table.Count -eq 2) "count $($table.Count)"
+    Check 'a cursor reads back as its number' ($table['bigmap'] -eq 3) "bigmap $($table['bigmap'])"
+
+    Check 'an empty setting leaves nothing remembered' ((Seen '').Count -eq 0) 'not empty'
+
+    $messy = Seen 'bigmap=2;;rubbish;woods=notanumber;lighthouse=-1;shoreline=4'
+    Check 'malformed entries are dropped, good ones kept' `
+        ($messy.Count -eq 2 -and $messy['bigmap'] -eq 2 -and $messy['shoreline'] -eq 4) `
+        "kept $($messy.Count)"
+
+    Check 'a map id is matched regardless of case' ((Seen 'BigMap=5')['bigmap'] -eq 5) 'case not folded'
+
+    $round = Seen (Wrote (Seen 'bigmap=3;woods=7'))
+    Check 'the table survives a round trip' `
+        ($round.Count -eq 2 -and $round['bigmap'] -eq 3 -and $round['woods'] -eq 7) 'lost on the way'
+
+    # the point of the whole thing
+    Check 'a map never seen starts at its first picture' ((Next (Seen '') 'bigmap' 10) -eq 0) 'not 0'
+    Check 'the next load moves on one' ((Next (Seen 'bigmap=0') 'bigmap' 10) -eq 1) 'did not advance'
+    Check 'the last picture wraps to the first' ((Next (Seen 'bigmap=9') 'bigmap' 10) -eq 0) 'did not wrap'
+    Check 'one picture means one picture' ((Next (Seen 'bigmap=0') 'bigmap' 1) -eq 0) 'not 0'
+    Check 'no pictures does not divide by zero' ((Next (Seen 'bigmap=3') 'bigmap' 0) -eq 0) 'not 0'
+    Check 'a cursor past the end of a shrunken folder still lands inside it' `
+        (((Next (Seen 'bigmap=97') 'bigmap' 10) -ge 0) -and ((Next (Seen 'bigmap=97') 'bigmap' 10) -lt 10)) `
+        'landed outside'
+
+    # ten loads of a ten-picture map should show all ten, which is the complaint this fixes
+    $table = Seen ''
+    $visited = @{}
+    for ($i = 0; $i -lt 10; $i++) {
+        $n = Next $table 'bigmap' 10
+        $visited[$n] = $true
+        $table = Seen "bigmap=$n"
+    }
+    Check 'ten loads of a ten-picture map show all ten' ($visited.Count -eq 10) "saw $($visited.Count)"
+
+    # and the old behaviour is genuinely gone
+    $a = Next (Seen '') 'bigmap' 10
+    $b = Next (Seen "bigmap=$a") 'bigmap' 10
+    Check 'two loads in a row are not the same picture' ($a -ne $b) "both $a"
+}
+catch { Check 'picture rotation checks ran' $false $_.Exception.GetBaseException().Message }
 
 [AppDomain]::CurrentDomain.remove_AssemblyResolve($script:resolver)
 

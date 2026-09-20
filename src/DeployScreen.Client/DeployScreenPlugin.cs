@@ -88,7 +88,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen";
-        public const string PluginVersion = "1.9.0";
+        public const string PluginVersion = "1.10.2";
 
         internal static ManualLogSource Log;
 
@@ -138,6 +138,7 @@ namespace DeployScreen.Client
         internal static ConfigEntry<float> StagingScrimStrength;
         internal static ConfigEntry<float> StagingIntelSeconds;
         internal static ConfigEntry<string> MeasuredSizes;
+        internal static ConfigEntry<string> SeenPictures;
         internal static ConfigEntry<LoadingScreenMode> ScreenMode;
         internal static ConfigEntry<bool> RecordLoading;
         internal static ConfigEntry<string> TestLabel;
@@ -380,6 +381,15 @@ namespace DeployScreen.Client
                 + "It is kept so the first raid of a session already knows which size of each "
                 + "picture to load, instead of loading the largest and keeping it for the session. "
                 + "Deleting it costs one raid of that, nothing else -- every raid measures again.");
+
+            SeenPictures = Config.Bind(
+                "Banners",
+                "Pictures already shown",
+                string.Empty,
+                "Written by the mod, not meant to be edited: how far through each map's pictures "
+                + "the backdrop has got, as 'bigmap=3', semicolons between.\n"
+                + "It is what stops the same picture coming up every time you load a map. Deleting "
+                + "it starts every map from its first picture again, which costs nothing.");
 
             StagingDistance = Config.Bind(
                 "Staging area",

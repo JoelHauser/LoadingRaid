@@ -2,9 +2,9 @@
 
 Gives you something worth looking at while a raid loads: moving banners, a briefing for the map you're entering, your own images, and a backdrop that fits the map.
 
-> **Pre-release.** Built against SPT 4.1.5 and played in game. One known issue: a soft dark
-> band follows the PMC's silhouette and is drawn over the backdrop, which spoils the
-> composite. It is being chased -- see CLAUDE.md for everything ruled out so far.
+> **Pre-release.** Built against SPT 4.1.6 and played in game. The dark band that used to
+> follow the PMC's silhouette is fixed -- it was a command buffer on the preview camera, and
+> it is removed by name and put back on teardown.
 
 ## What it does
 
@@ -18,13 +18,15 @@ This mod changes that:
 - **Backdrop.** The menu scene behind the screen changes to suit the map. Off by default.
 - **Readable over anything.** The writing carries its own shadow, and how much the corners are dimmed is measured from your picture rather than fixed -- barely anything over a dark treeline, a good deal over a white sky.
 - **The countdown too.** GET READY and the final count stay on the map art in the same corners, instead of cutting back to the menu room for the last few seconds.
+- **Backing out, too.** Press Back and the art stays up through the whole return to the menu -- the client's work, the rebuild, all of it -- and then dissolves into the menu instead of cutting to a dark room with a loading wheel in the corner.
+- **A different picture each time.** Each load of a map takes the next picture in its folder, so ten pictures means ten raids before you see one twice.
 - **Performance comparison.** Record loading phases and frame gaps, compare the stock presentation with an experimental minimal screen, and find out whether removing presentation work helps on your machine.
 
 Motion and map intel work as soon as you install, with nothing to set up. Nothing is saved to your profile, and removing the mod puts everything back the way it was.
 
 ## Requirements
 
-- SPT 4.1.5
+- SPT 4.1.x -- built, played and tested against **4.1.6**
 
 ## Install
 
@@ -135,6 +137,24 @@ Turn off **Follow the raid's weather** if you'd rather each map always looked th
 
 The banner panel steps aside — its pictures are the world now — and the map briefing, bosses,
 extracts and your tasks cycle slowly in the line beneath the location name.
+
+### Backing out
+
+Pressing Back used to cut straight to a dark, blurred menu room with a loading wheel in the corner,
+and sit there for twenty seconds before the menu appeared. That room is the game's own preloader,
+and it is genuinely working -- but it is not what you asked to look at.
+
+Now the art stays up for the whole of it. It holds while the client finishes, and only once the
+client goes idle does it linger a moment and dissolve into the menu. Three dots pulse in the bottom
+right while it holds, because the art sitting still over a working client reads as a freeze
+otherwise -- they are standing in for the game's own wheel, which the art is covering.
+
+If the client never looks busy at all, the art lets go after eight seconds rather than waiting
+around. If it is *still* busy after two minutes, the art gives up anyway: an unbounded hold is a
+worse failure than a visible cut.
+
+Both ends of that are tunable -- **Seconds to linger after cancelling** is the pause before the
+dissolve starts, **Seconds to fade back** is the dissolve itself.
 
 ### Tuning it
 
@@ -254,6 +274,7 @@ banners/_default/anything.png
 - PNG, JPG and JPEG all work.
 - `_default` is used for any map that doesn't have its own folder. A map with neither keeps its stock images.
 - Pictures are used in file name order. A leading number like `01 - ` or `3.` only sets the order and isn't shown in the caption.
+- **The staging area's backdrop takes the next picture in the folder each time you load that map**, and wraps round at the end, so every picture is seen once before any is seen twice. How far through each map you are is kept in the config under `Banners -> Pictures already shown`, so it survives a restart; deleting that line just starts every map from its first picture again.
 - Each map shows the same number of banners it does without the mod: ten on Customs and Factory, five on Labs, four on most other maps. Extra pictures aren't used, and if you add fewer, they repeat.
 
 ### Size and shape
@@ -465,7 +486,7 @@ The mod looks up the game code it needs by name when the game starts, rather tha
 You need:
 
 - The .NET SDK (any version that can build `net472`)
-- An SPT 4.1.5 install
+- An SPT 4.1.6 install
 
 The game doesn't need to have been started first. The mod isn't compiled against the game's own code, so a fresh install is enough.
 

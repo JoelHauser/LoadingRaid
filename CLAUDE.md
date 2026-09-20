@@ -1765,9 +1765,12 @@ screen whose middle is empty left the frame reading as an afterthought.
 
 ### Still open
 
-**The dark shape and Back are both closed** -- see **The dark shape behind the PMC -- answered** and
-**Back: the window, the press, and the way out** above. The probes that found them have been
-deleted; what they were is in the history.
+**The dark shape is closed.** See **The dark shape behind the PMC -- answered** above. The probes
+that found it have been deleted; what they were is in the history.
+
+**Back was not closed when this was written, whatever it says below.** It took until 1.10 and five
+further wrong answers -- see **1.10: Back, answered**. Treat any "Back is fixed" in the 1.7.x and
+1.8.x notes as the claim of its moment, not as fact.
 
 **Weather -- done in 1.9.0.** It was on the session all along: `session.Weather` is a `WeatherNode`
 the server sends at menu time, and it is the same one the location screen's weather icon comes from.
@@ -2319,6 +2322,153 @@ the log was clean, and the thing still did not work -- and what caught it was a 
 that said *which source answered* rather than only what it said. A reading with no provenance would
 have looked exactly like success.
 
+## 1.10: Back, answered -- and what five wrong answers cost
+
+Back works. The art stays up for the whole return to the menu and dissolves into it.
+
+It took nine attempts and five wrong causes. Every one of them was killed by a measurement rather
+than by an argument, which is the only reason the sixth was reachable -- but four of the five were
+reached by reasoning from a trace that could not see the thing that mattered, and that is the part
+worth reading before instrumenting anything here again.
+
+### What it actually was
+
+The art planes are a **world-space** Canvas, rendered by `MainMenuCamera`. What covers them is
+`PreloaderUI` -- the game's own between-screens overlay, the darkened blurred room with the wheel in
+the bottom-right corner -- and that is a **Screen Space - Overlay** canvas.
+
+An overlay canvas draws after every camera, over all world-space content, regardless of layer,
+sorting order, or which camera owns it. World space cannot win that contest. There is no
+arrangement of the planes that would have worked.
+
+So the art is re-drawn flat on our own overlay for the hold, sorted at the top of the range, and the
+world planes are left alone. `RaiseArtToOverlay` in `StagingArea.cs` is the whole fix and it is
+about eighty lines.
+
+### The five wrong answers, and what killed each
+
+| # | The theory | What killed it |
+|---|---|---|
+| 1 | The art is our own planes at full dim | `Dimmed = 0.66f` is a scalar. Art mean was `(84,92,90)`; a full dim lands near `(55,61,59)`. Measured hold was `(6,12,16)` -- 9x too dark, and blue-dominant where a scalar preserves hue |
+| 2 | The menu re-poses the camera and the art is left behind | `camera-moved=0.06m/0.2deg` across a whole hold |
+| 3 | The environment swap deactivates the planes' parent | `backdrop restore` never logged -- `EnvironmentState.Restore()` no-ops when the backdrop was never overridden |
+| 4 | The planes or an ancestor are switched off | `visible=2/2 camera-on=True parent='EnvironmentUISceneTue active=True'` |
+| 5 | Our overlay just needs to sort above the preloader | Swept the highest live canvas at the abort and got 1010. `busy=no` at that instant -- the preloader is not up yet, so no sweep taken then can see it |
+
+Two more things the runs settled on the way, both of which had been assumed rather than measured:
+the overlay was being **destroyed by the scene unload** (a fresh `GameObject` lands in the active
+scene, and `Leaving the game...` is that scene going away -- `DontDestroyOnLoad` fixes it), and the
+sorting sweep had to be abandoned for the top of the range, because the thing to beat does not exist
+at the moment there is to measure it.
+
+### The instrument that was lying, and why it took so long
+
+`LivePlanes()` counts non-null references. That is all it has ever done.
+
+It reported `planes=2/2` through five aborts while the player looked at an empty menu room, and it
+was **telling the truth every time** -- the planes existed. Existence was never what was going
+wrong. Four rounds of instrumentation were built on top of a number that could not answer the
+question being asked of it, and each round added detail to the wrong axis.
+
+`PlaneVisibility()` is what should have been written first: `activeInHierarchy` per plane, the name
+of the first ancestor that is switched off, whether the camera is enabled, and whether the overlay
+survives. It ruled out theories 3 and 4 in a single run, having taken four runs to get written.
+
+**The rule, for next time:** a probe that reports an object's *existence* is not a probe that reports
+what is *on screen*, and the gap between those is where five sessions went. When the complaint is
+visual, measure the pixels before measuring the object graph.
+
+### What a video was worth
+
+The turn came from a screen recording, read by pulling frames with `ffmpeg` and measuring them.
+
+- Mean RGB per frame gave the timeline to the half-second: art at `(84,92,90)` through t=6.0, a
+  **hard cut** to `(6,12,16)` between 6.0 and 6.5, then flat for 20.5s. A hard cut is not a dim and
+  not a fade, and that alone killed theory 1 before any code was read.
+- Aligning video time to report time put the cut on `BeginFade`, to the frame.
+- Lifting the dark frame by a linear gain showed a scene with **no PMC, no CUSTOMS title, no
+  railcars** -- so it was not our art at any brightness. It also showed the SPT version watermark
+  and a wheel in the corner, which is what named `PreloaderUI`.
+
+Twenty seconds of telemetry had said `planes=2/2` four times. One frame grab said "that is not our
+picture". Reach for the recording earlier.
+
+### Ending the hold on a signal that exists
+
+`MenuShown` requires `Arrived()` -- `EFT.UI.MenuScreen` -- and it has read `menu=off watching=0` in
+every abort ever traced here. The hold has therefore **never once ended the way it was designed to**;
+it ended on the cap, every time, and the cap firing mid-work is what dropped the art onto a
+half-built menu.
+
+`Busy()` is the half that works: `no` at the top of the hold, `preloader` about four seconds later,
+across three traced aborts. So the release is now **the client going idle** -- having been busy and
+stopping -- and `MenuScreen` is not needed at all.
+
+Two bounds either side of it, both from measurements rather than taste:
+
+- **`NeverBusySeconds = 8`.** A client fast enough never to raise the preloader would never satisfy
+  "was busy, then stopped", and would have held for the full cap. Onset measured 3.5s, 3.7s, 4.0s;
+  eight is that doubled.
+- **`HoldCeilingSeconds = 120`.** While `Busy()` is still answering, the cap is allowed to run on,
+  because firing it on a working client does the exact thing the hold exists to prevent. It extends
+  on evidence, never on hope.
+
+The trace names which of the four endings happened: `the client finished working`, `the client never
+looked busy`, `cap -- nothing came up`, `ceiling -- still busy after 120s`.
+
+### The dissolve, and a self-inflicted hard cut
+
+Returning `true` from `FadeStep` means *"the art is gone, tear down"* -- not *"stop waiting"*. The
+first version of the idle release returned `true`, so the teardown destroyed the overlay at full
+opacity and the transition hard-cut for two versions.
+
+The cap path had it right all along: set `_released`, then **fall through** to the dissolve at the
+bottom of the method, which is the only thing that spends the alpha. The one case where returning
+`true` is correct is `LivePlanes() == 0`, because there is genuinely no art left to fade.
+
+### The dots
+
+The overlay covers the game's own wheel. Covering the one thing on screen that says "working" and
+putting nothing back is how a wait becomes a hang, and it was reported as a freeze immediately.
+
+Three dots, bottom right -- where the wheel was, so it lands where the eye already goes to ask.
+Amber `#C8A45C`, matching the CANCELLING notice. A third of a cycle apart so they read as a
+travelling pulse rather than a flash, and never fully out, because a dot that vanishes looks like a
+dropped frame. Drawn from a circle texture generated at runtime rather than a font or a game sprite:
+the screen that owned those has gone by this point.
+
+### Ten pictures a map, nine of them unreachable
+
+Separate complaint, same session: the same picture every time on every map.
+
+`PictureIndex` was `abs(locationId.GetHashCode()) % count`. A map's name does not change between
+loads, so neither did the index. Ten pictures a map shipped in 1.8.0 and nine of them had never been
+drawn.
+
+It rotates now, and rotates rather than randomises on purpose: random repeats, and a picture seen
+twice in three raids reads as the bug that was just fixed. The cursor lives in the config beside the
+measured sizes (`Banners -> Pictures already shown`), so it survives a restart. Within one raid the
+choice is cached in `_pictureThisRaid` so the art cannot change under the player mid-screen.
+
+Fourteen tests cover it, including the two that encode the complaint -- *ten loads of a ten-picture
+map show all ten* and *two loads in a row are not the same picture* -- plus wrapping, a
+single-picture folder, an empty folder not dividing by zero, and a cursor left pointing past the end
+of a folder that later shrinks.
+
+**Trap, again:** `raw.Split(';')` compiles and then throws `MethodNotFound` at runtime -- it binds to
+the .NET Core `Split(char, StringSplitOptions)` overload that this Mono does not have. `char[]`
+forces the right one. `ScreenFit.Remember` already documents this exact trap; it was walked into
+anyway.
+
+### Art per map -- already correct, and worth not re-investigating
+
+Every map has its own folder of that map's own wiki images. `_default` holds a README and nothing
+else, so no map falls back to generic art. `icebreaker` has 8; every other map has 10.
+
+This was raised as "each map should only show images of that map" and the answer is that it already
+did -- what looked like wrong art was the frozen index above, always drawing *a* Shoreline picture
+but always the *same* one.
+
 ## The hitching on the deploy screen -- what it actually is
 
 The user reports heavy hitching while waiting to get into a raid, and guessed it was the game
@@ -2443,6 +2593,46 @@ is configured the same way, locally. Commit bodies are prose and end with a
 with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo was created.
 
 ## Where this was left off
+
+2026-09-20: **1.10.2. Back is fixed, confirmed in game by the user.** The art stays up through the
+whole return to the menu and dissolves into it.
+
+The cause, after five wrong answers: the art planes are a **world-space** Canvas and `PreloaderUI`
+-- the blurred room with the wheel in the corner -- is a **Screen Space - Overlay** canvas, which
+draws after every camera over all world-space content whatever its layer or sorting order. No
+arrangement of the planes could have won. `RaiseArtToOverlay` re-draws the picture flat on our own
+overlay for the hold, at the top of the sorting range, carrying the graded colour across so the
+lighting comes with it. Read **1.10: Back, answered** before touching any of this.
+
+**The lesson worth keeping:** `LivePlanes()` counts references and reported `planes=2/2` truthfully
+through five aborts while the player looked at an empty room. Existence was never the question. A
+screen recording, read by pulling frames with `ffmpeg` and measuring mean RGB, killed the leading
+theory in one pass and named the real culprit -- reach for the video before building a fifth probe.
+
+Also in 1.10: the hold now ends on **the client going idle** (`Busy()` going up and coming back
+down) rather than on `MenuScreen`, which has never once been found; bounds at 8s (never looked busy)
+and 120s (still busy); three pulsing dots bottom-right so the hold does not read as a freeze; and
+the backdrop picture **rotates** through the map's folder instead of being pinned by
+`hash(mapName) % count`, which had made nine of every ten shipped pictures unreachable.
+
+Built clean, 0 warnings. `test-logic.ps1` 73 passed (14 new for the rotation),
+`test-performance.ps1` all passed. `test-gametypes.ps1` **was not run** for any of 1.9.1-1.10.2:
+there is no cached patched assembly on this machine and no `hpatchz`. Nothing in this arc adds a
+reflected game-type name, but that is reasoning, not a green suite -- run it before release.
+
+Packed to `releases\DeployScreen_V1.10.2.zip` and installed to `H:\SPT4.1.X`.
+
+**Open, and worth knowing:**
+
+- **`watching=0` and the sibling sweep.** Still arms empty; the queue indicator has never been read.
+  It no longer blocks anything, because the release does not depend on it -- but it is dead
+  instrumentation and either wants fixing or deleting.
+- **`MenuScreen` is never found.** Same status: routed around rather than solved.
+- **The 8s and 120s bounds come from three aborts on one machine.** Reasoning plus a small sample,
+  not testing across hardware. A trace from a much faster or slower PC is what would confirm them.
+- **Dawn and dusk are still untested in game** -- unchanged from 1.9.0, and still not selectable.
+- **`icebreaker` has 8 pictures**, every other map has 10.
+- **`main` is still at 1.7.2.** 1.8.0 through 1.10.2 live only on `deploy-screen-1.8.0`.
 
 2026-09-19, later: **1.9.0**. The raid's hour is the game's one clock -- the session's
 `GetCurrentLocationTime`, as it stands for day and twelve hours back for night, which is exactly the

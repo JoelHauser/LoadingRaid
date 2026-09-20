@@ -261,10 +261,141 @@ namespace DeployScreen.Client
         /// Which of a map's pictures the staging area uses. Stable for a map so the place does not
         /// change between raids, and shared with the pre-warm so both agree on what to decode.
         /// </summary>
+        /// <summary>
+        /// Which of a map's pictures this raid gets, advancing one each time that map is loaded.
+        ///
+        /// It used to be <c>abs(locationId.GetHashCode()) % count</c>, which is stable in exactly
+        /// the wrong sense: stable within a raid, which was the point, and stable across every
+        /// raid ever loaded, which was not. Ten pictures a map shipped and nine of them were
+        /// unreachable, because a map's name does not change between loads.
+        ///
+        /// So it rotates instead, and rotates rather than randomising on purpose: random repeats,
+        /// and a picture shown twice in three raids reads as the bug that was just fixed. Going
+        /// round in order means every picture is seen once before any is seen twice.
+        ///
+        /// The cursor is kept in the config next to the measured sizes, so it survives a restart
+        /// and the first raid of a session is not always picture one. Losing it is harmless: every
+        /// map simply starts from the beginning again.
+        /// </summary>
         internal static int PictureIndex(string locationId, int count)
         {
             if (count <= 0) return 0;
-            return Mathf.Abs((locationId ?? string.Empty).GetHashCode()) % count;
+
+            var key = (locationId ?? string.Empty).ToLowerInvariant();
+
+            // Chosen once per raid. Begin runs on a fresh StagingArea each time, but MapSprite is
+            // not the only thing that may ask, and the answer has to be the same all the way
+            // through one screen or the art would change under the player.
+            int already;
+            if (_pictureThisRaid.TryGetValue(key, out already)) return already % count;
+
+            var seen = SeenPictures();
+            var next = NextPicture(seen, key, count);
+
+            seen[key] = next;
+            _pictureThisRaid[key] = next;
+            RememberSeenPictures(seen);
+
+            return next;
+        }
+
+        /// <summary>Cleared when a raid ends, so the next one moves on.</summary>
+        internal static void ForgetPictureChoices()
+        {
+            _pictureThisRaid.Clear();
+        }
+
+        private static readonly Dictionary<string, int> _pictureThisRaid = new Dictionary<string, int>();
+
+        /// <summary>
+        /// The cursor per map, read back from the config. Malformed entries are dropped rather
+        /// than thrown on: this is written by us and read by us, but a player may still open it.
+        /// </summary>
+        private static Dictionary<string, int> SeenPictures()
+        {
+            try
+            {
+                return ReadSeen(DeployScreenPlugin.SeenPictures == null
+                    ? string.Empty
+                    : DeployScreenPlugin.SeenPictures.Value);
+            }
+            catch { return new Dictionary<string, int>(); }
+        }
+
+        private static void RememberSeenPictures(Dictionary<string, int> seen)
+        {
+            try
+            {
+                if (DeployScreenPlugin.SeenPictures == null) return;
+                DeployScreenPlugin.SeenPictures.Value = WriteSeen(seen);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// The cursor per map, parsed from the setting. Malformed entries are dropped rather than
+        /// thrown on: this is written by us and read by us, but a player may still open the file
+        /// and a half-edited line should cost one map its place, not the whole rotation.
+        ///
+        /// Kept free of the config so it can be checked without the game, the same way the
+        /// remembered banner sizes are.
+        /// </summary>
+        internal static Dictionary<string, int> ReadSeen(string raw)
+        {
+            var seen = new Dictionary<string, int>();
+            if (string.IsNullOrEmpty(raw)) return seen;
+
+            // char[] on purpose -- Split(';') binds to Split(char, StringSplitOptions), which the
+            // reference assemblies have and this runtime does not. Same trap as ScreenFit.Remember.
+            foreach (var entry in raw.Split(new[] { ';' }))
+            {
+                var trimmed = entry.Trim();
+                if (trimmed.Length == 0) continue;
+
+                var split = trimmed.IndexOf('=');
+                if (split <= 0 || split >= trimmed.Length - 1) continue;
+
+                int value;
+                if (!int.TryParse(trimmed.Substring(split + 1).Trim(), out value)) continue;
+                if (value < 0) continue;
+
+                seen[trimmed.Substring(0, split).Trim().ToLowerInvariant()] = value;
+            }
+
+            return seen;
+        }
+
+        /// <summary>The same table written back out. Round-trips through ReadSeen unchanged.</summary>
+        internal static string WriteSeen(Dictionary<string, int> seen)
+        {
+            if (seen == null) return string.Empty;
+
+            var builder = new System.Text.StringBuilder();
+
+            foreach (var pair in seen)
+            {
+                if (pair.Key == null || pair.Key.Length == 0) continue;
+                if (builder.Length > 0) builder.Append(';');
+                builder.Append(pair.Key).Append('=').Append(pair.Value);
+            }
+
+            return builder.ToString();
+        }
+
+        /// <summary>
+        /// The next place in a map's rotation, given where it got to last time. A map not seen
+        /// before starts at its first picture; everything else moves on one and wraps.
+        /// </summary>
+        internal static int NextPicture(Dictionary<string, int> seen, string key, int count)
+        {
+            if (count <= 0) return 0;
+            if (seen == null) return 0;
+
+            int last;
+            if (!seen.TryGetValue((key ?? string.Empty).ToLowerInvariant(), out last)) return 0;
+
+            // A shrunken folder must not park the cursor past the end for ever.
+            return ((last % count) + 1) % count;
         }
 
         /// <summary>
@@ -842,6 +973,12 @@ namespace DeployScreen.Client
         /// So the fit is checked rather than assumed, and corrected in place. Size only -- the
         /// planes are deliberately left where they were put, because the camera drifting across
         /// them at a fixed distance is the parallax.
+        ///
+        /// True while the screen is up, and only while it is up. Once the abort hands the camera
+        /// back to the main menu it is re-posed wholesale, and art left where it was put is art
+        /// True throughout, as it turns out: two aborts measured the camera moving 0.06m and 0.2
+        /// degrees across a whole hold, so nothing here is what takes the art off the screen. The
+        /// abort is handled by RaiseArtToOverlay instead, which leaves these planes alone.
         /// </summary>
         private void KeepFit()
         {
@@ -2057,6 +2194,93 @@ namespace DeployScreen.Client
         /// <summary>The next _fadeWaited at which the hold reports what it is still waiting on.</summary>
         private float _nextHoldSample;
 
+        /// <summary>
+        /// Where the backdrop camera stood when the abort came, so the hold can say how far it has
+        /// moved since -- which turned out to be barely at all, and is kept as the invariant that
+        /// says so.
+        /// </summary>
+        private Vector3 _holdCameraFrom;
+        private Quaternion _holdCameraFacing = Quaternion.identity;
+        private bool _holdCameraKnown;
+
+        /// <summary>The screen-space canvas the art is re-drawn on for the hold, if it got one.</summary>
+        private GameObject _holdOverlay;
+
+        /// <summary>Whether the client has been seen working at all, so that stopping means something.</summary>
+        private bool _sawBusy;
+
+        /// <summary>The dots that say the hold is a wait and not a hang, and where they are in their cycle.</summary>
+        private readonly List<Component> _workingDots = new List<Component>();
+        private float _workingTime;
+
+        /// <summary>
+        /// Whether the art is actually on screen, which is the question every previous probe here
+        /// has managed not to ask.
+        ///
+        /// LivePlanes counts references and so answers "do the planes exist". Deactivating a plane
+        /// -- or any ancestor of it -- leaves every component non-null, so a plane can read 2/2
+        /// while drawing nothing at all. Five aborts reported 2/2 over an empty menu room on the
+        /// strength of that. This reports activeInHierarchy instead, and names the first ancestor
+        /// that is switched off, because knowing the art is hidden is only half of it.
+        /// </summary>
+        private string PlaneVisibility()
+        {
+            if (_created.Count == 0) return "visible=0/0";
+
+            var visible = 0;
+            string culprit = null;
+
+            foreach (var plane in _created)
+            {
+                if (plane == null) continue;
+
+                if (plane.activeInHierarchy) { visible++; continue; }
+                if (culprit != null) continue;
+
+                // Walk up to whichever object actually switched off. The plane itself being
+                // active while an ancestor is not is the case that matters, and it is the case
+                // a check on the plane alone cannot see.
+                for (var t = plane.transform; t != null; t = t.parent)
+                {
+                    if (t.gameObject.activeSelf) continue;
+                    culprit = t.gameObject.name;
+                    break;
+                }
+
+                if (culprit == null) culprit = "unknown";
+            }
+
+            var camera = _camera == null
+                ? " camera=gone"
+                : " camera-on=" + _camera.isActiveAndEnabled;
+
+            // Said plainly. The last run left this to be inferred from a fade-group count reading
+            // 2/3, which is true but needs somebody to notice it.
+            var overlay = _holdOverlay == null
+                ? " overlay=gone"
+                : " overlay=" + (_holdOverlay.activeInHierarchy ? "up" : "inactive");
+
+            return "visible=" + visible + "/" + _created.Count
+                   + (culprit == null ? "" : " switched-off-by='" + culprit + "'")
+                   + camera + overlay;
+        }
+
+        /// <summary>
+        /// How far the backdrop camera has travelled since the abort, for the trace. Kept after it
+        /// disproved its own hypothesis: two aborts reported 0.14m and 0.2 degrees across a whole
+        /// hold, which is drift, so the camera being re-posed was never the reason the art went.
+        /// </summary>
+        private string CameraDelta()
+        {
+            if (_camera == null) return "camera=gone";
+            if (!_holdCameraKnown) return "camera=unknown";
+
+            var eye = _camera.transform;
+
+            return "camera-moved=" + Vector3.Distance(eye.position, _holdCameraFrom).ToString("0.00")
+                   + "m/" + Quaternion.Angle(eye.rotation, _holdCameraFacing).ToString("0.0") + "deg";
+        }
+
         /// <summary>How many art planes still exist. Unity nulls a destroyed component for us.</summary>
         private int LivePlanes()
         {
@@ -2078,7 +2302,38 @@ namespace DeployScreen.Client
         /// fired into the empty menu room that the hold exists to cover. Twenty is past anything
         /// measured and is still an end.
         /// </summary>
-        private const float HoldCapSeconds = 20f;
+        /// <summary>
+        /// The end of the hold whatever happens.
+        ///
+        /// Twenty was measured against a round trip and was right for one. It is not right for the
+        /// menu rebuild: a Shoreline abort still read `busy=preloader` at 21.4s, so the cap fired
+        /// on a client that was mid-work and the art came down onto the blurred room. Forty gives
+        /// that rebuild room to finish, and costs nothing in the ordinary case because the hold
+        /// now ends on the client going idle rather than on running out of patience.
+        /// </summary>
+        private const float HoldCapSeconds = 40f;
+
+        /// <summary>
+        /// How long to wait for the client to look busy at all before deciding it never will.
+        ///
+        /// The release watches for the preloader going up and coming back down, which cannot fire
+        /// on a machine quick enough that it never goes up. Three traced aborts had it showing
+        /// 3.5s, 3.7s and 4.0s after the hold began, so eight is that with the margin doubled: long
+        /// enough that a slow client is never mistaken for an idle one, short enough that a fast
+        /// one is not made to stare at a held picture for the length of the cap.
+        /// </summary>
+        private const float NeverBusySeconds = 8f;
+
+        /// <summary>
+        /// The hard end, used only while the client is demonstrably still working.
+        ///
+        /// The cap exists so the art cannot hold for ever, but firing it on a client that is still
+        /// busy does the exact thing the hold was built to prevent: it drops the picture onto a
+        /// half-built menu. So while Busy() keeps answering, the wait is allowed to run on to here
+        /// instead. Extending on evidence rather than on hope is the difference -- this only ever
+        /// applies when something is actually turning.
+        /// </summary>
+        private const float HoldCeilingSeconds = 120f;
         private float _dim;
         private bool _dimming;
         private string _released;
@@ -2207,7 +2462,406 @@ namespace DeployScreen.Client
             _menuUpAt = -1f;
             _nextHoldSample = 4f;
             _released = null;
+
+            // Where the camera is standing as the hold begins. Kept for the trace rather than for
+            // the diagnosis: two aborts measured 0.14m across a whole hold, so the camera is not
+            // what moves.
+            _holdCameraKnown = _camera != null;
+            _sawBusy = false;
+
+            if (_holdCameraKnown)
+            {
+                _holdCameraFrom = _camera.transform.position;
+                _holdCameraFacing = _camera.transform.rotation;
+            }
+
+            // What the state was before we touched it. Said first and unconditionally, because the
+            // whole point is to find out whether the art was already being switched off here, and
+            // a fix that also hides its own evidence is how this went wrong the last two times.
+            LoadingPerformance.Note("art at the start of the hold: " + PlaneVisibility()
+                                    + " parent='" + PlaneParentName() + "'");
+
+            RaiseArtToOverlay();
+
             return true;
+        }
+
+        /// <summary>
+        /// Puts the art on a screen-space overlay for the hold, above everything the game draws.
+        ///
+        /// The one that took a video to find. Everything else about the art was fine the whole
+        /// time -- alive, active, correctly placed, on an enabled camera that does not move, all
+        /// four of them measured -- and it still was not on screen, because the art is a
+        /// *world-space* canvas and what covers it is PreloaderUI: the game's own between-screens
+        /// overlay, the darkened blurred backdrop with the wheel in the bottom-right corner. A
+        /// Screen Space - Overlay canvas draws after every camera, over all world-space content,
+        /// whatever its layer or sorting order or which camera owns it. World space cannot win
+        /// that, so it stops trying.
+        ///
+        /// Instead the picture is re-drawn flat, on our own overlay, sorted above the highest
+        /// canvas currently live. What comes across is the art and the light it was graded with --
+        /// the wash is already multiplied into each image's colour, so carrying the colour carries
+        /// the grade, including however far the cancel dim has got by the time we arrive. What
+        /// does not come across is the parallax, the depth between the two planes, and the
+        /// character: parallax has no meaning without a camera, and the PMC and the writing belong
+        /// to a screen that has already gone.
+        ///
+        /// The crop is matched rather than re-derived. The world planes are built oversize by the
+        /// overscan the drift needs, so only the middle 1/overscan of each was ever visible;
+        /// measuring that ratio back off the live plane and the live frustum reproduces exactly
+        /// what the player was looking at, and the hand-over does not jump.
+        /// </summary>
+        private void RaiseArtToOverlay()
+        {
+            if (_camera == null || _created.Count == 0) return;
+            if (_holdOverlay != null) return;
+
+            try
+            {
+                var root = new GameObject("DeployScreen Hold");
+
+                // A fresh GameObject lands in whatever scene is active, and the scene that is
+                // active here is the one being torn down -- "Leaving the game..." is exactly that.
+                // The first overlay was built correctly and then unloaded with its scene inside
+                // three seconds, which the trace reported as planes=2/3: three fade groups
+                // registered, two still alive, the missing one ours. This moves it out of every
+                // scene, where nothing being unloaded can take it.
+                try { UnityEngine.Object.DontDestroyOnLoad(root); }
+                catch (Exception error) { WarnOnce(error); }
+
+                var rootRect = root.AddComponent<RectTransform>();
+
+                var canvas = root.AddComponent<Canvas>();
+                canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+                canvas.sortingOrder = AboveEverything();
+
+                // The dissolve already knows how to spend an alpha, and this is the thing that has
+                // to thin out now rather than the world planes nobody can see.
+                var group = root.AddComponent<CanvasGroup>();
+                group.alpha = 1f;
+                group.interactable = false;
+                group.blocksRaycasts = false;
+
+                rootRect.anchorMin = Vector2.zero;
+                rootRect.anchorMax = Vector2.one;
+                rootRect.offsetMin = Vector2.zero;
+                rootRect.offsetMax = Vector2.zero;
+
+                var copied = 0;
+
+                for (var i = 0; i < _created.Count && i < _planeDistance.Count; i++)
+                {
+                    if (CopyPlaneToOverlay(_created[i], _planeDistance[i], rootRect)) copied++;
+                }
+
+                if (copied == 0)
+                {
+                    UnityEngine.Object.Destroy(root);
+                    LoadingPerformance.Note("no art could be raised to the overlay");
+                    return;
+                }
+
+                // The hold covers the game's own wheel, so it owes the player one of its own.
+                try { BuildWorkingDots(rootRect); }
+                catch (Exception error) { WarnOnce(error); }
+
+                _holdOverlay = root;
+                _planeFades.Add(group);
+
+                LoadingPerformance.Note(
+                    "art raised to a screen overlay for the hold: " + copied
+                    + " layer(s) at sorting order " + canvas.sortingOrder
+                    + " over a highest-live of " + HighestLiveCanvas()
+                    + " on a " + Screen.width + "x" + Screen.height + " screen");
+            }
+            catch (Exception error)
+            {
+                WarnOnce(error);
+                LoadingPerformance.Note(
+                    "the art could not be raised to an overlay -- " + error.GetType().Name);
+            }
+        }
+
+        /// <summary>
+        /// One world plane re-drawn flat, keeping its picture, its graded colour and the crop that
+        /// was actually on screen. False when there is nothing there worth copying.
+        /// </summary>
+        private bool CopyPlaneToOverlay(GameObject plane, float distance, RectTransform parent)
+        {
+            if (plane == null || GameTypes.BackgroundImage == null) return false;
+
+            var rect = plane.transform as RectTransform;
+            if (rect == null) return false;
+
+            var source = SourceImage(plane);
+            if (source == null) return false;
+
+            object sprite = null;
+            object colour = null;
+
+            try
+            {
+                if (GameTypes.Background_Sprite != null)
+                    sprite = GameTypes.Background_Sprite.GetValue(source, null);
+
+                if (GameTypes.Background_Color != null)
+                    colour = GameTypes.Background_Color.GetValue(source, null);
+            }
+            catch { return false; }
+
+            if (sprite == null) return false;
+
+            // What fraction of the plane the camera could actually see, measured off the live
+            // frustum rather than recomputed from the config that built it.
+            var frustum = _camera.orthographic
+                ? _camera.orthographicSize * 2f
+                : 2f * distance * Mathf.Tan(_camera.fieldOfView * 0.5f * Mathf.Deg2Rad);
+
+            var overscan = frustum > 0.001f ? Mathf.Max(1f, rect.sizeDelta.y / frustum) : 1f;
+
+            var copy = new GameObject(plane.name + " (overlay)");
+            var copyRect = copy.AddComponent<RectTransform>();
+            copyRect.SetParent(parent, false);
+
+            // Centred and oversized by the same ratio, so the middle of the picture lands where
+            // the middle of the picture already was.
+            copyRect.anchorMin = new Vector2(0.5f, 0.5f);
+            copyRect.anchorMax = new Vector2(0.5f, 0.5f);
+            copyRect.pivot = new Vector2(0.5f, 0.5f);
+            copyRect.anchoredPosition = Vector2.zero;
+            copyRect.sizeDelta = new Vector2(Screen.width * overscan, Screen.height * overscan);
+
+            var image = copy.AddComponent(GameTypes.BackgroundImage);
+
+            try
+            {
+                if (GameTypes.Background_Sprite != null)
+                    GameTypes.Background_Sprite.SetValue(image, sprite, null);
+
+                if (GameTypes.Background_Raycast != null)
+                    GameTypes.Background_Raycast.SetValue(image, false, null);
+
+                if (colour != null && GameTypes.Background_Color != null)
+                {
+                    GameTypes.Background_Color.SetValue(image, colour, null);
+
+                    // Registered so the cancel dim keeps reaching the art after the hand-over. The
+                    // base colour is the source plane's undimmed one, not the dimmed colour now on
+                    // screen, or the dim would compound on itself.
+                    _planeImages.Add(image);
+                    _planeColours.Add(BaseColourOf(plane, (Color)colour));
+                }
+            }
+            catch { }
+
+            return true;
+        }
+
+        /// <summary>The image component on a built plane, or null if it has none.</summary>
+        private Component SourceImage(GameObject plane)
+        {
+            for (var i = 0; i < _created.Count && i < _planeImages.Count; i++)
+            {
+                if (ReferenceEquals(_created[i], plane)) return _planeImages[i];
+            }
+
+            return GameTypes.BackgroundImage == null
+                ? null
+                : plane.GetComponent(GameTypes.BackgroundImage);
+        }
+
+        /// <summary>The undimmed colour a plane was built with, so the dim is never applied twice.</summary>
+        private Color BaseColourOf(GameObject plane, Color fallback)
+        {
+            for (var i = 0; i < _created.Count && i < _planeColours.Count; i++)
+            {
+                if (ReferenceEquals(_created[i], plane)) return _planeColours[i];
+            }
+
+            return fallback;
+        }
+
+        /// <summary>
+        /// Three dots, bottom right, breathing in sequence.
+        ///
+        /// The art holding still for twenty seconds reads as a hang, and it reads that way because
+        /// the one thing on screen that said otherwise -- the game's own wheel, bottom right -- is
+        /// now underneath our overlay. Covering it and putting nothing back is how a working wait
+        /// becomes a frozen one to everybody who is not reading the trace.
+        ///
+        /// Bottom right on purpose: it is where the wheel was, so it lands where the eye already
+        /// goes to ask this question. Drawn from a generated circle rather than a font or a game
+        /// sprite, because neither can be relied on here -- the screen that owned them has gone --
+        /// and a runtime texture has no such dependency.
+        /// </summary>
+        private void BuildWorkingDots(RectTransform parent)
+        {
+            if (GameTypes.BackgroundImage == null) return;
+
+            _workingDots.Clear();
+            _workingTime = 0f;
+
+            var sprite = DotSprite();
+            if (sprite == null) return;
+
+            const float size = 14f;
+            const float gap = 26f;
+
+            var holder = new GameObject("Working");
+            var holderRect = holder.AddComponent<RectTransform>();
+            holderRect.SetParent(parent, false);
+            holderRect.anchorMin = new Vector2(1f, 0f);
+            holderRect.anchorMax = new Vector2(1f, 0f);
+            holderRect.pivot = new Vector2(1f, 0f);
+            holderRect.anchoredPosition = new Vector2(-90f, 80f);
+            holderRect.sizeDelta = new Vector2(gap * 3f, size);
+
+            for (var i = 0; i < 3; i++)
+            {
+                var dot = new GameObject("Dot " + (i + 1));
+                var rect = dot.AddComponent<RectTransform>();
+                rect.SetParent(holderRect, false);
+                rect.anchorMin = new Vector2(1f, 0.5f);
+                rect.anchorMax = new Vector2(1f, 0.5f);
+                rect.pivot = new Vector2(0.5f, 0.5f);
+                rect.anchoredPosition = new Vector2(-gap * (2 - i), 0f);
+                rect.sizeDelta = new Vector2(size, size);
+
+                var image = dot.AddComponent(GameTypes.BackgroundImage);
+
+                try
+                {
+                    if (GameTypes.Background_Sprite != null)
+                        GameTypes.Background_Sprite.SetValue(image, sprite, null);
+
+                    if (GameTypes.Background_Raycast != null)
+                        GameTypes.Background_Raycast.SetValue(image, false, null);
+                }
+                catch { }
+
+                _workingDots.Add(image);
+            }
+
+            AnimateWorkingDots(0f);
+        }
+
+        /// <summary>One frame of the dots. Silent and free when there are none.</summary>
+        private void AnimateWorkingDots(float seconds)
+        {
+            if (_workingDots.Count == 0 || GameTypes.Background_Color == null) return;
+
+            _workingTime += seconds;
+
+            for (var i = 0; i < _workingDots.Count; i++)
+            {
+                var image = _workingDots[i];
+                if (image == null) continue;
+
+                // A third of a cycle apart, so the three of them read as a travelling pulse rather
+                // than a flash. Never fully out: a dot that vanishes looks like a dropped frame.
+                var phase = _workingTime * 2f - i * (Mathf.PI * 2f / 3f);
+                var lift = (Mathf.Sin(phase) + 1f) * 0.5f;
+
+                try
+                {
+                    GameTypes.Background_Color.SetValue(
+                        image, new Color(0.78f, 0.64f, 0.36f, 0.25f + lift * 0.65f), null);
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>
+        /// A soft filled circle, built once and kept for the session. Antialiased across the last
+        /// pixel so it does not read as a cog at this size.
+        /// </summary>
+        private static Sprite DotSprite()
+        {
+            if (_dotSprite != null) return _dotSprite;
+
+            try
+            {
+                const int side = 64;
+                var texture = new Texture2D(side, side, TextureFormat.ARGB32, false);
+                var middle = (side - 1) * 0.5f;
+                var radius = middle - 1f;
+
+                for (var y = 0; y < side; y++)
+                {
+                    for (var x = 0; x < side; x++)
+                    {
+                        var distance = Mathf.Sqrt((x - middle) * (x - middle) + (y - middle) * (y - middle));
+                        var alpha = Mathf.Clamp01(radius - distance);
+                        texture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                    }
+                }
+
+                texture.Apply();
+                texture.hideFlags = HideFlags.HideAndDontSave;
+
+                _dotSprite = Sprite.Create(
+                    texture, new Rect(0f, 0f, side, side), new Vector2(0.5f, 0.5f));
+
+                if (_dotSprite != null) _dotSprite.hideFlags = HideFlags.HideAndDontSave;
+            }
+            catch { _dotSprite = null; }
+
+            return _dotSprite;
+        }
+
+        private static Sprite _dotSprite;
+
+        /// <summary>
+        /// The top of the sorting range, and the reasoning is the correction to a sweep that did
+        /// not work.
+        ///
+        /// The first attempt took the highest canvas live at the abort and added ten, which came
+        /// to 1010. The canvas that needed beating was PreloaderUI's, and the trace says why the
+        /// sweep could not see it: `busy=no` at the moment of the sweep, `busy=preloader` four
+        /// seconds later. It is not up yet when the abort fires, so no sweep taken then can
+        /// account for it, and a sweep taken later is a race against a thing whose timing we do
+        /// not control.
+        ///
+        /// So take the top of the range outright. Nothing can sort above it, the art is meant to
+        /// cover everything for exactly as long as the hold lasts, and the overlay is destroyed at
+        /// teardown -- so the cost of being at the top is bounded by the hold itself. The sweep is
+        /// kept for the log only, because knowing what we had to beat is worth a line.
+        /// </summary>
+        private static int AboveEverything()
+        {
+            return short.MaxValue - 1;
+        }
+
+        /// <summary>The highest canvas currently drawing, for the trace. Swept once, never cached.</summary>
+        private static int HighestLiveCanvas()
+        {
+            var highest = 0;
+
+            try
+            {
+                foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
+                {
+                    if (canvas == null || !canvas.isActiveAndEnabled) continue;
+                    if (canvas.sortingOrder > highest) highest = canvas.sortingOrder;
+                }
+            }
+            catch { }
+
+            return highest;
+        }
+
+        /// <summary>What the planes hang from, for the trace.</summary>
+        private string PlaneParentName()
+        {
+            foreach (var plane in _created)
+            {
+                if (plane == null) continue;
+
+                var parent = plane.transform.parent;
+                return parent == null ? "<none>" : parent.name + " active=" + parent.gameObject.activeInHierarchy;
+            }
+
+            return "<no planes>";
         }
 
         /// <summary>
@@ -2217,6 +2871,10 @@ namespace DeployScreen.Client
         internal bool FadeStep(float seconds)
         {
             if (_planeFades.Count == 0) return true;
+
+            // The hold is a wait, and has to look like one.
+            try { AnimateWorkingDots(seconds); }
+            catch (Exception error) { WarnOnce(error); }
 
             // Nothing moves until the menu is genuinely there. The art is at full alpha and is
             // the only thing on screen, which is the whole point: everything the player used to
@@ -2242,7 +2900,16 @@ namespace DeployScreen.Client
             // menu looks much the same as dissolving into none.
             var grace = Mathf.Max(0f, DeployScreenPlugin.StagingLingerSeconds.Value);
 
-            if (_fadeWaited < HoldCapSeconds)
+            // Read once a frame, up here, because both the release below and the bound on the wait
+            // are answers to the same question.
+            var busy = EnvironmentState.Busy();
+
+            if (busy != null) _sawBusy = true;
+
+            // Still working is a reason to keep holding, not a reason to give up on schedule.
+            var limit = busy != null ? HoldCeilingSeconds : HoldCapSeconds;
+
+            if (_fadeWaited < limit)
             {
                 if (EnvironmentState.Settling)
                 {
@@ -2252,35 +2919,85 @@ namespace DeployScreen.Client
 
                 if (!EnvironmentState.MenuShown)
                 {
-                    // Holding is only worth anything while there is art to hold. The planes are
-                    // parented to the environment root, and BeginFade starts a swap of exactly
-                    // that root -- so if the swap takes them with it, every second of this hold is
-                    // spent covering the screen with nothing while the player watches the thing
-                    // the hold exists to hide. Counted rather than assumed, and if the count is
-                    // zero there is nothing to wait for and the teardown may as well get on.
-                    if (LivePlanes() == 0)
+                    // The release that actually fires.
+                    //
+                    // MenuShown wants Arrived() -- EFT.UI.MenuScreen -- and in every abort ever
+                    // traced here that has read `menu=off` with `watching=0` beside it, so the
+                    // hold has never once ended the way it was designed to. It ends on the cap,
+                    // every time, and the cap is what put the art down onto a game that had not
+                    // finished: `cap -- nothing came up ... busy=preloader` at 21.4s, dissolving
+                    // onto the blurred room the whole transition exists to hide.
+                    //
+                    // Busy() is the half that does work. It read `no` at the top of the hold and
+                    // `preloader` four seconds later, so it is live, it toggles, and it is telling
+                    // the truth about the client. Watching it go up and come back down is a real
+                    // end-of-work signal, and it does not need MenuScreen to be found at all.
+                    // Having been busy and stopping is the end of the wait. What it is *not* is
+                    // the end of the art: releasing has to fall through to the dissolve at the
+                    // bottom of this method, which is the only thing that spends the alpha.
+                    // Returning true here instead hands straight to the teardown, and the teardown
+                    // destroys the overlay at whatever opacity it was at -- which is a hard cut,
+                    // and was one, for exactly as long as this read `return true`.
+                    //
+                    // The second half of the test is for the machine that never looks busy at all.
+                    // On a client quick enough to be done before the preloader draws a frame, the
+                    // first half can never come true, and without this the reward for a fast PC
+                    // would be the full cap spent staring at a held picture.
+                    var finished = busy == null
+                                   && (_sawBusy || _fadeWaited >= NeverBusySeconds);
+
+                    if (!finished)
                     {
-                        _released = "the art is gone -- nothing left to hold";
+                        // Holding is only worth anything while there is art to hold, so the planes
+                        // are counted rather than assumed and a count of zero ends the wait.
+                        //
+                        // Worth knowing what this check cannot see, because believing otherwise cost
+                        // four attempts: it counts references, so it answers "do the planes exist",
+                        // never "is the art on screen". Through every abort before the overlay it
+                        // read 2/2 while the player looked at an empty menu room, because the planes
+                        // were alive and simply no longer in front of the camera. Existence was never
+                        // the thing going wrong.
+                        if (LivePlanes() == 0)
+                        {
+                            _released = "the art is gone -- nothing left to hold";
+                            LoadingPerformance.Note(
+                                "art held " + _fadeWaited.ToString("0.0") + "s for the menu ("
+                                + _released + ")");
+                            return true;
+                        }
+
+                        // Sampled on the way, because a cap on its own says only that the wait was
+                        // longer than the cap. If twenty seconds turns out not to be enough either,
+                        // the shape of the wait is in the trace rather than needing another raid.
+                        if (_fadeWaited >= _nextHoldSample)
+                        {
+                            _nextHoldSample = _fadeWaited + 4f;
+                            LoadingPerformance.Note(
+                                "still holding at " + _fadeWaited.ToString("0.0") + "s: "
+                                + EnvironmentState.MenuState()
+                                + " planes=" + LivePlanes() + "/" + _planeFades.Count
+                                + " " + PlaneVisibility()
+                                + " " + CameraDelta());
+                        }
+
+                        _fadeWaited += seconds;
+                        return false;
+                    }
+
+                    // Released. The grace below then lets the menu draw a frame or two before the
+                    // art starts thinning, the same courtesy the MenuShown path already gets.
+                    if (_released == null)
+                    {
+                        // Which of the two it was matters to anyone reading this later: one is the
+                        // ordinary ending, the other says this machine never showed a preloader.
+                        _released = _sawBusy
+                            ? "the client finished working"
+                            : "the client never looked busy";
+
                         LoadingPerformance.Note(
                             "art held " + _fadeWaited.ToString("0.0") + "s for the menu ("
-                            + _released + ")");
-                        return true;
+                            + _released + ", " + PlaneVisibility() + ")");
                     }
-
-                    // Sampled on the way, because a cap on its own says only that the wait was
-                    // longer than the cap. If twenty seconds turns out not to be enough either,
-                    // the shape of the wait is in the trace rather than needing another raid.
-                    if (_fadeWaited >= _nextHoldSample)
-                    {
-                        _nextHoldSample = _fadeWaited + 4f;
-                        LoadingPerformance.Note(
-                            "still holding at " + _fadeWaited.ToString("0.0") + "s: "
-                            + EnvironmentState.MenuState()
-                            + " planes=" + LivePlanes() + "/" + _planeFades.Count);
-                    }
-
-                    _fadeWaited += seconds;
-                    return false;
                 }
 
                 if (_menuUpAt < 0f) _menuUpAt = _fadeWaited;
@@ -2299,11 +3016,15 @@ namespace DeployScreen.Client
                 // the one this replaced and wants a different answer -- so it is worth being able
                 // to tell them apart in one line of a report.
                 _released = _fadeWaited >= HoldCapSeconds && !EnvironmentState.MenuShown
-                    ? "cap -- nothing came up, " + EnvironmentState.MenuState()
+                    ? (busy != null
+                        ? "ceiling -- still busy after " + HoldCeilingSeconds.ToString("0")
+                          + "s, " + EnvironmentState.MenuState()
+                        : "cap -- nothing came up, " + EnvironmentState.MenuState())
                     : EnvironmentState.MenuState();
 
                 LoadingPerformance.Note(
-                    "art held " + _fadeWaited.ToString("0.0") + "s for the menu (" + _released + ")");
+                    "art held " + _fadeWaited.ToString("0.0") + "s for the menu (" + _released
+                    + ", " + PlaneVisibility() + ", " + CameraDelta() + ")");
             }
 
             _fade -= seconds / Mathf.Max(0.05f, DeployScreenPlugin.StagingFadeSeconds.Value);
@@ -2336,6 +3057,9 @@ namespace DeployScreen.Client
 
             // The reading belongs to the picture that is going, not to the next one.
             ArtTone.Forget();
+
+            // And the choice belongs to the raid that is going, so the next one moves on a place.
+            ForgetPictureChoices();
             _cameBack.Clear();
             _backdropCamera = null;
             CharacterFrameHeight = 0f;
@@ -2356,6 +3080,15 @@ namespace DeployScreen.Client
                 catch (Exception error) { WarnOnce(error); }
             }
             _created.Clear();
+
+            // The hold overlay is not in _created on purpose -- it is screen-space and would be
+            // wrong for anything that treats that list as world planes -- so it is torn down here.
+            try { if (_holdOverlay != null) UnityEngine.Object.Destroy(_holdOverlay); }
+            catch (Exception error) { WarnOnce(error); }
+
+            _holdOverlay = null;
+            _workingDots.Clear();
+            _workingTime = 0f;
 
             foreach (var go in _hidden)
             {
