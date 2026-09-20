@@ -1,6 +1,6 @@
 # Deploy Screen Overhaul
 
-Turns the raid loading screen into the place you are about to land in: your own picture of the map, lit for the hour and the weather you are deploying into, with your PMC lit to match it.
+Turns the raid loading screen into the place you are about to land in: a picture of the map, lit for the hour and the weather you are deploying into, with your PMC lit to match it. Art for every map is included.
 
 > **First release.** Built against SPT 4.1.6 and played in game.
 
@@ -13,7 +13,7 @@ This mod replaces that with one picture of your destination, hung as the world y
 - **The map as the world.** Your art fills the screen, the menu room's furniture and the banner panel step aside, and two planes at different depths shear against each other as the camera drifts -- so it has depth rather than being a pan across a flat image.
 - **Lit for the raid, not just the map.** The hour comes from the same clock the location screen showed you and the weather from the same forecast, so a foggy 03:00 Woods and a clear midday one do not look alike.
 - **A PMC who belongs there.** The picture is measured every raid, and your character is lit to what it actually reads -- which is what stops him looking like a cut-out standing in front of a photo.
-- **Your own images, per map.** Drop them in the map's folder.
+- **Art included, and replaceable.** Ten pictures for most maps ship with it. Drop your own in the map's folder to use those instead.
 - **Readable over anything.** The writing carries its own shadow, and how much the corners are dimmed is measured from your picture rather than fixed -- barely anything over a dark treeline, a good deal over a white sky.
 - **The countdown too.** GET READY and the final count stay on the map art in the same corners, instead of cutting back to the menu room for the last few seconds.
 - **Backing out, too.** Press Back and the art stays up through the whole return to the menu -- the client's work, the rebuild, all of it -- and then dissolves into the menu instead of cutting to a dark room with a loading wheel in the corner.
@@ -82,9 +82,10 @@ configuration manager installed at all.
 The deploy screen stops being a menu with a picture in it. Your art for the destination becomes
 the place your PMC is standing in while the raid loads.
 
-**It needs art.** Put images in the map's folder under `banners/` (see [Custom banners](#custom-banners)).
-A map with no art is left alone: you get the normal screen, with only the lighting following the
-destination.
+**The art is included.** Ten pictures for most maps ship with the mod, so it works the moment you
+install it. Replace them with your own whenever you like -- see [Custom banners](#custom-banners).
+A map with no art at all is left alone: you get the normal screen, with only the lighting following
+the destination.
 
 ### What it actually does
 

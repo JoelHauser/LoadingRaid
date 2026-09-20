@@ -88,12 +88,20 @@ New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
 Copy-Item $dll $pluginDir
 
 
-# The banners tree ships with its folders in place, so there is somewhere obvious to
-# drop images into. _default needs a file or the zip will not carry the folder at all.
+# The art ships with the mod. The staging area is the whole mod now, and it has nothing
+# to show without pictures -- a map with no art is left alone, so a release carrying no
+# art is one where, for most people, nothing appears to happen at all.
 $bannersDir = Join-Path $pluginDir 'banners'
 New-Item -ItemType Directory -Force -Path (Join-Path $bannersDir '_default') | Out-Null
 Copy-Item (Join-Path $root 'assets\banners-README.txt') (Join-Path $bannersDir 'README.txt')
 Copy-Item (Join-Path $root 'assets\default-README.txt') (Join-Path $bannersDir '_default\README.txt')
+
+$art = Join-Path $root 'assets\banners'
+if (Test-Path $art) {
+    Copy-Item (Join-Path $art '*') $bannersDir -Recurse -Force
+    $shipped = @(Get-ChildItem $bannersDir -Recurse -File -Include *.jpg, *.jpeg, *.png).Count
+    Write-Host "  art: $shipped pictures" -ForegroundColor DarkGray
+}
 
 # -------------------------------------------------------------------- the zip
 
@@ -127,13 +135,28 @@ if ($Install) {
 
     Copy-Item $dll $destination -Force
 
-    # Never clobber art that is already there.
-    foreach ($keep in @('banners\README.txt', 'banners\_default\README.txt')) {
-        $target = Join-Path $destination $keep
-        if (-not (Test-Path $target)) {
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-            Copy-Item (Join-Path $stage "BepInEx\plugins\DeployScreen\$keep") $target
-        }
+    # Art goes only where nothing is there already. Someone who has curated a map's folder,
+    # or dropped in their own screenshots, must not have that replaced by an update -- but a
+    # file that is absent is either a fresh install or a map added since they last updated,
+    # and both of those want the picture.
+    $stagedPlugin = Join-Path $stage 'BepInEx\plugins\DeployScreen'
+    $added = 0
+    $kept = 0
+
+    foreach ($file in Get-ChildItem $stagedPlugin -Recurse -File) {
+        $relative = $file.FullName.Substring($stagedPlugin.Length).TrimStart('\')
+        if ($relative -eq 'DeployScreen.Client.dll') { continue }
+
+        $target = Join-Path $destination $relative
+        if (Test-Path $target) { $kept++; continue }
+
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+        Copy-Item $file.FullName $target
+        $added++
+    }
+
+    if ($added -gt 0 -or $kept -gt 0) {
+        Write-Host "  art: $added added, $kept left as you had them" -ForegroundColor DarkGray
     }
 
     Write-Host "installed to $destination" -ForegroundColor Green

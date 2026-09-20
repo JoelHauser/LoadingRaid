@@ -2594,6 +2594,33 @@ with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo w
 
 ## Where this was left off
 
+2026-09-20, release: **the art ships with the mod.** 148 pictures, 63 MB, in `assetsanners`
+and in the zip.
+
+This was the gap that would have sunk the release. The staging area is the whole mod now, and a map
+with no art is deliberately left alone -- so the package as it stood installed a mod that, for
+anyone who had not already sourced their own pictures, appeared to do nothing at all. The art was
+only ever on one machine.
+
+`pack.ps1` copies `assetsanners` into the stage, and `-Install` copies **only files that are not
+already there**. Someone who has curated a folder or dropped in their own screenshots keeps it
+exactly as it was; a file that is absent is either a fresh install or a map added since they last
+updated, and both of those want the picture. It reports `art: N added, M left as you had them`.
+
+`assetsanners-README.txt` was rewritten. It described the banner slideshow -- how many pictures a
+map shows in vanilla, the Captions setting and its three modes -- none of which exists any more. It
+now says the art is already there, that the rotation advances a picture per load, and that updating
+never overwrites what you have.
+
+**Worth knowing before this is repeated:** the pictures are BSG's own Showcase captures, taken from
+the Fandom wiki by `scriptsetch-wiki-art.ps1`. Shipping them in the package is a different
+posture from a player fetching them, and it was raised before doing it. They are 1920x1080, which
+the mod itself reports as soft on anything wider -- a player's own screenshots will always be
+sharper, and the banners README says so.
+
+The repository carries 63 MB of binaries now and always will, since git keeps them. That is the
+price of the release working out of the box and it was paid deliberately.
+
 2026-09-20, release tidy: **README brought in line with 1.0.0, and one real regression found by
 looking.**
 
