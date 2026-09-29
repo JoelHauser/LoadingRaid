@@ -95,6 +95,12 @@ namespace DeployScreen.Client
                 {
                     Retext(name, place);
                     if (player != null) Retext(role, player);
+
+                    // The panel's member icon sits in the big line's row. With the destination
+                    // written there it would badge the map rather than the player -- and with an
+                    // icon mod (EditionCustomizer) it is a custom one, loud enough to notice -- so
+                    // it is switched off while the arrangement holds.
+                    HideMemberIcon(panel);
                 }
 
                 Resize(name, 44f);
@@ -199,6 +205,28 @@ namespace DeployScreen.Client
         /// screen: the same answer the plate has, and wrong only by however far the plate's own
         /// writing sits off its middle.
         /// </summary>
+        /// <summary>
+        /// Switches off the member icon (and prestige badge) of the panel's ChatSpecialIcon, found
+        /// by type name because this plugin holds no reference to the game's assembly. Only the
+        /// Image components are turned off, not their objects: the icon may share an object with
+        /// the name label, and Remember puts each one back on restore.
+        /// </summary>
+        private void HideMemberIcon(RectTransform panel)
+        {
+            if (panel == null) return;
+
+            foreach (var component in panel.GetComponentsInChildren<Component>(true))
+            {
+                if (component == null || component.GetType().Name != "ChatSpecialIcon") continue;
+
+                foreach (var field in new[] { "_icon", "_iconPrestige" })
+                {
+                    var image = component.GetType().GetField(field)?.GetValue(component) as Behaviour;
+                    if (image != null) Remember(image.GetType(), image, "enabled", false);
+                }
+            }
+        }
+
         private static float LineOf(RectTransform root, RectTransform caption)
         {
             if (root == null || caption == null) return 0f;
