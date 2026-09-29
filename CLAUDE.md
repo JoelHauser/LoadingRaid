@@ -2594,6 +2594,33 @@ with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo w
 
 ## Where this was left off
 
+2026-09-29, **1.0.1: no member icon beside the destination on the countdown. Committed (`6053ae7`),
+installed, NOT pushed, NOT packed.**
+
+The countdown repurposes `Player Name Panel`: the destination takes the big line, the player's name
+the small one. The panel's `ChatSpecialIcon` icon sits in the big line's row, so it badged the map --
+and with EditionCustomizer installed (the user's icon mod, `H:\SPTMods\Tarkov-Change-Icons`) it was a
+custom icon, loud enough to be reported. `CountdownScreen.HideMemberIcon` finds `ChatSpecialIcon` by
+type name and switches off its `_icon` / `_iconPrestige` Images through `Remember`, so restore puts
+them back. Images only, not their GameObjects: the icon may share an object with the name label.
+
+The other half of that report was EditionCustomizer coloring the big line (now the map) in the
+player's name colors. That was fixed on its side -- its colors now follow whichever label shows the
+nickname -- so nothing here depends on it.
+
+Outstanding:
+
+- **Not pushed.** `main` on GitHub is still 1.0.0 (`9fa87a3`).
+- **Not packed.** No `DeployScreen-1.0.1` zip; `scripts\pack.ps1 -SPTPath H:\SPT4.1.X` makes one
+  (csproj `<Version>` and `PluginVersion` are both 1.0.1, which pack checks).
+- **Installed by hand**: the built DLL was copied into `H:\SPT4.1.X\BepInEx\plugins\DeployScreen`.
+  The 1.0.0 DLL it replaced is in `H:\SPTMods\plugin-backups\2026-09-29-deployscreen-membericon`.
+- **Not seen in game** with the icon hidden. The user confirmed the earlier map-in-player-colors bug
+  is gone.
+- **Layout question left open.** The user noticed their name sits under the map name, which is
+  this screen's 1.0.0 design, not a change. Asked whether to put the name big with the map small,
+  or the name above the map; they said "nevermind" for now.
+
 2026-09-20, release: **the art ships with the mod.** 148 pictures, 63 MB, in `assetsanners`
 and in the zip.
 
