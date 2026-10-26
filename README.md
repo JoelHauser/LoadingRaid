@@ -2,7 +2,7 @@
 
 Turns the raid loading screen into the place you are about to land in: a picture of the map, lit for the hour and the weather you are deploying into, with your PMC lit to match it. Art for every map is included.
 
-> **First release.** Built against SPT 4.1.6 and played in game.
+> **1.1.0.** Built against SPT 4.1.6 and played in game.
 
 ## What it does
 
@@ -12,7 +12,8 @@ This mod replaces that with one picture of your destination, hung as the world y
 
 - **The map as the world.** Your art fills the screen, the menu room's furniture and the banner panel step aside, and two planes at different depths shear against each other as the camera drifts -- so it has depth rather than being a pan across a flat image.
 - **Lit for the raid, not just the map.** The hour comes from the same clock the location screen showed you and the weather from the same forecast, so a foggy 03:00 Woods and a clear midday one do not look alike.
-- **A PMC who belongs there.** The picture is measured every raid, and your character is lit to what it actually reads -- which is what stops him looking like a cut-out standing in front of a photo.
+- **The picture as you saved it.** The menu's own camera effects, and the dark veil it lays over its room, are switched off while your art is up -- so the picture reaches the screen with its real colour and contrast instead of washed out.
+- **A PMC who belongs there.** Your character is lit from the picture itself -- the sky's colour from above, the ground's from below, as bright as the picture really is -- and the weather decides whether that light is one hard sun or soft from every side. That is what stops him looking like a cut-out standing in front of a photo.
 - **Art included, and replaceable.** Ten pictures for most maps ship with it. Drop your own in the map's folder to use those instead.
 - **Readable over anything.** The writing carries its own shadow, and how much the corners are dimmed is measured from your picture rather than fixed -- barely anything over a dark treeline, a good deal over a white sky.
 - **The countdown too.** GET READY and the final count stay on the map art in the same corners, instead of cutting back to the menu room for the last few seconds.
@@ -28,13 +29,15 @@ Motion and map intel work as soon as you install, with nothing to set up. Nothin
 
 ## Install
 
-1. Download `DeployScreen_V1.0.0.zip` from the [`releases`](releases) folder.
+1. Download `DeployScreen_V1.1.0.zip` from the [latest release](https://github.com/JoelHauser/LoadingRaid/releases/latest).
 2. Extract it into your SPT folder. You should end up with:
 
    ```
    BepInEx/plugins/DeployScreen/DeployScreen.Client.dll
    BepInEx/plugins/DeployScreen/banners/
    ```
+
+Updating: extract the new zip over the old one. Only the mod's own files are replaced; pictures you added under your own names are left alone.
 
 To uninstall, delete the `BepInEx/plugins/DeployScreen` folder. Your settings are kept separately in `BepInEx/config/com.mybutthasarash.deployscreen.cfg`, which you can delete too.
 
@@ -96,10 +99,12 @@ fight it, the staging area uses the three things that make a composite convincin
 - **Parallax.** Because the character and the world are on different cameras, drifting the world's
   camera moves the world and *not* the character. Two art planes at different depths shear against
   each other as well, so the scene has genuine depth rather than a pan across a flat image.
-- **Light that agrees.** A key and a rim light are added that fall on your PMC *and nothing else*,
-  coloured for where you're going — sodium for Streets, cold green for Woods, clinical blue for
-  Labs. This is the setting that matters most: a cut-out looks like a cut-out because its light
-  disagrees with its surroundings, not because of its shape.
+- **Light that agrees.** Lights are added that fall on your PMC *and nothing else*, coloured for
+  where you're going — sodium for Streets, cold green for Woods, clinical blue for Labs — and by
+  the picture itself: a fill from above in the colour of its sky, a bounce from below in the colour
+  of its ground, and the main light nudged toward the picture's overall cast. How bright he is
+  follows how bright the picture really is. This is what matters most: a cut-out looks like a
+  cut-out because its light disagrees with its surroundings, not because of its shape.
 - **The map as the world.** Your art is hung deep in the scene and the menu backdrop's own furniture
   is switched off, so you're looking at the destination rather than at a mall shutter with the
   destination behind it.
@@ -111,6 +116,11 @@ same: night pulls everything toward moonlight and leans on the rim light to keep
 fog greys things down and eats the contrast, rain cools and darkens, and heavy cloud flattens the
 light until it has no direction at all.
 
+The weather changes the light's *shape* on your PMC too. Under a clear sky he gets one hard main
+light and a bright edge from behind; under overcast or fog the main light drops and a soft fill
+rises to nearly meet it, so he is lit evenly from every side. The sun sits high at midday and rakes
+low across him at dawn and dusk.
+
 Dawn and dusk are told apart rather than treated as one low sun. Evening is amber; morning keeps its
 cold and comes out pink and a little dimmer. On Lighthouse, where the choice on offer is 18:09
 against 06:09, that's the whole difference between the two raids.
@@ -119,6 +129,17 @@ Turn off **Follow the raid's weather** if you'd rather each map always looked th
 
 The banner panel steps aside — its pictures are the world now — and the map briefing, bosses,
 extracts and your tasks cycle slowly in the line beneath the location name.
+
+### The picture as you saved it
+
+The menu camera tone-maps and blooms everything it draws, and lays a dark veil and a white glow
+over its room. That suits the 3D menu. Over a screenshot that has already been through all of it
+once, it made the picture washed out and about a third as bright -- while your PMC, drawn on top of
+the veil, stood out like a cut-out. While your art is up all of that is switched off, so the
+picture is shown as the file is, and put back when you leave.
+
+Two advanced settings cover this: **Show the picture as it is** (on), and **Light your PMC in the
+picture colours** (0.6; 0 lights him from the time and weather alone).
 
 ### Backing out
 
@@ -221,10 +242,10 @@ With **Intel under the map name** on, the line beneath the location name cycles 
 - Map, boss, extract and task names come from the game's own text, in your game language.
 - If a map has more banners than cards, the cards repeat.
 
-## Getting art without taking screenshots
+## More art from the wiki
 
-The mod ships no pictures. If you don't have your own yet, there's a script that fills the folders
-from the Escape from Tarkov wiki:
+The mod ships with ten pictures for most maps. To fetch more, or to refill a folder you emptied,
+there's a script that pulls them from the Escape from Tarkov wiki:
 
 ```
 scripts\fetch-wiki-art.ps1 -SPTPath "C:\path\to\SPT"
@@ -254,10 +275,10 @@ banners/_default/anything.png
 ```
 
 - PNG, JPG and JPEG all work.
-- `_default` is used for any map that doesn't have its own folder. A map with neither keeps its stock images.
+- `_default` is used for any map that doesn't have its own folder -- create it if you want a fallback. A map with neither keeps the game's own screen, with only the lighting following the destination.
 - Pictures are used in file name order. A leading number like `01 - ` or `3.` only sets the order and isn't shown in the caption.
 - **The staging area's backdrop takes the next picture in the folder each time you load that map**, and wraps round at the end, so every picture is seen once before any is seen twice. How far through each map you are is kept in the config under `Banners -> Pictures already shown`, so it survives a restart; deleting that line just starts every map from its first picture again.
-- Each map shows the same number of banners it does without the mod: ten on Customs and Factory, five on Labs, four on most other maps. Extra pictures aren't used, and if you add fewer, they repeat.
+- Updating the mod never deletes a picture, and never overwrites one you added under your own name.
 
 ### Size and shape
 
@@ -383,7 +404,7 @@ Each detailed list is capped at 128 entries, with dropped counts and complete ag
 
 - Client-only. No server mod.
 - Doesn't change your profile or any game files.
-- **Other background mods.** Environment Replace and Raid Movie Background Replacer change the main menu and startup screens, not this one, so they work alongside it. If you use one that replaces the main menu scene, leave **Match the map** off so the two don't fight over it.
+- **Other background mods.** Environment Replace and Raid Movie Background Replacer change the main menu and startup screens, not this one, so they work alongside it.
 - **Fika** hasn't been tested. The mod only changes your own screen.
 - If a game update renames something the mod relies on, only that feature turns off, and the BepInEx log says which.
 

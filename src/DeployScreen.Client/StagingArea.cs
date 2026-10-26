@@ -185,6 +185,7 @@ namespace DeployScreen.Client
                 TakeCameraVignette(camera);
                 TakeBackdropOcclusion(camera);
                 DescribeCameraEffects(camera);
+                TakeBackdropEffects(camera);
 
 
                 // The art is the whole point. With none for this map, the menu scene is left
@@ -196,6 +197,7 @@ namespace DeployScreen.Client
                 {
                     BuildPlanes(root, camera, aspect, sprite, grade);
                     HideSceneFurniture(root);
+                    TakeVeils(root);
                     HideBanners();
                     _built = true;
 
@@ -606,10 +608,6 @@ namespace DeployScreen.Client
             // What a camera move is worth on screen at the near plane. Measured from the camera
             // that is actually rendering this, not assumed, for the same reason the planes are.
             CharacterFrameHeight = 2f * near * Mathf.Tan(fov * 0.5f * Mathf.Deg2Rad);
-
-            // Kept for the probe: what draws the backdrop, and how far away the art is.
-            _backdropCamera = camera;
-            _artDistance = far;
 
             // Far: the map itself, washed toward the destination's light -- and darkened to it.
             var wash = WashFor(grade, DeployScreenPlugin.StagingGradeStrength.Value);
@@ -1536,6 +1534,153 @@ namespace DeployScreen.Client
             catch (Exception error) { WarnOnce(error); }
         }
 
+        /// <summary>
+        /// Lets the map's picture reach the screen as the file is, rather than developed twice.
+        ///
+        /// The backdrop camera is HDR and runs Prism's tone mapping, bloom, chromatic aberration
+        /// and motion blur -- built for a 3D room lit in scene-linear values. A screenshot is
+        /// already display-referred: it has had its own tone map, and a second one squashes its
+        /// highlights while bloom lays a veil over its mid-tones. Measured off a Lighthouse
+        /// screenshot against its source file: saturation 0.28 to 0.14, median 0.54 to 0.61, the
+        /// top percent 0.86 to 0.76, the sky from blue to a pale grey. Milky, and the PMC -- lit
+        /// for this exact pipeline on his own camera -- stays punchy in front of it. That gap is
+        /// the greenscreen.
+        ///
+        /// The camera's culling mask is the menu environment layer alone, and the menu room is
+        /// hidden while the art is up, so the picture is all these effects can touch. Recorded in
+        /// <see cref="_switchedOff"/>, so they are held down every frame and put back on teardown
+        /// like everything else there. Prism's own switches are logged first: if one of them turns
+        /// out to be doing something the picture wants, the log says which.
+        /// </summary>
+        private void TakeBackdropEffects(Camera camera)
+        {
+            if (camera == null || !DeployScreenPlugin.StagingTruePicture.Value) return;
+
+            try
+            {
+                var taken = new List<string>();
+
+                foreach (var component in camera.GetComponents<Component>())
+                {
+                    if (component == null) continue;
+
+                    var name = component.GetType().Name;
+                    if (!DevelopsThePicture(name)) continue;
+
+                    var behaviour = component as Behaviour;
+                    if (behaviour == null) continue;
+
+                    if (name == "PrismEffects") DescribeSwitches(component);
+
+                    _switchedOff.Add(behaviour);
+                    _switchedOffWas.Add(behaviour.enabled);
+
+                    if (!behaviour.enabled) continue;
+
+                    behaviour.enabled = false;
+                    taken.Add(name);
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] picture shown as it is on '" + camera.name + "': "
+                    + (taken.Count == 0 ? "nothing was on" : string.Join(", ", taken.ToArray()) + " off"));
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
+        /// <summary>
+        /// Takes down the two screen-space layers the menu lays between its scene and the PMC.
+        ///
+        /// Found by a pixel probe (since removed), after the effects were already off and the
+        /// picture still showed at a third of its file. The backdrop camera rendered it correctly
+        /// -- x1.02 of the file times the wash -- so the loss was after the camera:
+        ///
+        ///     Shading/survived     full screen, rgba 0.00,0.02,0.01,0.60, overlay order -1000
+        ///     Glow Canvas/TopGlowPve  top half,  rgba 1,1,1,0.61,          overlay order 3
+        ///
+        /// The first is a black veil at 60% over the whole scene and under the PMC, whose canvas
+        /// is order 0: the picture times 0.40 and the character untouched, which is the
+        /// greenscreen in one line. The second is a white glow over the sky. Both are right over
+        /// the dim menu room and wrong over a photograph. Graphics are switched off, not their
+        /// objects -- the game fades Shading by its CanvasGroup and toggles its variants by
+        /// GameObject, and neither of those is touched. Inactive variants are taken too, so one
+        /// the game switches on halfway through arrives already off. All of it is held down per
+        /// frame and restored through <see cref="_switchedOff"/>.
+        /// </summary>
+        private void TakeVeils(Component root)
+        {
+            if (root == null || !DeployScreenPlugin.StagingTruePicture.Value) return;
+
+            try
+            {
+                var graphicType = HarmonyLib.AccessTools.TypeByName("UnityEngine.UI.Graphic");
+                if (graphicType == null) return;
+
+                var places = new List<Transform>();
+
+                var shading = root.transform.Find("Shading");
+                if (shading != null) places.Add(shading);
+
+                var environment = root.transform.parent;
+                var glow = environment == null ? null : environment.Find("Common/Glow Canvas");
+                if (glow != null) places.Add(glow);
+
+                var taken = new List<string>();
+
+                foreach (var place in places)
+                {
+                    foreach (var behaviour in place.GetComponentsInChildren<Behaviour>(true))
+                    {
+                        if (behaviour == null || !graphicType.IsInstanceOfType(behaviour)) continue;
+
+                        _switchedOff.Add(behaviour);
+                        _switchedOffWas.Add(behaviour.enabled);
+
+                        if (!behaviour.enabled) continue;
+
+                        behaviour.enabled = false;
+                        if (behaviour.gameObject.activeInHierarchy) taken.Add(behaviour.name);
+                    }
+                }
+
+                DeployScreenPlugin.Log.LogInfo(
+                    "[DeployScreen] veils: shading " + (shading != null ? "found" : "not found")
+                    + ", glow " + (glow != null ? "found" : "not found") + "; showing and now off: "
+                    + (taken.Count == 0 ? "none" : string.Join(", ", taken.ToArray())));
+            }
+            catch (Exception error) { WarnOnce(error); }
+        }
+
+        private static bool DevelopsThePicture(string name)
+        {
+            return name == "PrismEffects" || name == "Bloom" || name == "BloomAndFlares"
+                || name == "ChromaticAberration" || name == "CameraMotionBlur"
+                || name == "DesaturateEffect" || name == "ColorCorrectionCurves"
+                || name == "Antialiasing";
+        }
+
+        /// <summary>Every bool field named use* that is on, on one line.</summary>
+        private static void DescribeSwitches(Component component)
+        {
+            try
+            {
+                var line = new StringBuilder("[DeployScreen] " + component.GetType().Name + " on '"
+                    + component.gameObject.name + "' had on:");
+
+                foreach (var field in component.GetType().GetFields(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    if (field.FieldType != typeof(bool)) continue;
+                    if (!field.Name.StartsWith("use", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    if ((bool)field.GetValue(component)) line.Append(' ').Append(field.Name);
+                }
+
+                DeployScreenPlugin.Log.LogInfo(line.ToString());
+            }
+            catch { }
+        }
+
         private void TakeBackdropOcclusion(Camera camera)
         {
             if (camera == null || !DeployScreenPlugin.StagingBackdropAo.Value) return;
@@ -1786,9 +1931,6 @@ namespace DeployScreen.Client
 
             DeployScreenPlugin.Log.LogInfo("[DeployScreen] --- end of character preview ---");
         }
-
-        private static Camera _backdropCamera;
-        private static float _artDistance;
 
         private static bool _watched;
         private static double _watchFrom = -1;
@@ -2194,6 +2336,7 @@ namespace DeployScreen.Client
             FadeInStep(Time.unscaledDeltaTime);
 
             WatchArt(now);
+
 
             if (_subCaptionText == null) return;
 
@@ -3494,7 +3637,6 @@ namespace DeployScreen.Client
             // And the choice belongs to the raid that is going, so the next one moves on a place.
             ForgetPictureChoices();
             _cameBack.Clear();
-            _backdropCamera = null;
             CharacterFrameHeight = 0f;
 
             // First: it belongs to the camera rather than to anything built here, and the menu

@@ -769,30 +769,33 @@ try {
         return [float]$matchToArt.Invoke($null, [object[]]@((GradeWith $exposure), $false))
     }
 
-    # The two readings that started this, taken from real logs.
-    SetTone $true 0.43 0.15    # clear midday Rezerv
-    $day = Match 0.92
-    SetTone $true 0.11 0.10    # the same map at night
+    # Real readings from 2026-10-25, the first runs with the picture reaching the screen as it is.
+    # Under the old 0.30 reference every one of the daylight ones pinned at the 1.15 ceiling.
+    SetTone $true 0.68 0.58    # Customs, clear midday
+    $day = Match 1.00
+    SetTone $true 0.54 0.47    # Reserve, rain and 85% cloud
+    $rain = Match 0.68
+    SetTone $true 0.22 0.42    # Interchange
+    $dull = Match 0.88
+    SetTone $true 0.11 0.10    # Rezerv at night
     $night = Match 0.29
 
-    Check 'a midday picture lights the character near full' ($day -gt 0.85) "day $day"
+    Check 'a bright daylight picture lights the character at least full' ($day -ge 1.0) "day $day"
     Check 'a night picture lights him far lower' ($night -lt 0.5) "night $night"
+    Check 'the match is ordered: clear > rain > dull > night' `
+        ($day -gt $rain -and $rain -gt $dull -and $dull -gt $night) "day $day rain $rain dull $dull night $night"
+    Check 'daylight pictures no longer all pin at one ceiling' `
+        ([Math]::Abs($day - $rain) -gt 0.1 -and [Math]::Abs($rain - $dull) -gt 0.1) "day $day rain $rain dull $dull"
 
     # the actual complaint: the character must fall about as far as the background does
-    $bgRatio = (0.11 + 0.10) / (0.43 + 0.15)
+    $bgRatio = (0.11 + 0.10) / (0.68 + 0.58)
     $pmcRatio = $night / $day
     Check 'the character follows the background down' `
         ([Math]::Abs($pmcRatio - $bgRatio) -lt 0.18) "pmc $pmcRatio vs background $bgRatio"
 
-    # the old behaviour, for contrast: exposure alone barely moved
-    $oldRatio = 0.29 / 0.92
-    Check 'and follows it much more closely than exposure alone did' `
-        ([Math]::Abs($pmcRatio - $bgRatio) -lt [Math]::Abs($oldRatio - $bgRatio) + 0.25) `
-        "new gap $([Math]::Abs($pmcRatio - $bgRatio))"
-
     # bounds
     SetTone $true 1.0 1.0
-    Check 'a blown-out picture is capped' ((Match 1.6) -le 1.151) "got $(Match 1.6)"
+    Check 'a blown-out picture is capped' ((Match 1.6) -le 1.401) "got $(Match 1.6)"
     SetTone $true 0.0 0.0
     Check 'a black picture still leaves something' ((Match 0.25) -ge 0.34) "got $(Match 0.25)"
 
@@ -809,6 +812,64 @@ try {
     $current.SetValue($null, [Activator]::CreateInstance($toneType))
 }
 catch { Check 'art-matched lighting checks ran' $false $_.Exception.GetBaseException().Message }
+
+# ------------------------------------------- the light's character follows the weather
+Write-Host "=== the PMC's light: weather sets its character, the picture its colour ===" -ForegroundColor Cyan
+try {
+    $gradeType = TypeOf 'MapGrade'
+    $share = $gradeType.GetMethod('Share', $static)
+    $tint = $gradeType.GetMethod('Tint', $static)
+    $fit = $gradeType.GetMethod('Fit', $static)
+    $gType = $asm.GetType('DeployScreen.Client.Grade', $true)
+    $fSoft = $gType.GetField('Softness', $instance)
+    $fPitch = $gType.GetField('KeyPitch', $instance)
+    $shareType = $asm.GetType('DeployScreen.Client.MapGrade+LightShare', $true)
+    function ShareOf($s, $field) { return [float]$shareType.GetField($field, $instance).GetValue($share.Invoke($null, [object[]]@([float]$s))) }
+    function GradeAt($hour, $rain, $fog, $cloud) { return $forRaid2.Invoke($null, [object[]]@([string]'bigmap', (RaidWeather $hour $rain $fog $cloud))) }
+
+    # softness from the weather
+    $clear = GradeAt 12 0 0 0
+    $overcast = GradeAt 12 0 0 5
+    $fogged = GradeAt 12 0 4 0
+    Check 'a clear sky is hard light' (([float]$fSoft.GetValue($clear)) -lt 0.01) "soft $($fSoft.GetValue($clear))"
+    Check 'a full overcast is soft' (([float]$fSoft.GetValue($overcast)) -gt 0.6) "soft $($fSoft.GetValue($overcast))"
+    Check 'thick fog is soft' (([float]$fSoft.GetValue($fogged)) -gt 0.6) "soft $($fSoft.GetValue($fogged))"
+    $storm = GradeAt 12 4 4 5
+    Check 'softness never passes 1' (([float]$fSoft.GetValue($storm)) -le 1.0) "soft $($fSoft.GetValue($storm))"
+
+    # the split: soft light is even, hard light is directional
+    Check 'hard light: the key outweighs the fill by far' ((ShareOf 0 'Key') / (ShareOf 0 'Fill') -gt 4) "key $(ShareOf 0 'Key') fill $(ShareOf 0 'Fill')"
+    Check 'soft light: the fill comes close to the key' ((ShareOf 1 'Fill') / (ShareOf 1 'Key') -gt 0.9) "key $(ShareOf 1 'Key') fill $(ShareOf 1 'Fill')"
+    Check 'soft light has less edge than hard' ((ShareOf 1 'Rim') -lt (ShareOf 0 'Rim')) "soft rim $(ShareOf 1 'Rim')"
+    Check 'clamped outside 0..1' ([Math]::Abs((ShareOf 5 'Key') - (ShareOf 1 'Key')) -lt 0.001) "key at 5: $(ShareOf 5 'Key')"
+
+    # sun height from the hour
+    $noonPitch = [float]$fPitch.GetValue((GradeAt 12.5 0 0 0))
+    $dawnPitch = [float]$fPitch.GetValue((GradeAt 6.3 0 0 0))
+    $duskPitch = [float]$fPitch.GetValue((GradeAt 19 0 0 0))
+    $nightPitch = [float]$fPitch.GetValue((GradeAt 1 0 0 0))
+    Check 'the noon sun is high' ($noonPitch -gt 45) "noon $noonPitch"
+    Check 'the dawn sun is low' ($dawnPitch -lt $noonPitch - 15) "dawn $dawnPitch vs noon $noonPitch"
+    Check 'the dusk sun is low' ($duskPitch -lt $noonPitch - 15) "dusk $duskPitch vs noon $noonPitch"
+    Check 'every pitch is above the horizon' ($dawnPitch -gt 5 -and $duskPitch -gt 5 -and $nightPitch -gt 5) "dawn $dawnPitch dusk $duskPitch night $nightPitch"
+
+    # the picture's colour: hue without brightness, bounded
+    function Rgba($r, $g, $b) { return [UnityEngine.Color]::new([float]$r, [float]$g, [float]$b, [float]1) }
+    function TintOf($r, $g, $b, $amount) { return $tint.Invoke($null, [object[]]@((Rgba $r $g $b).psobject.BaseObject, [float]$amount)) }
+    $none = TintOf 0.2 0.6 0.1 0
+    Check 'amount 0 tints nothing' ([Math]::Abs($none.r - 1) + [Math]::Abs($none.g - 1) + [Math]::Abs($none.b - 1) -lt 0.001) "got $($none.r) $($none.g) $($none.b)"
+    $forest = TintOf 0.25 0.40 0.20 1
+    Check 'a green picture tints green' ($forest.g -gt $forest.r -and $forest.g -gt $forest.b) "got $($forest.r) $($forest.g) $($forest.b)"
+    $dim = TintOf 0.0625 0.10 0.05 1
+    Check 'a dark picture tints as much as a bright one of the same hue' ([Math]::Abs($dim.g - $forest.g) -lt 0.001) "dark $($dim.g) bright $($forest.g)"
+    $lurid = TintOf 1 0 1 1
+    Check 'no channel leaves 0.55..1.45' ($lurid.r -le 1.451 -and $lurid.g -ge 0.549 -and $lurid.b -le 1.451) "got $($lurid.r) $($lurid.g) $($lurid.b)"
+    $black = TintOf 0 0 0 1
+    Check 'a black picture leaves the light white' ($black.r -eq 1 -and $black.g -eq 1 -and $black.b -eq 1) "got $($black.r) $($black.g) $($black.b)"
+    $fitted = $fit.Invoke($null, [object[]]@((Rgba 1.3 0.65 0.4).psobject.BaseObject))
+    Check 'a fitted light colour keeps its hue under 1' ($fitted.r -le 1.0001 -and [Math]::Abs($fitted.g / $fitted.r - 0.5) -lt 0.001) "got $($fitted.r) $($fitted.g) $($fitted.b)"
+}
+catch { Check 'light character checks ran' $false $_.Exception.GetBaseException().Message }
 
 # ------------------------------------------- the hour reaches lights that already existed
 

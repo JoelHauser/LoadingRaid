@@ -19,6 +19,15 @@ namespace DeployScreen.Client
 
         /// <summary>A tint laid over the map art itself, so the picture agrees with the light.</summary>
         internal Color Wash;
+
+        /// <summary>
+        /// 0 for one hard sun, 1 for light that comes from everywhere. Cloud, fog and rain raise
+        /// it; it decides how the PMC's light is split between the key and the wrap-around fill.
+        /// </summary>
+        internal float Softness;
+
+        /// <summary>Degrees above the horizon the key comes from: high at noon, low at dawn and dusk.</summary>
+        internal float KeyPitch;
     }
 
     /// <summary>
@@ -229,8 +238,28 @@ namespace DeployScreen.Client
             }
 
             grade.Exposure = Mathf.Clamp(grade.Exposure, 0.25f, 1.6f);
+
+            // --- the light's character, not just its colour ------------------------------
+            // Cloud is the big one: a full overcast is one enormous soft box. Fog scatters as
+            // hard as cloud does from much closer. Rain only half counts -- it comes with cloud,
+            // which has already been counted.
+            grade.Softness = Mathf.Clamp01(cloud * 0.75f + fog * 0.9f + rain * 0.35f);
+
+            // The sun climbs from the horizon to about fifty degrees and comes back down, on a
+            // sine from sunrise at 05:00 to its top at 12:30 -- not on lowSun, which is a colour
+            // curve and never falls far enough to rake. At night the key is the moon, or the
+            // town, from somewhere middling. Blended rather than switched, like everything else.
+            var climb = Mathf.Clamp01(Mathf.Min((hour - 5f) / 7.5f, (20f - hour) / 7.5f));
+            var dayPitch = Mathf.Lerp(LowSunPitch, HighSun, Mathf.Sin(climb * Mathf.PI * 0.5f));
+            grade.KeyPitch = Mathf.Lerp(NightPitch, dayPitch, daylight);
+
             return grade;
         }
+
+        internal const float DefaultKeyPitch = 32f;
+        private const float HighSun = 50f;
+        private const float LowSunPitch = 12f;
+        private const float NightPitch = 35f;
 
         private static Color Warm(Color c) { return new Color(Mathf.Min(1f, c.r * 1.14f), c.g * 1.02f, c.b * 0.82f, 1f); }
         private static Color Cool(Color c) { return new Color(c.r * 0.88f, c.g * 0.96f, Mathf.Min(1f, c.b * 1.12f), 1f); }
@@ -512,6 +541,8 @@ namespace DeployScreen.Client
                 Rim = Rgb(rim),
                 Exposure = exposure,
                 Wash = Rgb(wash),
+                Softness = 0f,
+                KeyPitch = DefaultKeyPitch,
             };
         }
 
@@ -555,25 +586,15 @@ namespace DeployScreen.Client
         {
             if (_rig == null) return;
 
-            foreach (var light in _rig.GetComponentsInChildren<Light>(true))
+            for (var i = 0; i < _rigLights.Count; i++)
             {
-                if (light == null) continue;
-
-                var rim = light.name == "Rim";
-
-                var full = rim
-                    ? DeployScreenPlugin.StagingRimIntensity.Value
-                    : DeployScreenPlugin.StagingKeyIntensity.Value;
-
-                light.intensity = full * (rim ? _rimLift : _lift) * Mathf.Clamp01(scale);
+                if (_rigLights[i] != null) _rigLights[i].intensity = _rigFull[i] * Mathf.Clamp01(scale);
             }
         }
 
-        /// <summary>What the match multiplied the configured intensities by, kept for the dim.</summary>
-        private float _lift = 1f;
-
-        /// <summary>The same for the rim, which is deliberately not dimmed as hard as the key.</summary>
-        private float _rimLift = 1f;
+        /// <summary>Each of our lights and the intensity it was built at, kept for the dim.</summary>
+        private readonly List<Light> _rigLights = new List<Light>();
+        private readonly List<float> _rigFull = new List<float>();
 
         /// <summary>
         /// How much of the dimming the rim light is spared. 0 would dim it exactly like the key;
@@ -664,7 +685,7 @@ namespace DeployScreen.Client
                     };
 
                     light.shadows = LightShadows.None;
-                    light.color = Color.Lerp(light.color, grade.Key, Mathf.Clamp01(strength));
+                    light.color = Color.Lerp(light.color, PictureKey(grade), Mathf.Clamp01(strength));
                     light.intensity *= ExistingLift(grade, strength);
                 }
 
@@ -771,25 +792,44 @@ namespace DeployScreen.Client
             var strength = Mathf.Clamp01(DeployScreenPlugin.StagingGradeStrength.Value);
             var match = MatchToArt(grade);
             var lift = Mathf.Lerp(1f, match, strength);
-            _lift = lift;
 
             // The rim does not fall as far as the key, and that is the whole trick of lighting
             // anyone at night: drop the key until the subject belongs to the dark, keep an edge so
             // he can still be found in it. Dimming both together is how a night deploy turns the
             // PMC into a silhouette, which is a different wrong answer from lighting him for noon.
             var rimLift = Mathf.Lerp(1f, match, strength * RimResists);
-            _rimLift = rimLift;
+
+            // How the light is shared out, from the weather. One hard sun is a strong key, a bright
+            // edge and little else; an overcast is the same total spread round him -- key and edge
+            // down, the fill up until it nearly matches the key, so he is modelled softly from
+            // every side instead of cut by one direction.
+            var share = Share(grade.Softness);
+            var key = DeployScreenPlugin.StagingKeyIntensity.Value * lift;
 
             _rig = new GameObject("DeployScreen Character Light");
             UnityEngine.Object.DontDestroyOnLoad(_rig);
+            _rigLights.Clear();
+            _rigFull.Clear();
 
-            AddLight(_rig, "Key", grade.Key,
-                DeployScreenPlugin.StagingKeyIntensity.Value * lift,
-                Quaternion.Euler(32f, -38f, 0f), mask);
+            // Key: the sun, or whatever stands in for it. The grade's colour, nudged toward the
+            // picture's overall cast -- a sun does not turn blue because the sky is.
+            AddLight(_rig, "Key", PictureKey(grade), key * share.Key,
+                Quaternion.Euler(grade.KeyPitch, -38f, 0f), mask);
 
             AddLight(_rig, "Rim", grade.Rim,
-                DeployScreenPlugin.StagingRimIntensity.Value * rimLift,
+                DeployScreenPlugin.StagingRimIntensity.Value * rimLift * share.Rim,
                 Quaternion.Euler(8f, 158f, 0f), mask);
+
+            // Fill: the sky. From the other side and a little above, in the colour of the top of
+            // the picture -- blue sky, grey overcast, or a lab's ceiling lights.
+            AddLight(_rig, "Fill", PictureFill(grade), key * share.Fill,
+                Quaternion.Euler(20f, 50f, 0f), mask);
+
+            // Bounce: the ground, from in front and below, in its colour and at its brightness.
+            // Sunlit concrete throws a lot back; wet asphalt under cloud very little.
+            var bounce = key * share.Bounce * GroundBrightness();
+            AddLight(_rig, "Bounce", PictureGround(grade), bounce,
+                Quaternion.Euler(-35f, 10f, 0f), mask);
 
             DeployScreenPlugin.Log.LogInfo(
                 "[DeployScreen] character light: exposure=" + grade.Exposure.ToString("0.00")
@@ -800,23 +840,140 @@ namespace DeployScreen.Client
                 + " lift=" + lift.ToString("0.00")
                 + " rim-lift=" + rimLift.ToString("0.00")
                 + " existing-lift=" + ExistingLift(grade, strength).ToString("0.00")
-                + " key=" + (DeployScreenPlugin.StagingKeyIntensity.Value * lift).ToString("0.00")
-                + " rim=" + (DeployScreenPlugin.StagingRimIntensity.Value * lift).ToString("0.00"));
+                + " soft=" + grade.Softness.ToString("0.00")
+                + " pitch=" + grade.KeyPitch.ToString("0")
+                + " key=" + (key * share.Key).ToString("0.00")
+                + " rim=" + (DeployScreenPlugin.StagingRimIntensity.Value * rimLift * share.Rim).ToString("0.00")
+                + " fill=" + (key * share.Fill).ToString("0.00")
+                + " bounce=" + bounce.ToString("0.00")
+                + " picture-colour=" + (ArtTone.Current.HasColour ? PictureColourStrength().ToString("0.00") : "unmeasured"));
+        }
+
+        /// <summary>What each light gets, as a fraction of the configured key (the rim of its own).</summary>
+        internal struct LightShare
+        {
+            internal float Key;
+            internal float Rim;
+            internal float Fill;
+            internal float Bounce;
+        }
+
+        /// <summary>
+        /// The split between the lights for a given softness. Pure arithmetic, so it is tested.
+        ///
+        /// At 0 (clear sky): key full, rim full, a little fill so the shadow side is not black,
+        /// and a solid bounce off sunlit ground. At 1 (heavy overcast or fog): key at 55%, rim at
+        /// 45%, fill at 60% -- within a whisker of the key, which is what "no direction" looks
+        /// like on a face -- and the bounce halved, because unlit ground has little to throw.
+        /// </summary>
+        internal static LightShare Share(float softness)
+        {
+            var s = Mathf.Clamp01(softness);
+
+            return new LightShare
+            {
+                Key = Mathf.Lerp(1f, 0.55f, s),
+                Rim = Mathf.Lerp(1f, 0.45f, s),
+                Fill = Mathf.Lerp(0.18f, 0.60f, s),
+                Bounce = Mathf.Lerp(0.30f, 0.15f, s),
+            };
+        }
+
+        /// <summary>
+        /// A colour's hue at the brightness of white, pulled toward white by <paramref name="amount"/>
+        /// and bounded, so a picture can colour a light without dimming it, blowing it out or
+        /// turning it a colour no daylight is. Pure arithmetic, so it is tested.
+        ///
+        /// Normalised by luminance so a dark picture tints exactly as much as a bright one of the
+        /// same hue -- brightness is the match's job, not this. Bounded per channel at 0.55..1.45
+        /// before the final scale, which is roughly the gap between sodium and a clear sky: far
+        /// enough to read, never so far a face goes green.
+        /// </summary>
+        internal static Color Tint(Color colour, float amount)
+        {
+            var lum = 0.2126f * colour.r + 0.7152f * colour.g + 0.0722f * colour.b;
+            if (lum < 0.02f) return Color.white;
+
+            var hue = new Color(
+                Mathf.Clamp(colour.r / lum, 0.55f, 1.45f),
+                Mathf.Clamp(colour.g / lum, 0.55f, 1.45f),
+                Mathf.Clamp(colour.b / lum, 0.55f, 1.45f),
+                1f);
+
+            return Color.Lerp(Color.white, hue, Mathf.Clamp01(amount));
+        }
+
+        /// <summary>A light colour no channel of which is over 1, keeping its hue.</summary>
+        internal static Color Fit(Color colour)
+        {
+            var top = Mathf.Max(colour.r, Mathf.Max(colour.g, colour.b));
+            if (top <= 1f) return new Color(colour.r, colour.g, colour.b, 1f);
+            return new Color(colour.r / top, colour.g / top, colour.b / top, 1f);
+        }
+
+        private static float PictureColourStrength()
+        {
+            return DeployScreenPlugin.StagingPictureLight == null
+                ? 0.6f
+                : Mathf.Clamp01(DeployScreenPlugin.StagingPictureLight.Value);
+        }
+
+        /// <summary>The key: the grade's colour, moved a third of the way toward the picture's cast.</summary>
+        private static Color PictureKey(Grade grade)
+        {
+            if (!ArtTone.Current.HasColour) return grade.Key;
+            return Fit(grade.Key * Tint(ArtTone.Current.Average, PictureColourStrength() * 0.35f));
+        }
+
+        /// <summary>The fill: the sky's colour, mostly, over the grade's.</summary>
+        private static Color PictureFill(Grade grade)
+        {
+            if (!ArtTone.Current.HasColour) return Color.Lerp(grade.Key, grade.Rim, 0.5f);
+            return Fit(grade.Key * Tint(ArtTone.Current.Sky, PictureColourStrength()));
+        }
+
+        /// <summary>The bounce: the ground's colour, over the grade's.</summary>
+        private static Color PictureGround(Grade grade)
+        {
+            if (!ArtTone.Current.HasColour) return grade.Key;
+            return Fit(grade.Key * Tint(ArtTone.Current.Ground, PictureColourStrength()));
+        }
+
+        /// <summary>
+        /// How much the ground has to throw back: its brightness against a sunlit mid-grey,
+        /// bounded so snow does not floodlight him from below and black tarmac still gives a
+        /// trace. 1 with no reading.
+        /// </summary>
+        private static float GroundBrightness()
+        {
+            if (!ArtTone.Current.HasColour) return 1f;
+
+            var g = ArtTone.Current.Ground;
+            var lum = 0.2126f * g.r + 0.7152f * g.g + 0.0722f * g.b;
+            return Mathf.Clamp(lum / 0.35f, 0.3f, 1.5f);
         }
 
         /// <summary>
         /// The brightness of a picture that should light a character at full strength.
         ///
-        /// Two runs set this. A clear midday Rezerv measured 0.43 top and 0.15 bottom, mean 0.29;
-        /// the same map at night measured 0.11 and 0.10, mean 0.105. Taking 0.30 as "a normally
-        /// lit photograph" puts the midday raid at essentially full light and the night one near
-        /// a third, which is the ratio the pictures themselves have.
+        /// Was 0.30, set from one Rezerv pair (midday 0.29, night 0.105) while the menu's 60%
+        /// veil was still darkening the picture and Prism was lifting it back. With both gone the
+        /// picture reaches the screen as measured, and four runs on 2026-10-25 read 0.55 and 0.63
+        /// (Customs, morning and midday), 0.50 (Reserve, rain), 0.32 (Interchange) -- every one
+        /// of them pinned at the old 1.15 ceiling, so the "match" was a constant. 0.45 puts an
+        /// ordinary daylight picture at about full, a bright one above, a dull one below.
         /// </summary>
-        private const float ReferenceTone = 0.30f;
+        private const float ReferenceTone = 0.45f;
 
         /// <summary>How far the match is allowed to go in either direction.</summary>
         private const float DimmestMatch = 0.35f;
-        private const float BrightestMatch = 1.15f;
+        private const float BrightestMatch = 1.40f;
+
+        /// <summary>
+        /// The ceiling for the game's own studio lights, which are not ours to push as far: four
+        /// lights balanced for a menu, all lifted 40%, put a shine on a face.
+        /// </summary>
+        private const float BrightestExisting = 1.15f;
 
         /// <summary>
         /// How brightly to light the character, taken from how bright the art actually is.
@@ -876,11 +1033,11 @@ namespace DeployScreen.Client
         /// </summary>
         private static float ExistingLift(Grade grade, float strength)
         {
-            var target = Mathf.Max(DarkestExisting, MatchToArt(grade));
+            var target = Mathf.Clamp(MatchToArt(grade), DarkestExisting, BrightestExisting);
             return Mathf.Lerp(1f, target, Mathf.Clamp01(strength));
         }
 
-        private static void AddLight(GameObject parent, string name, Color colour, float intensity,
+        private void AddLight(GameObject parent, string name, Color colour, float intensity,
             Quaternion rotation, int mask)
         {
             var holder = new GameObject(name);
@@ -894,6 +1051,9 @@ namespace DeployScreen.Client
             light.shadows = LightShadows.None;
             light.cullingMask = mask;
             light.renderMode = LightRenderMode.ForcePixel;
+
+            _rigLights.Add(light);
+            _rigFull.Add(intensity);
         }
 
         // ---------------------------------------------------------------- restore
@@ -940,6 +1100,8 @@ namespace DeployScreen.Client
             catch (Exception error) { WarnOnce(error); }
 
             _rig = null;
+            _rigLights.Clear();
+            _rigFull.Clear();
         }
 
         private void WarnOnce(Exception error)

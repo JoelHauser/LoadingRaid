@@ -6,3 +6,5 @@ obj/
 .idea/
 dist/
 diagnostics/
+# Release zips live on the GitHub release (about 62 MB each); 1.0.0 stays tracked.
+releases/*.zip

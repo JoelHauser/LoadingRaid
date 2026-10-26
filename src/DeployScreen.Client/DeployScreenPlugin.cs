@@ -79,7 +79,7 @@ namespace DeployScreen.Client
     {
         public const string PluginGuid = "com.mybutthasarash.deployscreen";
         public const string PluginName = "Deploy Screen Overhaul";
-        public const string PluginVersion = "1.0.1";
+        public const string PluginVersion = "1.1.0";
 
         internal static ManualLogSource Log;
 
@@ -101,6 +101,8 @@ namespace DeployScreen.Client
         internal static ConfigEntry<bool> StagingSimplePreview;
         internal static ConfigEntry<bool> StagingPlainPreview;
         internal static ConfigEntry<bool> StagingBackdropAo;
+        internal static ConfigEntry<bool> StagingTruePicture;
+        internal static ConfigEntry<float> StagingPictureLight;
         internal static ConfigEntry<bool> StagingClearPreview;
         internal static ConfigEntry<float> DepthDrift;
         internal static ConfigEntry<float> DepthSway;
@@ -546,6 +548,31 @@ namespace DeployScreen.Client
                 + "to read, so what it finds to darken is the air beside his silhouette -- a soft "
                 + "dark shape that follows him when he turns. Switched back on when you leave.",
                     null,
+                    new ConfigurationManagerAttributes { IsAdvanced = true }));
+
+            StagingTruePicture = Config.Bind(
+                "Staging area",
+                "Show the picture as it is",
+                true,
+                new ConfigDescription("The menu tone-maps and blooms everything its camera draws, then lays a "
+                + "60% black veil and a white glow over it -- right for the dim 3D menu room, wrong "
+                + "for a screenshot. Through all that the picture comes out at a third of its "
+                + "brightness with a hazy sky, and your PMC, who is drawn on top of the veil, looks "
+                + "pasted in front of it. On, the effects and both layers are off while the picture "
+                + "is up and it is drawn as the file is. Switched back on when you leave.",
+                    null,
+                    new ConfigurationManagerAttributes { IsAdvanced = true }));
+
+            StagingPictureLight = Config.Bind(
+                "Staging area",
+                "Light your PMC in the picture colours",
+                0.6f,
+                new ConfigDescription("How much the picture behind your PMC colours the light on him. The sky "
+                + "colours the soft fill from above, the ground colours the light bouncing up from "
+                + "below, and the picture as a whole nudges the main light -- so a forest lights him "
+                + "a little green and a lab's ceiling a little purple. 0 lights him from the time "
+                + "and weather alone.",
+                    new AcceptableValueRange<float>(0f, 1f),
                     new ConfigurationManagerAttributes { IsAdvanced = true }));
 
             StagingClearPreview = Config.Bind(

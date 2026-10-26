@@ -16,6 +16,16 @@ namespace DeployScreen.Client
 
         /// <summary>The same, along the bottom, where the progress line sits.</summary>
         internal float Bottom;
+
+        /// <summary>
+        /// Plain mean colours, through the wash, for lighting the PMC: the top third (sky, or a
+        /// ceiling), the bottom quarter (the ground he would be standing on) and the whole
+        /// picture. Full width, unlike the corners above -- light comes from all of it.
+        /// </summary>
+        internal Color Sky;
+        internal Color Ground;
+        internal Color Average;
+        internal bool HasColour;
     }
 
     /// <summary>
@@ -93,11 +103,29 @@ namespace DeployScreen.Client
                     Bottom = Mathf.Clamp01(bottom * tint),
                 };
 
+                // Colour is a second, optional reading: a failure here costs the PMC his
+                // picture-coloured light and nothing else, so it must not lose the corners.
+                Color sky, ground, average;
+                if (ReadColour(texture, crop, SkyBand, out sky)
+                    && ReadColour(texture, crop, GroundBand, out ground)
+                    && ReadColour(texture, crop, WholeBand, out average))
+                {
+                    var through = new Color(wash.r, wash.g, wash.b, 1f);
+                    Current.Sky = sky * through;
+                    Current.Ground = ground * through;
+                    Current.Average = average * through;
+                    Current.HasColour = true;
+                }
+
                 DeployScreenPlugin.Log.LogInfo(
                     "[DeployScreen] art tone: top=" + Current.Top.ToString("0.00")
                     + " bottom=" + Current.Bottom.ToString("0.00")
                     + " (picture " + top.ToString("0.00") + "/" + bottom.ToString("0.00")
-                    + " through a wash of " + tint.ToString("0.00") + ")");
+                    + " through a wash of " + tint.ToString("0.00") + ")"
+                    + (Current.HasColour
+                        ? "; sky " + Rgb(Current.Sky) + " ground " + Rgb(Current.Ground)
+                          + " average " + Rgb(Current.Average)
+                        : "; no colour reading"));
             }
             catch (Exception error)
             {
@@ -119,6 +147,48 @@ namespace DeployScreen.Client
         {
             level = 0f;
 
+            var pixels = Sample(texture, crop, band, wide, tall);
+            if (pixels == null) return false;
+
+            level = Level(pixels);
+            return true;
+        }
+
+        /// <summary>Bands for the colour reading, in the picture's own 0..1, y up.</summary>
+        private static readonly Rect SkyBand = new Rect(0f, 0.67f, 1f, 0.33f);
+        private static readonly Rect GroundBand = new Rect(0f, 0f, 1f, 0.25f);
+        private static readonly Rect WholeBand = new Rect(0f, 0f, 1f, 1f);
+
+        /// <summary>One band's plain mean colour. A mean, not ArtTone's bright-weighted level:
+        /// light is the sum of everything in the band, not its brightest line.</summary>
+        private static bool ReadColour(Texture texture, Rect crop, Rect band, out Color colour)
+        {
+            colour = Color.grey;
+
+            var pixels = Sample(texture, crop, band, 16, 8);
+            if (pixels == null || pixels.Length == 0) return false;
+
+            float r = 0f, g = 0f, b = 0f;
+            for (var i = 0; i < pixels.Length; i++)
+            {
+                r += pixels[i].r;
+                g += pixels[i].g;
+                b += pixels[i].b;
+            }
+
+            var n = pixels.Length * 255f;
+            colour = new Color(r / n, g / n, b / n, 1f);
+            return true;
+        }
+
+        private static string Rgb(Color c)
+        {
+            return c.r.ToString("0.00") + "/" + c.g.ToString("0.00") + "/" + c.b.ToString("0.00");
+        }
+
+        /// <summary>The band, downscaled by the hardware and read back. Null when the band is empty.</summary>
+        private static Color32[] Sample(Texture texture, Rect crop, Rect band, int wide, int tall)
+        {
             var scale = new Vector2(
                 crop.width * band.width / texture.width,
                 crop.height * band.height / texture.height);
@@ -127,7 +197,7 @@ namespace DeployScreen.Client
                 (crop.x + crop.width * band.x) / texture.width,
                 (crop.y + crop.height * band.y) / texture.height);
 
-            if (scale.x <= 0f || scale.y <= 0f) return false;
+            if (scale.x <= 0f || scale.y <= 0f) return null;
 
             RenderTexture sheet = null;
             Texture2D read = null;
@@ -149,8 +219,7 @@ namespace DeployScreen.Client
                 read.ReadPixels(new Rect(0f, 0f, wide, tall), 0, 0, false);
                 read.Apply(false, false);
 
-                level = Level(read.GetPixels32());
-                return true;
+                return read.GetPixels32();
             }
             finally
             {

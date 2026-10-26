@@ -6,11 +6,11 @@
     The zip is laid out to extract straight into an SPT folder:
 
         BepInEx\plugins\DeployScreen\DeployScreen.Client.dll
-        BepInEx\plugins\DeployScreen\banners\README.txt
-        BepInEx\plugins\DeployScreen\banners\_default\
+        BepInEx\plugins\DeployScreen\banners\<map>\*.jpg
 
-    Nothing else. No README at the top of the zip: a loose file in an archive meant
-    to be extracted over an SPT folder lands in the install root, where it is litter.
+    Nothing else -- no README anywhere in it, not even inside the plugin folder. Every
+    file in the zip lands in someone's SPT install; how to add pictures is in the
+    GitHub README instead.
 
     It checks that both version strings agree before building anything -- the
     csproj <Version> and DeployScreenPlugin.PluginVersion.
@@ -87,14 +87,11 @@ $pluginDir = Join-Path $stage 'BepInEx\plugins\DeployScreen'
 New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
 Copy-Item $dll $pluginDir
 
-
 # The art ships with the mod. The staging area is the whole mod now, and it has nothing
 # to show without pictures -- a map with no art is left alone, so a release carrying no
 # art is one where, for most people, nothing appears to happen at all.
 $bannersDir = Join-Path $pluginDir 'banners'
-New-Item -ItemType Directory -Force -Path (Join-Path $bannersDir '_default') | Out-Null
-Copy-Item (Join-Path $root 'assets\banners-README.txt') (Join-Path $bannersDir 'README.txt')
-Copy-Item (Join-Path $root 'assets\default-README.txt') (Join-Path $bannersDir '_default\README.txt')
+New-Item -ItemType Directory -Force -Path $bannersDir | Out-Null
 
 $art = Join-Path $root 'assets\banners'
 if (Test-Path $art) {

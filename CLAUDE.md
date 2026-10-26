@@ -2565,8 +2565,13 @@ demonstrated anything.
 - GUID `com.mybutthasarash.deployscreen`, following SPT-Casino's registered prefix.
 - Version lives in the csproj `<Version>` and `PluginVersion`; `pack.ps1` refuses to pack if
   they disagree.
-- The zip holds only the four files under `BepInEx/plugins/DeployScreen/`. Release zips are
-  tracked in git, as in the sibling repos. The one exception so far: **1.3.0's zip was deleted
+- The zip holds the DLL and the art under `BepInEx/plugins/DeployScreen/`, and **no README of
+  any kind** -- not even inside the plugin folder (the user's standing rule for every mod; 1.0.0
+  shipped `banners/README.txt` and `banners/_default/README.txt`, and 1.1.0 dropped them, moving
+  their text into the GitHub README). Without its README, `_default` is not created; a missing
+  fallback folder is already handled. **From 1.1.0 the zips are not committed** -- each is ~62 MB
+  and lives on the GitHub release; `releases/*.zip` is gitignored, and the 1.0.0 zip stays tracked
+  only because it already was. The one exception so far: **1.3.0's zip was deleted
   in 1.3.1**, on the user's instruction, because it shipped defects and nobody should download
   it by mistake. Deleting rather than overwriting keeps every zip's name matching the version
   its DLL reports, which `pack.ps1` relies on; git history still holds the file.
@@ -2584,15 +2589,88 @@ Remote **https://github.com/JoelHauser/LoadingRaid.git**, public, on `main`. The
 is `SPT-DeployScreen` and the GitHub repo is `LoadingRaid`: the same name split as
 `SPT-NoMagazineCamo` -> `CamoPatch`, so it is the house pattern rather than a mistake.
 
-The global git identity is unset on this machine. The sibling repos commit as
-`Joel Hauser <jhauser@bostonlightsource.com>` -- **not** the gmail address -- and this repo
-is configured the same way, locally. Commit bodies are prose and end with a
+The global git identity is unset on this machine. Commit as
+`Joel Hauser <joel.hauser@gmail.com>`, which is the address linked to the JoelHauser GitHub
+account, and is what this repo is configured with locally. (The work address used earlier is not
+linked, so GitHub showed those commits as anonymous.) Commit bodies are prose and end with a
 `Co-Authored-By:` trailer, as SPT-Casino's do.
 
 1.0.0's first push carried a BOM in its subject (see Traps) and was amended and force-pushed
 with `--force-with-lease`, from `1a180c8` to `58a7b30`, minutes after the repo was created.
 
 ## Where this was left off
+
+2026-10-25, **1.1.0 released** (tag `v1.1.0`, GitHub release with the zip). It carries 1.0.1's
+countdown icon fix and everything below. The pixel probe (`ProbePicture`) and the two fields only it
+read are deleted; the `PrismEffects ... had on:` line and the `veils:` line stay as one-line
+diagnostics. Untested in game: the overcast/fog light shape and the dawn/dusk sun. A clear Customs
+day/night pair was seen: the PMC fell to 53% of his day brightness exactly as the picture did.
+
+2026-10-25, **the picture was being developed twice.**
+
+Reported: the background looks blown out, not clear, the PMC in front of a greenscreen. Measured off
+the 2026-09-20 Lighthouse screenshot against its source (`01 - Lighthouse Showcase 16.jpg`),
+background regions only: saturation 0.28 -> 0.14, median luma 0.54 -> 0.61, p99 0.86 -> 0.76, sky
+RGB 0.34/0.54/0.73 -> 0.53/0.70/0.76. Nothing clipped -- lifted mids, squashed highlights, colour
+halved: a tone map plus bloom run over an image that already had its own. The backdrop camera logs
+`Bloom, ChromaticAberration, PrismEffects, CameraMotionBlur; hdr=True`, and none of it was ever
+taken off for the art. The PMC is lit for that pipeline on his own camera, so he stays punchy.
+
+`TakeBackdropEffects` (setting **Show the picture as it is**, default on, advanced) switches those
+off on the backdrop camera through `_switchedOff`, so they are held down per frame and restored like
+the AO. It logs Prism's `use*` switches first (`PrismEffects on '...' had on: ...`) and then
+`picture shown as it is on 'MainMenuCamera': ... off`. The camera's mask is Menu Environment only.
+
+To check in game: the picture should match the file. What it does NOT fix: 1920x1080 art stretched
+to 3440x1440 is still soft (`WarnIfSoft`); and with the effects gone, the `Wash` multiply (0.61 on
+today's Interchange) is the only thing between the file and the screen, so if it now reads dim,
+`StagingGradeStrength` / `WashFor` is the next lever, not the effects. Previous DLL (1.0.1) in
+`H:\SPTMods\plugin-backups\2026-10-25-deployscreen-truepicture`.
+
+**Same day, second half: the effects were not most of it.** With them off, a Customs screenshot
+measured the art at 0.31-0.35 x its file, evenly across the frame, against a wash of 0.84 -- and the
+PMC, lit by ArtTone for the 0.84 picture, stood bright in front of a dusk. `ProbePicture` (a
+PROBE, delete once answered) rendered the backdrop camera into a texture and read it back:
+`expected 0.355/0.207; backdrop camera rendered 0.363/0.213 (x1.02); colorSpace=Gamma`. The
+camera was right; the loss was after it:
+
+```
+PROBE veil: '.../EnvironmentUIScene_Season_LAB/Shading/survived' Image cover=1.00 rgba 0.00,0.02,0.01,0.60 canvas 'Shading' ScreenSpaceOverlay order=-1000
+PROBE veil: 'Environment UI/Common/Glow Canvas/TopGlowPve' Image cover=0.47 rgba 1.00,1.00,1.00,0.61 canvas 'Glow Canvas' ScreenSpaceOverlay order=3
+PROBE veil: '.../Matchmaker Time Has Come/PlayerModelView' RawImage cover=0.94 ... order=0
+PROBE in front: 'Environment UI/Common/!dust' MeshRenderer depth=3.37 shader=Custom/LocalDustParticlesLighted
+```
+
+A 60% black veil over the scene and *under* the PMC: x0.40 on the picture, nothing on the
+character. That is the greenscreen, and it has been there since 1.5.0 -- Prism's gamma correction
+and bloom were lifting the picture back up and hiding it. `TakeVeils` switches off every Graphic
+under `Shading` and `Common/Glow Canvas` (inactive variants too), same `_switchedOff` hold and
+restore, same setting. The dust is left: depth in front of the picture is wanted. Seen working
+in a Reserve run: `veils: ... now off: survived, TopGlowPve`, probe x1.00, nothing came back.
+
+**Then the PMC's light (the user asked for 1, 2 and 4 of four options; 3 -- per-picture sun
+direction, authored for the 148 shipped pictures -- is deferred).** Built, installed, 112 tests
+pass, NOT seen in game.
+
+1. *Picture colour.* `ArtTone` also reads plain mean colours (through the wash) of the sky band
+   (top third), ground band (bottom quarter) and whole picture, full width. `MapGrade.Tint` turns a
+   colour into a hue at white's luminance, bounded 0.55..1.45 per channel, then `Fit` keeps it
+   under 1. Key = grade key x a third-strength tint of the whole picture (the sun does not turn
+   blue because the sky is); new **Fill** (yaw 50, pitch 20) = the sky's colour; new **Bounce**
+   (from below front) = the ground's colour, scaled by ground brightness 0.3..1.5. Setting **Light
+   your PMC in the picture colours**, 0.6. (Its first name had an apostrophe; the config-key test
+   caught it -- the same silent-Awake trap as before.)
+2. *Match.* `ReferenceTone` 0.30 -> 0.45, ceiling 1.15 -> 1.40: every daylight run today pinned
+   at 1.15, so the match was a constant. The game's studio lights are capped separately at 1.15
+   (`BrightestExisting`).
+3. *Weather's character.* `Grade.Softness` = cloud x0.75 + fog x0.9 + rain x0.35. `Share` splits
+   the light: clear = key 1, rim 1, fill 0.18, bounce 0.30; full soft = key 0.55, rim 0.45, fill
+   0.60, bounce 0.15. `Grade.KeyPitch` follows a sun sine 05:00-20:00 (12 deg low, 50 at 12:30),
+   35 at night. `DimCharacter` now scales each light from the intensity it was built at.
+
+The log line `character light:` now carries soft, pitch, key, rim, fill, bounce; `art tone:` the
+three colours. If the PMC reads too bright on daylight maps, `BrightestMatch` / `ReferenceTone`
+first; if too even, the Share fill numbers.
 
 2026-09-29, **1.0.1: no member icon beside the destination on the countdown. Committed (`6053ae7`),
 installed, NOT pushed, NOT packed.**
@@ -2621,7 +2699,7 @@ Outstanding:
   this screen's 1.0.0 design, not a change. Asked whether to put the name big with the map small,
   or the name above the map; they said "nevermind" for now.
 
-2026-09-20, release: **the art ships with the mod.** 148 pictures, 63 MB, in `assetsanners`
+2026-09-20, release: **the art ships with the mod.** 148 pictures, 63 MB, in `assets\banners`
 and in the zip.
 
 This was the gap that would have sunk the release. The staging area is the whole mod now, and a map
@@ -2629,12 +2707,12 @@ with no art is deliberately left alone -- so the package as it stood installed a
 anyone who had not already sourced their own pictures, appeared to do nothing at all. The art was
 only ever on one machine.
 
-`pack.ps1` copies `assetsanners` into the stage, and `-Install` copies **only files that are not
+`pack.ps1` copies `assets\banners` into the stage, and `-Install` copies **only files that are not
 already there**. Someone who has curated a folder or dropped in their own screenshots keeps it
 exactly as it was; a file that is absent is either a fresh install or a map added since they last
 updated, and both of those want the picture. It reports `art: N added, M left as you had them`.
 
-`assetsanners-README.txt` was rewritten. It described the banner slideshow -- how many pictures a
+`assets\banners-README.txt` was rewritten. It described the banner slideshow -- how many pictures a
 map shows in vanilla, the Captions setting and its three modes -- none of which exists any more. It
 now says the art is already there, that the rotation advances a picture per load, and that updating
 never overwrites what you have.
